@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VideoMigrate — Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+          colors: {
+            brand: { 50:'#eef2ff',100:'#e0e7ff',200:'#c7d2fe',300:'#a5b4fc',400:'#818cf8',500:'#6366f1',600:'#4f46e5',700:'#4338ca',800:'#3730a3',900:'#312e81' },
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .fade-in { animation: fadeIn 0.2s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+    .dot-green { background: #16a34a; }
+    .dot-red { background: #dc2626; }
+    .dot-yellow { background: #ca8a04; }
+    .dot-blue { background: #2563eb; }
+    .dot-purple { background: #7c3aed; }
+    .chat-msg { max-width: 85%; }
+    .chat-msg.user { margin-left: auto; }
+    .chat-msg.assistant { margin-right: auto; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+    body { font-family: 'Inter', system-ui, sans-serif; }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-800 min-h-screen" x-data="app()" x-init="init()">
+
+  <!-- Login Screen -->
+  <div x-show="!authenticated" x-cloak class="fixed inset-0 z-[100] flex items-center justify-center bg-gray-900">
+    <div class="w-full max-w-sm">
+      <div class="bg-white rounded-xl shadow-2xl p-8">
+        <div class="text-center mb-6">
+          <div class="inline-flex items-center justify-center w-12 h-12 bg-brand-100 rounded-xl mb-3">
+            <svg class="w-6 h-6 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+          </div>
+          <h2 class="text-xl font-bold text-gray-900">VideoMigrate</h2>
+          <p class="text-sm text-gray-500 mt-1">Sign in to continue</p>
+        </div>
+        <form @submit.prevent="login()">
+          <div class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Username</label>
+              <input x-model="loginUser" type="text" required autocomplete="username"
+                class="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none" placeholder="admin">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+              <input x-model="loginPass" type="password" required autocomplete="current-password"
+                class="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none" placeholder="password">
+            </div>
+            <div x-show="loginError" class="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" x-text="loginError"></div>
+            <button type="submit" :disabled="loginLoading"
+              class="w-full py-2.5 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700 disabled:opacity-50 transition-colors">
+              <span x-show="!loginLoading">Sign In</span>
+              <span x-show="loginLoading">Signing in...</span>
+            </button>
+          </div>
+        </form>
+        <p class="text-xs text-gray-400 text-center mt-4">Default: admin / admin</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <div class="fixed left-0 top-0 h-full w-56 bg-white border-r border-gray-200 flex flex-col z-50">
+    <div class="p-5 border-b border-gray-100">
+      <h1 class="text-lg font-bold text-gray-900 flex items-center gap-2">
+        <svg class="w-5 h-5 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+        VideoMigrate
+      </h1>
+      <p class="text-xs text-gray-400 mt-1">Kaltura &rarr; AWS &rarr; Zoom</p>
+    </div>
+
+    <nav class="flex-1 p-3 space-y-0.5">
+      <template x-for="tab in tabs" :key="tab.id">
+        <button @click="currentTab = tab.id" :class="currentTab === tab.id ? 'bg-brand-50 text-brand-700 border-l-2 border-brand-500 font-medium' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent'" class="w-full text-left px-3 py-2.5 rounded-r text-sm flex items-center gap-2.5 transition-colors">
+          <span x-html="tab.icon" class="opacity-70"></span>
+          <span x-text="tab.label"></span>
+        </button>
+      </template>
+      <div class="pt-2 mt-2 border-t border-gray-100">
+        <a href="/architecture.html" target="_blank" class="w-full text-left px-3 py-2.5 rounded text-sm flex items-center gap-2.5 text-gray-500 hover:text-gray-900 hover:bg-gray-50 transition-colors">
+          <svg class="w-4 h-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7"/></svg>
+          Architecture
+          <svg class="w-3 h-3 ml-auto opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+        </a>
+      </div>
+    </nav>
+
+    <div class="p-4 border-t border-gray-100 space-y-2">
+      <div class="flex items-center gap-2 text-xs">
+        <span class="dot" :class="status.demo_mode ? 'dot-yellow' : 'dot-green'"></span>
+        <span x-text="status.demo_mode ? 'Demo Mode' : 'Live'" class="text-gray-500"></span>
+      </div>
+      <div x-show="authenticated" class="flex items-center justify-between text-xs">
+        <span class="text-gray-400" x-text="authUser"></span>
+        <button @click="logout()" class="text-red-500 hover:text-red-700 font-medium">Logout</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <main class="ml-56 p-8 min-h-screen">
+
+    <!-- ═══ DASHBOARD ═══ -->
+    <div x-show="currentTab === 'dashboard'" x-cloak class="fade-in">
+      <h2 class="text-2xl font-bold text-gray-900 mb-8">Dashboard</h2>
+
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
+        <div class="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+          <p class="text-xs text-gray-500 uppercase tracking-wide font-medium">Total Videos</p>
+          <p class="text-3xl font-bold text-gray-900 mt-2" x-text="status.total_videos || 0"></p>
+        </div>
+        <div class="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+          <p class="text-xs text-gray-500 uppercase tracking-wide font-medium">Migrated</p>
+          <p class="text-3xl font-bold text-green-600 mt-2" x-text="(status.status_counts || {}).completed || 0"></p>
+        </div>
+        <div class="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+          <p class="text-xs text-gray-500 uppercase tracking-wide font-medium">Failed</p>
+          <p class="text-3xl font-bold text-red-600 mt-2" x-text="(status.status_counts || {}).failed || 0"></p>
+        </div>
+        <div class="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+          <p class="text-xs text-gray-500 uppercase tracking-wide font-medium">Data Transferred</p>
+          <p class="text-3xl font-bold text-blue-600 mt-2"><span x-text="status.migrated_size_gb || 0"></span> <span class="text-base font-normal text-gray-400">GB</span></p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-8">
+        <div class="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+          <p class="text-xs text-gray-500 uppercase tracking-wide font-medium mb-4">Cost Summary</p>
+          <div class="space-y-3">
+            <div class="flex justify-between items-center"><span class="text-sm text-gray-500">Total Spent</span><span class="font-mono font-semibold text-gray-900">$<span x-text="(status.costs || {}).total_spent || '0.00'"></span></span></div>
+            <div class="flex justify-between items-center"><span class="text-sm text-gray-500">Per Video</span><span class="font-mono text-gray-600">$<span x-text="(status.costs || {}).cost_per_video || '0.00'"></span></span></div>
+            <div class="flex justify-between items-center"><span class="text-sm text-gray-500">Projected/mo</span><span class="font-mono text-amber-600">$<span x-text="(status.costs || {}).projected_monthly || '0.00'"></span></span></div>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+          <p class="text-xs text-gray-500 uppercase tracking-wide font-medium mb-4">Migration Status</p>
+          <canvas id="statusChart" class="max-h-40"></canvas>
+        </div>
+        <div class="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+          <p class="text-xs text-gray-500 uppercase tracking-wide font-medium mb-4">Connections</p>
+          <div class="space-y-3 mt-1">
+            <template x-for="svc in ['kaltura', 's3', 'zoom']" :key="svc">
+              <div class="flex items-center gap-2.5">
+                <span class="dot" :class="(status.connections || {})[svc] ? 'dot-green' : 'dot-red'"></span>
+                <span class="text-sm font-medium capitalize text-gray-700" x-text="svc"></span>
+                <span class="text-xs text-gray-400 ml-auto" x-text="(status.connections || {})[svc] ? 'Connected' : 'Not configured'"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl border border-gray-200 shadow-sm">
+        <div class="px-5 py-4 border-b border-gray-100">
+          <h3 class="text-sm font-semibold text-gray-700">Recent Activity</h3>
+        </div>
+        <div class="divide-y divide-gray-50 max-h-72 overflow-y-auto">
+          <template x-for="act in activities" :key="act.timestamp">
+            <div class="px-5 py-3 flex items-start gap-3 hover:bg-gray-50/50 transition-colors">
+              <span class="dot mt-1.5" :class="act.type === 'completed' ? 'dot-green' : act.type === 'failed' ? 'dot-red' : act.type === 'started' ? 'dot-blue' : 'dot-yellow'"></span>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm text-gray-700 truncate" x-text="act.message"></p>
+                <p class="text-xs text-gray-400 mt-0.5" x-text="timeAgo(act.timestamp)"></p>
+              </div>
+            </div>
+          </template>
+          <div x-show="activities.length === 0" class="px-5 py-10 text-center text-gray-400 text-sm">No recent activity</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ VIDEO LIBRARY ═══ -->
+    <div x-show="currentTab === 'videos'" x-cloak class="fade-in">
+      <div class="flex items-center justify-between mb-8">
+        <h2 class="text-2xl font-bold text-gray-900">Video Library</h2>
+        <div class="flex items-center gap-3">
+          <input x-model="videoSearch" @input.debounce.300ms="loadVideos()" type="text" placeholder="Search videos..." class="bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 w-56 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none">
+          <select x-model="videoFilter" @change="loadVideos()" class="bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none">
+            <option value="all">All Status</option>
+            <option value="pending">Pending</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="downloading">Downloading</option>
+            <option value="uploading">Uploading</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                <th class="text-left px-5 py-3 font-medium">Title</th>
+                <th class="text-left px-4 py-3 font-medium">Duration</th>
+                <th class="text-left px-4 py-3 font-medium">Size</th>
+                <th class="text-left px-4 py-3 font-medium">Format</th>
+                <th class="text-left px-4 py-3 font-medium">Tags</th>
+                <th class="text-left px-4 py-3 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+              <template x-for="video in videos" :key="video.id">
+                <tr class="hover:bg-gray-50 cursor-pointer transition-colors" @click="selectedVideo = selectedVideo?.id === video.id ? null : video">
+                  <td class="px-5 py-3.5">
+                    <p class="text-gray-900 font-medium truncate max-w-xs" x-text="video.title"></p>
+                    <p class="text-xs text-gray-400 font-mono mt-0.5" x-text="video.id"></p>
+                  </td>
+                  <td class="px-4 py-3.5 text-gray-500 font-mono text-xs" x-text="formatDuration(video.duration)"></td>
+                  <td class="px-4 py-3.5 text-gray-500 font-mono text-xs" x-text="(video.size_mb || 0).toFixed(0) + ' MB'"></td>
+                  <td class="px-4 py-3.5">
+                    <span class="text-xs px-2 py-0.5 rounded-full" :class="video.codec === 'h.265' ? 'bg-red-50 text-red-700' : 'bg-gray-100 text-gray-600'" x-text="video.format + ' / ' + video.codec"></span>
+                  </td>
+                  <td class="px-4 py-3.5 text-xs text-gray-400 truncate max-w-[120px]" x-text="video.tags"></td>
+                  <td class="px-4 py-3.5">
+                    <span class="text-xs px-2.5 py-1 rounded-full font-medium" :class="statusBadge(video.status)" x-text="video.status"></span>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <div class="flex items-center justify-between px-5 py-3 border-t border-gray-100 bg-gray-50/50">
+          <span class="text-xs text-gray-500">Showing <span x-text="videos.length"></span> of <span x-text="videoTotal"></span></span>
+          <div class="flex gap-1">
+            <button @click="videoPage > 1 && (videoPage--, loadVideos())" :disabled="videoPage <= 1" class="px-3 py-1.5 text-xs rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-30 transition-colors">Prev</button>
+            <span class="px-3 py-1.5 text-xs text-gray-500">Page <span x-text="videoPage"></span> / <span x-text="videoTotalPages"></span></span>
+            <button @click="videoPage < videoTotalPages && (videoPage++, loadVideos())" :disabled="videoPage >= videoTotalPages" class="px-3 py-1.5 text-xs rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-30 transition-colors">Next</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Detail Panel -->
+      <div x-show="selectedVideo" x-cloak class="mt-5 bg-white rounded-xl border border-gray-200 shadow-sm p-5 fade-in">
+        <div class="flex justify-between items-start mb-4">
+          <h3 class="font-bold text-lg text-gray-900" x-text="selectedVideo?.title"></h3>
+          <button @click="selectedVideo = null" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+        </div>
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
+          <div><p class="text-gray-400 text-xs font-medium">ID</p><p class="font-mono text-gray-700 mt-0.5" x-text="selectedVideo?.id"></p></div>
+          <div><p class="text-gray-400 text-xs font-medium">Duration</p><p class="text-gray-700 mt-0.5" x-text="formatDuration(selectedVideo?.duration)"></p></div>
+          <div><p class="text-gray-400 text-xs font-medium">Size</p><p class="text-gray-700 mt-0.5" x-text="(selectedVideo?.size_mb || 0).toFixed(1) + ' MB'"></p></div>
+          <div><p class="text-gray-400 text-xs font-medium">Resolution</p><p class="text-gray-700 mt-0.5" x-text="selectedVideo?.resolution"></p></div>
+          <div><p class="text-gray-400 text-xs font-medium">Format / Codec</p><p class="text-gray-700 mt-0.5" x-text="selectedVideo?.format + ' / ' + selectedVideo?.codec"></p></div>
+          <div><p class="text-gray-400 text-xs font-medium">Category</p><p class="text-gray-700 mt-0.5" x-text="selectedVideo?.categories"></p></div>
+          <div><p class="text-gray-400 text-xs font-medium">Views</p><p class="text-gray-700 mt-0.5" x-text="selectedVideo?.views"></p></div>
+          <div><p class="text-gray-400 text-xs font-medium">Created</p><p class="text-gray-700 mt-0.5" x-text="selectedVideo?.created_at?.split('T')[0]"></p></div>
+        </div>
+        <div x-show="selectedVideo?.tags" class="mt-4">
+          <p class="text-gray-400 text-xs font-medium mb-1.5">Tags</p>
+          <div class="flex flex-wrap gap-1.5">
+            <template x-for="tag in (selectedVideo?.tags || '').split(', ').filter(t => t)" :key="tag">
+              <span class="text-xs bg-brand-50 text-brand-700 px-2 py-0.5 rounded-full" x-text="tag"></span>
+            </template>
+          </div>
+        </div>
+        <div x-show="selectedVideo?.error" class="mt-4 p-3 bg-red-50 rounded-lg border border-red-100">
+          <p class="text-xs text-red-700" x-text="selectedVideo?.error"></p>
+        </div>
+        <div x-show="selectedVideo?.zoom_id" class="mt-4">
+          <p class="text-gray-400 text-xs font-medium">Zoom ID</p>
+          <p class="font-mono text-green-700 text-sm mt-0.5" x-text="selectedVideo?.zoom_id"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ MIGRATION CONTROL ═══ -->
+    <div x-show="currentTab === 'migration'" x-cloak class="fade-in">
+      <h2 class="text-2xl font-bold text-gray-900 mb-8">Migration Control</h2>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-6">
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+          <h3 class="text-sm font-semibold text-gray-700 mb-5">Batch Settings</h3>
+          <div class="space-y-5">
+            <div>
+              <label class="text-xs text-gray-500 font-medium">Batch Size: <span class="text-brand-600 font-mono" x-text="batchSize"></span></label>
+              <input type="range" x-model.number="batchSize" min="1" max="100" class="w-full mt-2 accent-brand-500">
+            </div>
+            <div class="flex gap-2">
+              <button @click="startMigration()" :disabled="migrationRunning" class="flex-1 px-4 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:bg-gray-100 disabled:text-gray-400 text-white rounded-lg text-sm font-medium transition-colors">
+                <span x-text="migrationRunning ? 'Running...' : 'Start Migration'"></span>
+              </button>
+              <button @click="stopMigration()" :disabled="!migrationRunning" class="px-4 py-2.5 bg-red-600 hover:bg-red-700 disabled:bg-gray-100 disabled:text-gray-400 text-white rounded-lg text-sm font-medium transition-colors">Stop</button>
+            </div>
+            <button @click="retryFailed()" :disabled="migrationRunning" class="w-full px-4 py-2.5 bg-amber-50 text-amber-700 hover:bg-amber-100 disabled:opacity-30 rounded-lg text-sm font-medium transition-colors border border-amber-200">Retry Failed</button>
+          </div>
+        </div>
+
+        <div class="lg:col-span-2 bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+          <h3 class="text-sm font-semibold text-gray-700 mb-4">Progress</h3>
+          <div x-show="!migrationRunning && migrationEvents.length === 0" class="text-gray-400 text-sm py-10 text-center">
+            No migration running. Click "Start Migration" to begin.
+          </div>
+          <div class="space-y-1.5 max-h-60 overflow-y-auto">
+            <template x-for="evt in migrationEvents.slice(-20)" :key="evt.timestamp || Math.random()">
+              <div class="flex items-center gap-2.5 text-sm py-1.5 px-2 rounded hover:bg-gray-50">
+                <span class="dot" :class="evt.type === 'video_completed' ? 'dot-green' : evt.type === 'video_failed' ? 'dot-red' : 'dot-blue'"></span>
+                <span class="text-gray-600 flex-1 truncate" x-text="evt.title || evt.message || JSON.stringify(evt)"></span>
+                <span class="text-xs px-2 py-0.5 rounded-full" :class="evt.type === 'video_completed' ? 'bg-green-50 text-green-700' : evt.type === 'video_failed' ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'" x-text="evt.step || evt.type?.replace('video_', '').replace('migration_', '')"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl border border-gray-200 shadow-sm">
+        <div class="px-5 py-3 border-b border-gray-100 flex justify-between items-center">
+          <h3 class="text-sm font-semibold text-gray-700">Live Log</h3>
+          <button @click="migrationEvents = []" class="text-xs text-gray-400 hover:text-gray-600">Clear</button>
+        </div>
+        <div class="p-4 font-mono text-xs text-gray-500 max-h-48 overflow-y-auto bg-gray-50 rounded-b-xl" id="logPanel">
+          <template x-for="(evt, i) in migrationEvents" :key="i">
+            <div class="py-0.5">
+              <span class="text-gray-400" x-text="new Date().toLocaleTimeString()"></span>
+              <span class="ml-2" :class="evt.type?.includes('fail') ? 'text-red-600' : evt.type?.includes('complete') ? 'text-green-600' : 'text-gray-600'" x-text="evt.message || `[${evt.type}] ${evt.title || evt.video_id || ''}`"></span>
+            </div>
+          </template>
+          <div x-show="migrationEvents.length === 0" class="text-gray-300 italic">Waiting for migration events...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ FIELD MAPPING ═══ -->
+    <div x-show="currentTab === 'mapping'" x-cloak class="fade-in">
+      <h2 class="text-2xl font-bold text-gray-900 mb-2">Field Mapping</h2>
+      <p class="text-gray-500 text-sm mb-8">How Kaltura metadata fields map to Zoom properties during migration.</p>
+
+      <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+              <th class="text-left px-5 py-3 font-medium">Kaltura Field</th>
+              <th class="text-center px-3 py-3 font-medium w-10">&rarr;</th>
+              <th class="text-left px-4 py-3 font-medium">Zoom Field</th>
+              <th class="text-left px-4 py-3 font-medium">Status</th>
+              <th class="text-left px-4 py-3 font-medium">Transform</th>
+              <th class="text-left px-4 py-3 font-medium">Notes</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <template x-for="m in fieldMappings" :key="m.kaltura_field">
+              <tr class="hover:bg-gray-50 transition-colors">
+                <td class="px-5 py-3.5 font-mono text-brand-700 text-xs font-medium" x-text="m.kaltura_field"></td>
+                <td class="px-3 py-3.5 text-center text-gray-300">&rarr;</td>
+                <td class="px-4 py-3.5 font-mono text-xs" :class="m.zoom_field === '—' ? 'text-gray-300' : 'text-blue-700 font-medium'" x-text="m.zoom_field"></td>
+                <td class="px-4 py-3.5">
+                  <span class="text-xs px-2.5 py-1 rounded-full font-medium" :class="{
+                    'bg-green-50 text-green-700': m.status === 'mapped',
+                    'bg-red-50 text-red-700': m.status === 'no_equivalent',
+                    'bg-amber-50 text-amber-700': m.status === 'unmapped',
+                    'bg-blue-50 text-blue-700': m.status === 'partial',
+                  }" x-text="m.status"></span>
+                </td>
+                <td class="px-4 py-3.5 text-xs text-gray-500" x-text="m.transform || '—'"></td>
+                <td class="px-4 py-3.5 text-xs text-gray-400 italic" x-text="m.ai_note || ''"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="grid grid-cols-4 gap-4 mt-5">
+        <div class="bg-white rounded-xl p-4 border border-gray-200 shadow-sm text-center">
+          <p class="text-2xl font-bold text-green-600" x-text="fieldMappings.filter(m => m.status === 'mapped').length"></p>
+          <p class="text-xs text-gray-500 mt-1">Mapped</p>
+        </div>
+        <div class="bg-white rounded-xl p-4 border border-gray-200 shadow-sm text-center">
+          <p class="text-2xl font-bold text-blue-600" x-text="fieldMappings.filter(m => m.status === 'partial').length"></p>
+          <p class="text-xs text-gray-500 mt-1">Partial</p>
+        </div>
+        <div class="bg-white rounded-xl p-4 border border-gray-200 shadow-sm text-center">
+          <p class="text-2xl font-bold text-amber-600" x-text="fieldMappings.filter(m => m.status === 'unmapped').length"></p>
+          <p class="text-xs text-gray-500 mt-1">Unmapped</p>
+        </div>
+        <div class="bg-white rounded-xl p-4 border border-gray-200 shadow-sm text-center">
+          <p class="text-2xl font-bold text-red-600" x-text="fieldMappings.filter(m => m.status === 'no_equivalent').length"></p>
+          <p class="text-xs text-gray-500 mt-1">No Equivalent</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ AI ASSISTANT ═══ -->
+    <div x-show="currentTab === 'ai'" x-cloak class="fade-in">
+      <h2 class="text-2xl font-bold text-gray-900 mb-8">AI Assistant</h2>
+
+      <div class="bg-white rounded-xl border border-gray-200 shadow-sm flex flex-col" style="height: calc(100vh - 180px);">
+        <div class="flex-1 overflow-y-auto p-5 space-y-4" id="chatMessages">
+          <template x-for="(msg, i) in chatMessages" :key="i">
+            <div class="chat-msg p-4 rounded-xl" :class="msg.role === 'user' ? 'bg-brand-50 border border-brand-100 user' : 'bg-gray-50 border border-gray-100 assistant'">
+              <div class="flex items-center gap-2 mb-1.5">
+                <span class="text-xs font-semibold" :class="msg.role === 'user' ? 'text-brand-600' : 'text-green-600'" x-text="msg.role === 'user' ? 'You' : 'Assistant'"></span>
+                <span x-show="msg.tier" class="text-xs text-gray-400" x-text="'Tier ' + msg.tier"></span>
+              </div>
+              <div class="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed" x-html="renderMarkdown(msg.content)"></div>
+            </div>
+          </template>
+          <div x-show="chatLoading" class="chat-msg assistant p-4 rounded-xl bg-gray-50 border border-gray-100">
+            <p class="text-sm text-gray-400 animate-pulse">Thinking...</p>
+          </div>
+        </div>
+
+        <div class="p-4 border-t border-gray-100">
+          <div class="flex gap-2">
+            <input x-model="chatInput" @keydown.enter="sendChat()" type="text" placeholder="Ask about your migration..." class="flex-1 bg-white border border-gray-300 rounded-lg px-4 py-2.5 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none">
+            <button @click="sendChat()" :disabled="chatLoading || !chatInput.trim()" class="px-5 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:bg-gray-100 disabled:text-gray-400 text-white rounded-lg text-sm font-medium transition-colors">Send</button>
+          </div>
+          <div class="flex gap-2 mt-3">
+            <button @click="chatInput = 'How many videos are pending?'; sendChat()" class="text-xs text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-full transition-colors">How many pending?</button>
+            <button @click="chatInput = 'Show me failed videos'; sendChat()" class="text-xs text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-full transition-colors">Show failed</button>
+            <button @click="chatInput = 'Estimate cost for 5000 videos'; sendChat()" class="text-xs text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-full transition-colors">Cost estimate</button>
+            <button @click="chatInput = 'What formats are in the library?'; sendChat()" class="text-xs text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-full transition-colors">Formats</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ COST TRACKER ═══ -->
+    <div x-show="currentTab === 'costs'" x-cloak class="fade-in">
+      <h2 class="text-2xl font-bold text-gray-900 mb-8">Cost Tracker</h2>
+
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
+        <div class="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+          <p class="text-xs text-gray-500 uppercase tracking-wide font-medium">Total Spent</p>
+          <p class="text-3xl font-bold text-gray-900 mt-2">$<span x-text="(costData.total_spent || 0).toFixed(2)"></span></p>
+        </div>
+        <div class="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+          <p class="text-xs text-gray-500 uppercase tracking-wide font-medium">Projected Monthly</p>
+          <p class="text-3xl font-bold text-amber-600 mt-2">$<span x-text="(costData.projected_monthly || 0).toFixed(2)"></span></p>
+        </div>
+        <div class="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+          <p class="text-xs text-gray-500 uppercase tracking-wide font-medium">Cost / Video</p>
+          <p class="text-3xl font-bold text-blue-600 mt-2">$<span x-text="(costData.cost_per_video || 0).toFixed(2)"></span></p>
+        </div>
+        <div class="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+          <p class="text-xs text-gray-500 uppercase tracking-wide font-medium">Data Transferred</p>
+          <p class="text-3xl font-bold text-purple-600 mt-2"><span x-text="(costData.total_gb_transferred || 0).toFixed(1)"></span> <span class="text-base font-normal text-gray-400">GB</span></p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8">
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+          <h3 class="text-sm font-semibold text-gray-700 mb-4">Cost by Service</h3>
+          <canvas id="costBreakdownChart" class="max-h-64"></canvas>
+        </div>
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+          <h3 class="text-sm font-semibold text-gray-700 mb-4">Daily Cost Trend</h3>
+          <canvas id="costTimelineChart" class="max-h-64"></canvas>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-8">
+        <h3 class="text-sm font-semibold text-gray-700 mb-5">Cost Projection Calculator</h3>
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 items-end">
+          <div>
+            <label class="text-xs text-gray-500 font-medium">Number of Videos</label>
+            <input x-model.number="projectionVideos" type="number" min="1" max="100000" class="w-full mt-1.5 bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none">
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 font-medium">Avg Size (MB)</label>
+            <input x-model.number="projectionSizeMb" type="number" min="1" max="10000" class="w-full mt-1.5 bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none">
+          </div>
+          <div>
+            <button @click="calculateProjection()" class="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-sm font-medium transition-colors">Calculate</button>
+          </div>
+          <div x-show="projectionResult" class="text-center">
+            <p class="text-xs text-gray-500">Estimated Total</p>
+            <p class="text-2xl font-bold text-green-600">$<span x-text="projectionResult?.total_cost?.toFixed(2) || '0.00'"></span></p>
+          </div>
+        </div>
+        <div x-show="projectionResult" class="mt-5 grid grid-cols-5 gap-2">
+          <template x-for="[k, v] in Object.entries(projectionResult?.breakdown || {})" :key="k">
+            <div class="bg-gray-50 rounded-lg p-3 text-center">
+              <p class="text-xs text-gray-500" x-text="k.replace(/_/g, ' ')"></p>
+              <p class="text-sm font-mono text-gray-700 mt-0.5">$<span x-text="v.toFixed(2)"></span></p>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+              <th class="text-left px-5 py-3 font-medium">Service</th>
+              <th class="text-left px-4 py-3 font-medium">Rate</th>
+              <th class="text-right px-4 py-3 font-medium">Cost</th>
+              <th class="text-right px-5 py-3 font-medium">% of Total</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <template x-for="[svc, cost] in Object.entries(costData.breakdown || {})" :key="svc">
+              <tr class="hover:bg-gray-50 transition-colors">
+                <td class="px-5 py-3.5 text-gray-700 capitalize font-medium" x-text="svc.replace(/_/g, ' ')"></td>
+                <td class="px-4 py-3.5 text-xs text-gray-400 font-mono" x-text="getCostRate(svc)"></td>
+                <td class="px-4 py-3.5 text-right font-mono text-gray-700">$<span x-text="cost.toFixed(4)"></span></td>
+                <td class="px-5 py-3.5 text-right font-mono text-gray-400" x-text="costData.total_spent > 0 ? (cost / costData.total_spent * 100).toFixed(1) + '%' : '0%'"></td>
+              </tr>
+            </template>
+          </tbody>
+          <tfoot>
+            <tr class="font-semibold bg-gray-50">
+              <td class="px-5 py-3.5 text-gray-900">Total</td>
+              <td></td>
+              <td class="px-4 py-3.5 text-right font-mono text-gray-900">$<span x-text="(costData.total_spent || 0).toFixed(2)"></span></td>
+              <td class="px-5 py-3.5 text-right text-gray-500">100%</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══ SETTINGS ═══ -->
+    <div x-show="currentTab === 'settings'" x-cloak class="fade-in">
+      <h2 class="text-2xl font-bold text-gray-900 mb-8">Settings</h2>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+          <div class="flex items-center justify-between mb-5">
+            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2">
+              <span class="dot" :class="(status.connections || {}).kaltura ? 'dot-green' : 'dot-red'"></span> Kaltura
+            </h3>
+            <button @click="testConnection('kaltura')" class="text-xs text-brand-600 hover:text-brand-700 font-medium">Test</button>
+          </div>
+          <div class="space-y-3">
+            <div><label class="text-xs text-gray-500 font-medium">Partner ID</label><input type="text" placeholder="12345" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+            <div><label class="text-xs text-gray-500 font-medium">Admin Secret</label><input type="password" placeholder="*************" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+            <div><label class="text-xs text-gray-500 font-medium">User ID</label><input type="text" placeholder="admin@company.com" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+          <div class="flex items-center justify-between mb-5">
+            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2">
+              <span class="dot" :class="(status.connections || {}).s3 ? 'dot-green' : 'dot-red'"></span> AWS
+            </h3>
+            <button @click="testConnection('s3')" class="text-xs text-brand-600 hover:text-brand-700 font-medium">Test</button>
+          </div>
+          <div class="space-y-3">
+            <div><label class="text-xs text-gray-500 font-medium">S3 Bucket</label><input type="text" placeholder="my-migration-bucket" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+            <div><label class="text-xs text-gray-500 font-medium">Region</label><input type="text" placeholder="us-east-1" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+            <div><label class="text-xs text-gray-500 font-medium">DynamoDB Table</label><input type="text" placeholder="video-migration-state" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+          <div class="flex items-center justify-between mb-5">
+            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2">
+              <span class="dot" :class="(status.connections || {}).zoom ? 'dot-green' : 'dot-red'"></span> Zoom
+            </h3>
+            <button @click="testConnection('zoom')" class="text-xs text-brand-600 hover:text-brand-700 font-medium">Test</button>
+          </div>
+          <div class="space-y-3">
+            <div><label class="text-xs text-gray-500 font-medium">Client ID</label><input type="text" placeholder="S2S OAuth Client ID" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+            <div><label class="text-xs text-gray-500 font-medium">Client Secret</label><input type="password" placeholder="*************" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+            <div><label class="text-xs text-gray-500 font-medium">Account ID</label><input type="text" placeholder="Zoom Account ID" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+            <div>
+              <label class="text-xs text-gray-500 font-medium">Target API</label>
+              <select class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none">
+                <option value="events">Zoom Events CMS (IFRS)</option>
+                <option value="vm">Zoom Video Management (Indeed)</option>
+                <option value="clips">Zoom Clips (General)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+          <h3 class="text-sm font-semibold text-gray-700 mb-5">Pipeline Configuration</h3>
+          <div class="space-y-3">
+            <div><label class="text-xs text-gray-500 font-medium">Default Batch Size</label><input type="number" value="10" min="1" max="100" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+            <div><label class="text-xs text-gray-500 font-medium">Max Concurrency</label><input type="number" value="5" min="1" max="20" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+            <div><label class="text-xs text-gray-500 font-medium">Retry Attempts</label><input type="number" value="3" min="1" max="10" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+            <div><label class="text-xs text-gray-500 font-medium">Cost Alert Threshold ($)</label><input type="number" value="50" min="1" class="w-full mt-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pipeline Test Section -->
+      <div class="mt-8 bg-white rounded-xl border border-gray-200 shadow-sm p-6" x-data="{ testRunning: false, testResult: null, testSteps: [] }">
+        <div class="flex items-center justify-between mb-5">
+          <div>
+            <h3 class="text-lg font-semibold text-gray-900 flex items-center gap-2">
+              <svg class="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              Pipeline Test
+            </h3>
+            <p class="text-sm text-gray-500 mt-1">Run a real end-to-end test with a sample video. No credentials needed.</p>
+          </div>
+          <button
+            @click="
+              testRunning = true; testSteps = []; testResult = null;
+              fetch('/api/test/run', { method: 'POST', headers: $data._authHeaders(), body: JSON.stringify({}) })
+                .then(r => r.json())
+                .then(d => { testResult = d; testSteps = d.steps || []; testRunning = false; })
+                .catch(e => { testRunning = false; testResult = { overall: 'failed', error: e.message, steps: [] }; })
+            "
+            :disabled="testRunning"
+            class="px-5 py-2.5 rounded-lg text-sm font-medium transition-colors"
+            :class="testRunning ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-700 shadow-sm'"
+          >
+            <span x-show="!testRunning">Run Pipeline Test</span>
+            <span x-show="testRunning" class="flex items-center gap-2">
+              <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+              Testing...
+            </span>
+          </button>
+        </div>
+
+        <!-- Test Steps -->
+        <div x-show="testSteps.length > 0" class="space-y-2">
+          <template x-for="step in testSteps" :key="step.step">
+            <div class="flex items-center gap-3 py-2 px-3 rounded-lg" :class="step.status === 'passed' ? 'bg-green-50' : step.status === 'failed' ? 'bg-red-50' : 'bg-yellow-50'">
+              <span x-show="step.status === 'passed'" class="text-green-600 text-lg">&#10003;</span>
+              <span x-show="step.status === 'failed'" class="text-red-600 text-lg">&#10007;</span>
+              <span x-show="step.status === 'skipped'" class="text-yellow-600 text-lg">&#8722;</span>
+              <div class="flex-1">
+                <span class="text-sm font-medium text-gray-700 capitalize" x-text="step.step.replace('_', ' ')"></span>
+                <span class="text-sm text-gray-500 ml-2" x-text="step.message"></span>
+              </div>
+              <span x-show="step.duration_seconds > 0" class="text-xs text-gray-400" x-text="step.duration_seconds.toFixed(1) + 's'"></span>
+            </div>
+          </template>
+        </div>
+
+        <!-- Overall Result -->
+        <div x-show="testResult && !testRunning" class="mt-4 p-4 rounded-lg" :class="testResult.overall === 'passed' ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'">
+          <div class="flex items-center gap-2">
+            <span x-show="testResult.overall === 'passed'" class="text-green-700 font-semibold text-sm">&#10003; All tests passed — Pipeline is working!</span>
+            <span x-show="testResult.overall === 'failed'" class="text-red-700 font-semibold text-sm">&#10007; Some tests failed — Check details above</span>
+          </div>
+          <div x-show="testResult.total_duration" class="text-xs text-gray-500 mt-1">
+            Completed in <span x-text="testResult.total_duration?.toFixed(1)"></span>s
+            <span x-show="testResult.file_size_mb"> &middot; <span x-text="testResult.file_size_mb"></span> MB processed</span>
+          </div>
+        </div>
+
+        <!-- How it works -->
+        <div x-show="testSteps.length === 0 && !testRunning" class="mt-4 bg-gray-50 rounded-lg p-4">
+          <p class="text-xs text-gray-500 font-medium mb-2">What this test does:</p>
+          <div class="grid grid-cols-5 gap-2 text-center">
+            <div class="text-xs"><div class="text-xl mb-1">&#127916;</div><div class="text-gray-600 font-medium">Discover</div><div class="text-gray-400">Find sample video</div></div>
+            <div class="text-xs"><div class="text-xl mb-1">&#128269;</div><div class="text-gray-600 font-medium">Metadata</div><div class="text-gray-400">Extract info</div></div>
+            <div class="text-xs"><div class="text-xl mb-1">&#11015;&#65039;</div><div class="text-gray-600 font-medium">Download</div><div class="text-gray-400">CC video file</div></div>
+            <div class="text-xs"><div class="text-xl mb-1">&#9729;&#65039;</div><div class="text-gray-600 font-medium">S3 Stage</div><div class="text-gray-400">Upload to S3</div></div>
+            <div class="text-xs"><div class="text-xl mb-1">&#128640;</div><div class="text-gray-600 font-medium">Upload</div><div class="text-gray-400">Mock Zoom</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    function app() {
+      return {
+        // Auth state
+        authenticated: false,
+        authToken: null,
+        authUser: '',
+        loginUser: '',
+        loginPass: '',
+        loginError: '',
+        loginLoading: false,
+
+        currentTab: 'dashboard',
+        tabs: [
+          { id: 'dashboard', label: 'Dashboard', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>' },
+          { id: 'videos', label: 'Video Library', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>' },
+          { id: 'migration', label: 'Migration', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>' },
+          { id: 'mapping', label: 'Field Mapping', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>' },
+          { id: 'ai', label: 'AI Assistant', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>' },
+          { id: 'costs', label: 'Cost Tracker', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>' },
+          { id: 'settings', label: 'Settings', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>' },
+        ],
+        status: {}, activities: [], videos: [], videoTotal: 0, videoPage: 1, videoTotalPages: 1,
+        videoSearch: '', videoFilter: 'all', selectedVideo: null, fieldMappings: [], costData: {}, costTimeline: [],
+        batchSize: 10, migrationRunning: false, migrationEvents: [], eventSource: null, _pollTimer: null, _pollIndex: 0,
+        chatMessages: [{ role: 'assistant', content: 'Welcome! I can help you understand your migration. Try asking:\n\n- "How many videos are pending?"\n- "Show me failed videos"\n- "Estimate cost for 5000 videos"\n- "What formats are in the library?"', tier: 0 }],
+        chatInput: '', chatLoading: false,
+        projectionVideos: 5000, projectionSizeMb: 500, projectionResult: null,
+        statusChart: null, costBreakdownChart: null, costTimelineChart: null,
+
+        async init() {
+          // Check for stored token
+          const stored = sessionStorage.getItem('vm_token');
+          if (stored) {
+            this.authToken = stored;
+            try {
+              const r = await fetch('/api/auth/verify', { headers: { 'Authorization': 'Bearer ' + stored } });
+              if (r.ok) {
+                const d = await r.json();
+                this.authenticated = true;
+                this.authUser = d.username;
+              } else { sessionStorage.removeItem('vm_token'); }
+            } catch(e) { sessionStorage.removeItem('vm_token'); }
+          }
+          if (!this.authenticated) return; // Wait for login
+
+          await this._loadDashboard();
+        },
+
+        async login() {
+          this.loginError = '';
+          this.loginLoading = true;
+          try {
+            const r = await fetch('/api/auth/login', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username: this.loginUser, password: this.loginPass })
+            });
+            const d = await r.json();
+            if (r.ok) {
+              this.authToken = d.token;
+              this.authUser = d.username;
+              this.authenticated = true;
+              sessionStorage.setItem('vm_token', d.token);
+              this.loginPass = '';
+              await this._loadDashboard();
+            } else {
+              this.loginError = d.detail || 'Invalid credentials';
+            }
+          } catch(e) { this.loginError = 'Connection failed'; }
+          this.loginLoading = false;
+        },
+
+        logout() {
+          this.authenticated = false;
+          this.authToken = null;
+          this.authUser = '';
+          sessionStorage.removeItem('vm_token');
+        },
+
+        _authHeaders() {
+          const h = { 'Content-Type': 'application/json' };
+          if (this.authToken) h['Authorization'] = 'Bearer ' + this.authToken;
+          return h;
+        },
+
+        async _loadDashboard() {
+          await this.loadStatus(); await this.loadActivity(); await this.loadVideos();
+          await this.loadFieldMappings(); await this.loadCosts();
+          this.$watch('currentTab', (tab) => {
+            if (tab === 'dashboard') this.$nextTick(() => this.renderStatusChart());
+            if (tab === 'costs') this.$nextTick(() => { this.renderCostBreakdownChart(); this.renderCostTimelineChart(); });
+          });
+          this.$nextTick(() => this.renderStatusChart());
+        },
+
+        async loadStatus() { try { const r = await fetch('/api/status'); this.status = await r.json(); } catch(e) {} },
+        async loadActivity() { try { const r = await fetch('/api/activity'); const d = await r.json(); this.activities = d.activities || []; } catch(e) {} },
+        async loadVideos() {
+          try {
+            const p = new URLSearchParams({ page: this.videoPage, page_size: 50, status: this.videoFilter, search: this.videoSearch });
+            const r = await fetch(`/api/videos?${p}`); const d = await r.json();
+            this.videos = d.videos || []; this.videoTotal = d.total || 0; this.videoTotalPages = d.total_pages || 1;
+          } catch(e) {}
+        },
+        async loadFieldMappings() { try { const r = await fetch('/api/field-mapping'); const d = await r.json(); this.fieldMappings = d.mappings || []; } catch(e) {} },
+        async loadCosts() {
+          try {
+            const r = await fetch('/api/costs', { headers: this._authHeaders() }); this.costData = await r.json();
+            const t = await fetch('/api/costs/timeline'); const td = await t.json(); this.costTimeline = td.timeline || [];
+          } catch(e) {}
+        },
+
+        async startMigration() {
+          this.migrationRunning = true; this.migrationEvents = [];
+          try {
+            await fetch('/api/migration/start', { method: 'POST', headers: this._authHeaders(), body: JSON.stringify({ batch_size: this.batchSize }) });
+            this.connectSSE();
+          } catch(e) { this.migrationRunning = false; }
+        },
+        async stopMigration() {
+          try { await fetch('/api/migration/stop', { method: 'POST', headers: this._authHeaders() }); } catch(e) {}
+          this.migrationRunning = false;
+          if (this.eventSource) { this.eventSource.close(); this.eventSource = null; }
+          if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
+        },
+        async retryFailed() {
+          try { const r = await fetch('/api/migration/retry', { method: 'POST', headers: this._authHeaders() }); const d = await r.json();
+            this.migrationEvents.push({ type: 'info', message: `Retry: ${d.message || JSON.stringify(d)}`, timestamp: new Date().toISOString() });
+          } catch(e) {}
+        },
+
+        connectSSE() {
+          if (this.eventSource) this.eventSource.close();
+          this.eventSource = new EventSource('/api/migration/stream');
+          let connected = false;
+          this.eventSource.onopen = () => { connected = true; };
+          this.eventSource.onmessage = (event) => {
+            try {
+              const data = JSON.parse(event.data);
+              if (data.type === 'heartbeat') return;
+              data.timestamp = new Date().toISOString();
+              this.migrationEvents.push(data);
+              if (data.type === 'migration_completed' || data.type === 'migration_stopped') {
+                this.migrationRunning = false; this.eventSource.close(); this.eventSource = null;
+                this.loadStatus(); this.loadCosts();
+              }
+              this.$nextTick(() => { const l = document.getElementById('logPanel'); if (l) l.scrollTop = l.scrollHeight; });
+            } catch(e) {}
+          };
+          this.eventSource.onerror = () => {
+            if (this.eventSource) { this.eventSource.close(); this.eventSource = null; }
+            if (!connected) { this.startPolling(); } else { this.migrationRunning = false; }
+          };
+        },
+
+        startPolling() {
+          this._pollIndex = 0;
+          this._pollTimer = setInterval(async () => {
+            try {
+              const r = await fetch(`/api/migration/poll?since=${this._pollIndex}`);
+              const d = await r.json();
+              for (const evt of d.events) {
+                if (evt.type === 'heartbeat') continue;
+                evt.timestamp = new Date().toISOString();
+                this.migrationEvents.push(evt);
+              }
+              this._pollIndex = d.next_index;
+              if (!d.migration_running) {
+                clearInterval(this._pollTimer); this._pollTimer = null;
+                this.migrationRunning = false; this.loadStatus(); this.loadCosts();
+              }
+              this.$nextTick(() => { const l = document.getElementById('logPanel'); if (l) l.scrollTop = l.scrollHeight; });
+            } catch(e) {}
+          }, 2000);
+        },
+
+        async sendChat() {
+          const msg = this.chatInput.trim(); if (!msg) return;
+          this.chatMessages.push({ role: 'user', content: msg }); this.chatInput = ''; this.chatLoading = true;
+          this.$nextTick(() => { const el = document.getElementById('chatMessages'); if (el) el.scrollTop = el.scrollHeight; });
+          try {
+            const r = await fetch('/api/chat', { method: 'POST', headers: this._authHeaders(), body: JSON.stringify({ message: msg }) });
+            const d = await r.json();
+            this.chatMessages.push({ role: 'assistant', content: d.response, tier: d.tier });
+          } catch(e) { this.chatMessages.push({ role: 'assistant', content: 'Error connecting to server.', tier: 0 }); }
+          this.chatLoading = false;
+          this.$nextTick(() => { const el = document.getElementById('chatMessages'); if (el) el.scrollTop = el.scrollHeight; });
+        },
+
+        async testConnection(svc) {
+          try { const r = await fetch('/api/settings/test', { method: 'POST', headers: this._authHeaders(), body: JSON.stringify({ service: svc }) });
+            const d = await r.json(); alert(JSON.stringify(d[svc] || d, null, 2));
+          } catch(e) { alert('Test failed: ' + e.message); }
+        },
+
+        async calculateProjection() {
+          try { const p = new URLSearchParams({ total_videos: this.projectionVideos, avg_size_mb: this.projectionSizeMb });
+            const r = await fetch(`/api/costs/projection?${p}`); this.projectionResult = await r.json();
+          } catch(e) {}
+        },
+
+        renderStatusChart() {
+          const ctx = document.getElementById('statusChart'); if (!ctx) return;
+          if (this.statusChart) this.statusChart.destroy();
+          const c = this.status.status_counts || {}; const labels = Object.keys(c); const data = Object.values(c);
+          const colors = labels.map(l => ({ pending:'#6366f1', completed:'#16a34a', failed:'#dc2626', downloading:'#2563eb', uploading:'#d97706', staged:'#7c3aed' })[l] || '#9ca3af');
+          this.statusChart = new Chart(ctx, { type: 'doughnut', data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0 }] },
+            options: { responsive: true, plugins: { legend: { position: 'right', labels: { color: '#6b7280', font: { size: 11 } } } } } });
+        },
+
+        renderCostBreakdownChart() {
+          const ctx = document.getElementById('costBreakdownChart'); if (!ctx) return;
+          if (this.costBreakdownChart) this.costBreakdownChart.destroy();
+          const b = this.costData.breakdown || {}; const labels = Object.keys(b).map(k => k.replace(/_/g, ' ')); const data = Object.values(b);
+          const colors = ['#6366f1','#3b82f6','#06b6d4','#8b5cf6','#d97706','#16a34a','#9ca3af','#9ca3af'];
+          this.costBreakdownChart = new Chart(ctx, { type: 'bar', data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0, borderRadius: 6 }] },
+            options: { responsive: true, indexAxis: 'y', plugins: { legend: { display: false } },
+              scales: { x: { ticks: { color: '#6b7280', callback: v => '$' + v.toFixed(2) }, grid: { color: '#f3f4f6' } }, y: { ticks: { color: '#6b7280', font: { size: 11 } }, grid: { display: false } } } } });
+        },
+
+        renderCostTimelineChart() {
+          const ctx = document.getElementById('costTimelineChart'); if (!ctx) return;
+          if (this.costTimelineChart) this.costTimelineChart.destroy();
+          const tl = this.costTimeline || []; const labels = tl.map(t => t.date.slice(5)); const data = tl.map(t => t.cost);
+          this.costTimelineChart = new Chart(ctx, { type: 'line', data: { labels, datasets: [{ data, borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.08)', fill: true, tension: 0.4, pointRadius: 3, pointBackgroundColor: '#6366f1', borderWidth: 2 }] },
+            options: { responsive: true, plugins: { legend: { display: false } },
+              scales: { x: { ticks: { color: '#6b7280', font: { size: 10 } }, grid: { color: '#f3f4f6' } }, y: { ticks: { color: '#6b7280', callback: v => '$' + v.toFixed(2) }, grid: { color: '#f3f4f6' } } } } });
+        },
+
+        formatDuration(s) { if (!s) return '0:00'; const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60; return h>0?`${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`:`${m}:${String(sec).padStart(2,'0')}`; },
+        timeAgo(ts) { if (!ts) return ''; const d=(Date.now()-new Date(ts).getTime())/1000; if(d<60)return 'just now'; if(d<3600)return Math.floor(d/60)+'m ago'; if(d<86400)return Math.floor(d/3600)+'h ago'; return Math.floor(d/86400)+'d ago'; },
+        statusBadge(s) { return { completed:'bg-green-50 text-green-700', failed:'bg-red-50 text-red-700', pending:'bg-gray-100 text-gray-600', downloading:'bg-blue-50 text-blue-700', uploading:'bg-amber-50 text-amber-700', staged:'bg-purple-50 text-purple-700' }[s] || 'bg-gray-100 text-gray-600'; },
+        getCostRate(s) { return { s3_storage:'$0.023/GB/mo', s3_transfer:'$0.09/GB', s3_requests:'$0.005/1K PUT', dynamodb:'$1.25/M writes', lambda:'$0.20/M req', ai_assistant:'$0.003/1K tokens', zoom_api:'Free (license)', kaltura_api:'Free (license)' }[s] || ''; },
+        renderMarkdown(t) {
+          if(!t)return '';
+          // Escape HTML first to prevent XSS
+          const esc = t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;');
+          return esc.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/`([^`]+)`/g,'<code class="bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded text-xs font-mono">$1</code>').replace(/^- (.+)$/gm,'<li class="ml-4">$1</li>').replace(/\n/g,'<br>');
+        },
+      };
+    }
+  </script>
+</body>
+</html>

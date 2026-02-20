@@ -1,0 +1,18 @@
+# LocalStack for pipeline testing (S3-compatible local storage)
+# Usage: docker compose -f docker-compose.test.yml up -d
+# Then:  python run.py test --with-s3
+
+services:
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3
+      - DEFAULT_REGION=us-east-1
+      - DEBUG=0
+    volumes:
+      - localstack_data:/var/lib/localstack
+
+volumes:
+  localstack_data:
