@@ -2381,6 +2381,10 @@ async def update_settings(request: Request, user: dict = Depends(_verify_jwt)):
     """Write settings to .env and reinitialize the pipeline."""
     body = await request.json()
 
+    # Strip read-only fields that the frontend may echo back from GET
+    body.pop("demo_mode", None)
+    body.pop("connections", None)
+
     # Validate: only accept known field keys
     unknown = set(body.keys()) - set(_SETTINGS_FIELDS.keys())
     if unknown:
