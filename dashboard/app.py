@@ -2362,11 +2362,12 @@ async def test_connections(request: Request, user: dict = Depends(_verify_jwt)):
 
 @app.get("/api/settings")
 async def get_settings(user: dict = Depends(_verify_jwt)):
-    """Return current settings from .env, masking secret values."""
+    """Return current settings from .env, falling back to OS environment variables."""
     env_vals = dotenv_values(str(_ENV_FILE)) if _ENV_FILE.exists() else {}
     result = {}
     for field_key, meta in _SETTINGS_FIELDS.items():
-        raw = env_vals.get(meta["env"], "")
+        # Try .env file first, then fall back to OS environment (Vercel env vars)
+        raw = env_vals.get(meta["env"], "") or os.environ.get(meta["env"], "")
         if meta["secret"] and raw:
             result[field_key] = _MASK
         else:
