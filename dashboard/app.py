@@ -1618,6 +1618,112 @@ async def list_zoom_clips(
         )
 
 
+# ── Zoom Events API endpoints ──
+
+@app.get("/api/zoom/hubs")
+async def list_zoom_hubs(user: dict = Depends(_verify_jwt)):
+    """List Zoom Events hubs."""
+    if _demo_mode or _pipeline is None:
+        return {"hubs": []}
+    try:
+        hubs = _pipeline.zoom.list_hubs()
+        return {"hubs": hubs}
+    except Exception as e:
+        logger.error("Failed to list Zoom hubs: %s", e)
+        return JSONResponse({"error": f"Failed to list hubs: {e}"}, status_code=500)
+
+
+@app.get("/api/zoom/hubs/{hub_id}/videos")
+async def list_hub_videos(
+    hub_id: str,
+    page_size: int = Query(50, ge=1, le=300),
+    next_page_token: str = Query("", max_length=500),
+    user: dict = Depends(_verify_jwt),
+):
+    """List videos in a Zoom Events hub."""
+    if _demo_mode or _pipeline is None:
+        return {"videos": [], "total_records": 0}
+    try:
+        result = _pipeline.zoom.list_hub_videos(
+            hub_id, page_size=page_size,
+            next_page_token=next_page_token or None,
+        )
+        return result
+    except Exception as e:
+        logger.error("Failed to list hub videos: %s", e)
+        return JSONResponse({"error": f"Failed to list hub videos: {e}"}, status_code=500)
+
+
+@app.get("/api/zoom/hubs/{hub_id}/vod_channels")
+async def list_vod_channels(hub_id: str, user: dict = Depends(_verify_jwt)):
+    """List VOD channels in a Zoom Events hub."""
+    if _demo_mode or _pipeline is None:
+        return {"vod_channels": []}
+    try:
+        channels = _pipeline.zoom.list_vod_channels(hub_id)
+        return {"vod_channels": channels}
+    except Exception as e:
+        logger.error("Failed to list VOD channels: %s", e)
+        return JSONResponse({"error": f"Failed to list VOD channels: {e}"}, status_code=500)
+
+
+class CreateVodChannelRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=75)
+    channel_type: str = Field("on_demand", pattern="^(on_demand|live)$")
+    description: str = ""
+
+
+@app.post("/api/zoom/hubs/{hub_id}/vod_channels")
+async def create_vod_channel(hub_id: str, req: CreateVodChannelRequest, user: dict = Depends(_verify_jwt)):
+    """Create a VOD channel on a Zoom Events hub."""
+    if _demo_mode or _pipeline is None:
+        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+    try:
+        result = _pipeline.zoom.create_vod_channel(
+            hub_id, name=req.name,
+            channel_type=req.channel_type,
+            description=req.description,
+        )
+        return result
+    except Exception as e:
+        logger.error("Failed to create VOD channel: %s", e)
+        return JSONResponse({"error": f"Failed to create VOD channel: {e}"}, status_code=500)
+
+
+class AddToVodChannelRequest(BaseModel):
+    video_ids: List[str] = Field(..., min_length=1, max_length=30)
+
+
+@app.post("/api/zoom/hubs/{hub_id}/vod_channels/{channel_id}/videos")
+async def add_videos_to_vod_channel(
+    hub_id: str, channel_id: str,
+    req: AddToVodChannelRequest,
+    user: dict = Depends(_verify_jwt),
+):
+    """Add videos to a VOD channel."""
+    if _demo_mode or _pipeline is None:
+        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+    try:
+        result = _pipeline.zoom.add_to_vod_channel(hub_id, channel_id, req.video_ids)
+        return result
+    except Exception as e:
+        logger.error("Failed to add videos to VOD channel: %s", e)
+        return JSONResponse({"error": f"Failed to add to VOD channel: {e}"}, status_code=500)
+
+
+@app.get("/api/zoom/events/video/{video_id}/metadata")
+async def get_events_video_metadata(video_id: str, user: dict = Depends(_verify_jwt)):
+    """Get metadata for a Zoom Events video."""
+    if _demo_mode or _pipeline is None:
+        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+    try:
+        result = _pipeline.zoom.get_events_metadata(video_id)
+        return result
+    except Exception as e:
+        logger.error("Failed to get Events video metadata: %s", e)
+        return JSONResponse({"error": f"Failed to get metadata: {e}"}, status_code=500)
+
+
 @app.get("/api/videos/{video_id}")
 async def get_video(video_id: str, user: dict = Depends(_verify_jwt)):
     if _demo_mode:

@@ -855,13 +855,46 @@
             <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="The app secret from your Zoom app. Keep this private.">App Secret</label><input type="password" x-model="settings.zoom_client_secret" placeholder="*************" class="input-field mt-1.5"></div>
             <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Your Zoom organization's account ID. Found in Zoom Admin > Account Profile.">Account ID</label><input type="text" x-model="settings.zoom_account_id" placeholder="Zoom Account ID" class="input-field mt-1.5"></div>
             <div>
-              <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="All uploads go through Zoom Clips API (the only Zoom API with file upload support). This label is for tracking/logging only.">Upload API</label>
+              <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Choose where videos are uploaded. Clips uses /clips/files. Events uses /zoom_events/files and supports VOD channels & hubs.">Upload Target</label>
               <select x-model="settings.zoom_target_api" class="input-field mt-1.5">
-                <option value="clips">Zoom Clips (Recommended)</option>
-                <option value="events">Zoom Events CMS (IFRS label)</option>
-                <option value="vm">Zoom Video Management (label only)</option>
+                <option value="clips">Zoom Clips</option>
+                <option value="events">Zoom Events (VOD Channels)</option>
               </select>
-              <p class="text-[10px] text-gray-400 mt-1">All uploads use Clips API at fileapi.zoom.us — this setting is for tracking only.</p>
+              <p class="text-[10px] text-gray-400 mt-1" x-show="settings.zoom_target_api === 'clips'">Uploads to Zoom Clips API. Videos appear in Zoom Clips library.</p>
+              <p class="text-[10px] text-gray-400 mt-1" x-show="settings.zoom_target_api === 'events'">Uploads to Zoom Events API. Videos can be organized into VOD channels on hubs. <strong>Requires zoom_events_file:write scope.</strong></p>
+            </div>
+            <!-- Hub / VOD Channel selection (Events mode only) -->
+            <div x-show="settings.zoom_target_api === 'events'" x-transition class="bg-blue-50 rounded-xl p-4 space-y-3 border border-blue-100">
+              <div class="flex items-center gap-2 mb-1">
+                <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+                <span class="text-xs font-bold text-blue-700">Events Hub & Channel</span>
+              </div>
+              <button @click="loadZoomHubs()" class="text-xs text-blue-600 hover:text-blue-700 font-semibold px-3 py-1.5 rounded-lg bg-white border border-blue-200 hover:bg-blue-50 transition-colors">
+                Load Hubs
+              </button>
+              <div x-show="zoomHubs.length > 0">
+                <label class="text-[10px] text-gray-500 font-semibold uppercase">Hub</label>
+                <select x-model="selectedHubId" @change="loadVodChannels()" class="input-field mt-1 text-xs">
+                  <option value="">— Select Hub —</option>
+                  <template x-for="h in zoomHubs" :key="h.hub_id">
+                    <option :value="h.hub_id" x-text="h.name || h.hub_id"></option>
+                  </template>
+                </select>
+              </div>
+              <div x-show="selectedHubId && zoomVodChannels.length > 0">
+                <label class="text-[10px] text-gray-500 font-semibold uppercase">VOD Channel</label>
+                <select x-model="selectedVodChannelId" class="input-field mt-1 text-xs">
+                  <option value="">— Select Channel —</option>
+                  <template x-for="ch in zoomVodChannels" :key="ch.channel_id">
+                    <option :value="ch.channel_id" x-text="ch.name || ch.channel_id"></option>
+                  </template>
+                </select>
+              </div>
+              <div x-show="selectedHubId" class="flex gap-2">
+                <button @click="loadHubVideos()" class="text-[10px] text-blue-600 hover:underline">View Hub Videos</button>
+                <span class="text-[10px] text-gray-300">|</span>
+                <span x-show="hubVideoCount >= 0" class="text-[10px] text-gray-500" x-text="hubVideoCount + ' videos in hub'"></span>
+              </div>
             </div>
           </div>
         </div>
@@ -1478,6 +1511,8 @@
         migKalturaVideos: [], migKalturaTotal: 0, migKalturaPage: 1, migKalturaTotalPages: 1, migKalturaSearch: '', migKalturaLoading: false, migKalturaExpanded: false, migKalturaPageSize: 30,
         migSelectedVideos: {},
         zoomCompletedVideos: [], zoomFailedVideos: [], zoomCompletedTotal: 0, zoomCompletedPage: 1, zoomCompletedTotalPages: 1, zoomLiveClips: [], zoomLiveClipsTotal: 0,
+        // Zoom Events hub/channel state
+        zoomHubs: [], selectedHubId: '', zoomVodChannels: [], selectedVodChannelId: '', hubVideoCount: -1,
         chatMessages: [{ role: 'assistant', content: 'Welcome! I can help you understand your migration. Try asking:\n\n- "How many videos are pending?"\n- "Show me failed videos"\n- "Estimate cost for 5000 videos"\n- "What formats are in the library?"', tier: 0 }],
         chatInput: '', chatLoading: false,
         statusChart: null,
@@ -2056,6 +2091,41 @@
               URL.revokeObjectURL(url);
             }
           } catch(e) {}
+        },
+
+        // ── Zoom Events Hub/Channel Management ──
+        async loadZoomHubs() {
+          try {
+            const r = await fetch('/api/zoom/hubs', { headers: this._authHeaders() });
+            if (r.ok) {
+              const d = await r.json();
+              this.zoomHubs = d.hubs || [];
+              if (this.zoomHubs.length === 0) alert('No Zoom Events hubs found. Make sure your Zoom account has Events enabled and the S2S app has zoom_events_hubs:read scope.');
+            } else {
+              const err = await r.json().catch(() => ({}));
+              alert('Failed to load hubs: ' + (err.error || r.statusText));
+            }
+          } catch(e) { alert('Failed to load hubs: ' + e.message); }
+        },
+        async loadVodChannels() {
+          if (!this.selectedHubId) { this.zoomVodChannels = []; return; }
+          try {
+            const r = await fetch(`/api/zoom/hubs/${this.selectedHubId}/vod_channels`, { headers: this._authHeaders() });
+            if (r.ok) {
+              const d = await r.json();
+              this.zoomVodChannels = d.vod_channels || [];
+            }
+          } catch(e) { console.warn('Failed to load VOD channels:', e); }
+        },
+        async loadHubVideos() {
+          if (!this.selectedHubId) return;
+          try {
+            const r = await fetch(`/api/zoom/hubs/${this.selectedHubId}/videos?page_size=1`, { headers: this._authHeaders() });
+            if (r.ok) {
+              const d = await r.json();
+              this.hubVideoCount = d.total_records || 0;
+            }
+          } catch(e) { console.warn('Failed to load hub videos:', e); }
         },
 
         async testConnection(svc) {

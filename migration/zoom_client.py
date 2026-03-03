@@ -1,17 +1,29 @@
 """
 Zoom API client for video migration.
 
-Uploads videos via the Zoom Clips API (the only Zoom API with file
-upload support). All upload requests go to https://fileapi.zoom.us — a
-separate file-upload host from the regular https://api.zoom.us REST API.
+Supports two upload targets:
+  1. Zoom Clips API  — POST /clips/files         (default)
+  2. Zoom Events API — POST /zoom_events/files    (for Zoom Events / VOD channels)
+
+Both use the same file-upload host: https://fileapi.zoom.us/v2
+(NOT the regular https://api.zoom.us REST API)
 
 Key limits (from Zoom docs):
  - Single upload: ≤ 2 GB, formats: .mp4 / .webm
  - Multipart upload: parts 5-100 MB each, numbers 1-100, completes in 7 days
  - Rate limit: 20 req/s, 50 uploads/user/24h
 
+Required scopes:
+ - Clips:  clip:write / clip:write:admin
+ - Events: zoom_events_file:write / zoom_events_file:write:admin
+ - Events metadata: zoom_events_videos:write:admin
+ - Events VOD channels: zoom_events_vod_channels:write:admin
+ - Events hubs: zoom_events_hubs:read:admin
+
 Authentication: OAuth 2.0 Server-to-Server (S2S)
-Docs: https://developers.zoom.us/docs/api/clips/
+Docs:
+  Clips:  https://developers.zoom.us/docs/api/clips/
+  Events: https://developers.zoom.us/docs/api/rest/reference/event/methods/
 """
 
 from __future__ import annotations
@@ -29,7 +41,7 @@ from .config import ZoomConfig
 logger = logging.getLogger(__name__)
 
 # File uploads use a dedicated host, NOT the regular api.zoom.us.
-# See: https://devforum.zoom.us/t/using-the-zoom-clip-api-to-upload-videos-via-google-drive/119984
+# Both Clips and Events file uploads go to this host.
 ZOOM_FILE_API = "https://fileapi.zoom.us/v2"
 
 
@@ -101,7 +113,9 @@ class ZoomClient:
             return resp.json()
         return {}
 
-    # ─── Zoom Clips API (video upload) ───
+    # ═══════════════════════════════════════════════════════════════════
+    #  ZOOM CLIPS API (video upload)
+    # ═══════════════════════════════════════════════════════════════════
     #
     # All file uploads go to fileapi.zoom.us, NOT api.zoom.us.
     # Docs: https://developers.zoom.us/docs/api/clips/
@@ -121,7 +135,7 @@ class ZoomClient:
         file_size = path.stat().st_size
 
         if file_size > 2 * 1024 * 1024 * 1024:  # 2 GB
-            return self._upload_multipart(file_path, title, description)
+            return self._upload_multipart_clips(file_path, title, description)
 
         url = f"{ZOOM_FILE_API}/clips/files"
 
@@ -139,7 +153,6 @@ class ZoomClient:
             resp = requests.post(url, headers=headers, data=encoder, timeout=600)
 
         if not resp.ok:
-            # Log full error details before raising — raise_for_status() discards the body
             logger.error(
                 "Zoom Clips upload failed: %d %s | Headers: %s | Body: %s",
                 resp.status_code, resp.reason,
@@ -154,16 +167,16 @@ class ZoomClient:
         # Set title/description via PATCH (upload endpoint doesn't accept metadata)
         if clip_id and (title or description):
             try:
-                self.set_metadata(clip_id, title=title, description=description)
+                self.set_clip_metadata(clip_id, title=title, description=description)
                 logger.info("Set metadata on clip %s: %s", clip_id, title)
             except Exception as e:
                 logger.warning("Failed to set metadata on clip %s (non-fatal): %s", clip_id, e)
 
         return result
 
-    def _upload_multipart(self, file_path: str, title: str, description: str = "") -> dict:
+    def _upload_multipart_clips(self, file_path: str, title: str, description: str = "") -> dict:
         """
-        Chunked multipart upload for files > 2 GB.
+        Chunked multipart upload for files > 2 GB via Clips API.
 
         Parts: 5-100 MB each (we use 50 MB), part numbers 1-100.
         All part uploads also go to fileapi.zoom.us.
@@ -173,7 +186,7 @@ class ZoomClient:
         file_size = path.stat().st_size
         part_size = 50 * 1024 * 1024  # 50 MB parts
 
-        # Initiate multipart upload — only event, file_size, file_name accepted
+        # Initiate multipart upload
         init_url = f"{ZOOM_FILE_API}/clips/files/multipart/upload_events"
         init_resp = requests.post(
             init_url,
@@ -190,7 +203,7 @@ class ZoomClient:
 
         upload_id = init_data.get("upload_id")
         total_parts = -(-file_size // part_size)
-        logger.info("Initiated multipart upload: %s (%d parts)", upload_id, total_parts)
+        logger.info("Initiated Clips multipart upload: %s (%d parts)", upload_id, total_parts)
 
         # Upload parts
         parts = []
@@ -231,58 +244,247 @@ class ZoomClient:
         result = complete_resp.json()
 
         clip_id = result.get("id", "")
-        logger.info("Completed multipart upload: %s", clip_id)
+        logger.info("Completed Clips multipart upload: %s", clip_id)
 
-        # Set title/description via PATCH (upload endpoints don't accept metadata)
         if clip_id and (title or description):
             try:
-                self.set_metadata(clip_id, title=title, description=description)
+                self.set_clip_metadata(clip_id, title=title, description=description)
                 logger.info("Set metadata on clip %s: %s", clip_id, title)
             except Exception as e:
                 logger.warning("Failed to set metadata on clip %s (non-fatal): %s", clip_id, e)
 
         return result
 
-    # ─── Unified upload method ───
+    # ═══════════════════════════════════════════════════════════════════
+    #  ZOOM EVENTS API (video upload)
+    # ═══════════════════════════════════════════════════════════════════
     #
-    # The Zoom Clips API at fileapi.zoom.us is the ONLY Zoom API that
-    # supports file uploads. The Events and Video Management APIs do NOT
-    # have upload endpoints (confirmed via official Zoom API spec & developer
-    # forum). All uploads route through upload_video_clips() regardless of
-    # the config.target_api setting.
+    # File uploads go to fileapi.zoom.us/v2/zoom_events/files
+    # (NOT api.zoom.us — same pattern as Clips)
     #
-    # If Zoom adds upload support to Events or VM in the future, add new
-    # methods and update upload_video() to route accordingly.
+    # The Events API accepts video uploads and returns a video_id which
+    # can then be organized into VOD channels on a hub.
+    #
+    # Scopes required: zoom_events_file:write / zoom_events_file:write:admin
+    # Spec: ZoomEventsAPISpec.json — operationId: uploadEventFile
+
+    def upload_video_events(self, file_path: str, title: str, description: str = "",
+                            hub_id: str = "", tags: list[str] | None = None) -> dict:
+        """
+        Upload a video via the Zoom Events API.
+
+        POST https://fileapi.zoom.us/v2/zoom_events/files
+        Max 2 GB single upload. Formats: .mp4, .webm
+
+        The upload returns { file_id, video_id }.  After upload, metadata
+        (title, description, tags) is set via PATCH /zoom_events/videos/{videoId}/metadata.
+
+        For files > 2 GB, automatically uses multipart upload.
+
+        Parameters
+        ----------
+        file_path : str
+            Path to the video file (.mp4 or .webm).
+        title : str
+            Video title (set via metadata PATCH after upload).
+        description : str
+            Video description.
+        hub_id : str, optional
+            Hub ID to associate the upload with (used in multipart initiation).
+        tags : list[str], optional
+            Tags to set on the video after upload.
+        """
+        path = Path(file_path)
+        file_size = path.stat().st_size
+
+        if file_size > 2 * 1024 * 1024 * 1024:  # 2 GB
+            return self._upload_multipart_events(file_path, title, description,
+                                                  hub_id=hub_id, tags=tags)
+
+        url = f"{ZOOM_FILE_API}/zoom_events/files"
+
+        with open(path, "rb") as f:
+            encoder = MultipartEncoder(fields={
+                "file": (path.name, f, "video/mp4"),
+            })
+            headers = {**self._headers(), "Content-Type": encoder.content_type}
+
+            logger.info(
+                "Uploading %.1f MB to Zoom Events (%s): %s",
+                file_size / (1024 * 1024), url, title,
+            )
+            # Must follow redirects and retain Authorization header
+            resp = requests.post(
+                url, headers=headers, data=encoder,
+                timeout=600, allow_redirects=True,
+            )
+
+        if not resp.ok:
+            logger.error(
+                "Zoom Events upload failed: %d %s | Body: %s",
+                resp.status_code, resp.reason, resp.text[:2000],
+            )
+        resp.raise_for_status()
+        result = resp.json()
+
+        file_id = result.get("file_id", "")
+        video_id = result.get("video_id", "")
+        logger.info("Uploaded to Zoom Events: file_id=%s, video_id=%s", file_id, video_id)
+
+        # Set metadata via Events API (title, description, tags)
+        if video_id and (title or description or tags):
+            try:
+                self.set_events_metadata(video_id, title=title, description=description, tags=tags)
+                logger.info("Set Events metadata on video %s: %s", video_id, title)
+            except Exception as e:
+                logger.warning("Failed to set Events metadata on %s (non-fatal): %s", video_id, e)
+
+        return result
+
+    def _upload_multipart_events(self, file_path: str, title: str, description: str = "",
+                                  hub_id: str = "", tags: list[str] | None = None) -> dict:
+        """
+        Chunked multipart upload for files > 2 GB via Events API.
+
+        Flow:
+        1. POST /zoom_events/files/multipart/upload  {"method": "CreateMultipartUpload", ...}
+           → returns { upload_id }
+        2. POST /zoom_events/files/multipart  (for each part: file + upload_context + part_number)
+           → returns { part_number_etag: { part_number, etag } }
+        3. POST /zoom_events/files/multipart/upload  {"method": "CompleteMultipartUpload", ...}
+           → returns { file_id, video_id }
+        """
+        path = Path(file_path)
+        file_size = path.stat().st_size
+        part_size = 50 * 1024 * 1024  # 50 MB parts
+
+        # Step 1: Initiate multipart upload
+        init_url = f"{ZOOM_FILE_API}/zoom_events/files/multipart/upload"
+        init_body: dict[str, Any] = {
+            "method": "CreateMultipartUpload",
+            "file_name": path.name,
+            "file_length": str(file_size),
+            "file_type": "recording",  # VOD content
+        }
+        if hub_id:
+            init_body["hub_id"] = hub_id
+
+        init_resp = requests.post(
+            init_url,
+            headers={**self._headers(), "Content-Type": "application/json"},
+            json=init_body,
+            timeout=60,
+        )
+        if not init_resp.ok:
+            logger.error("Events multipart initiation failed: %d %s | %s",
+                         init_resp.status_code, init_resp.reason, init_resp.text[:1000])
+        init_resp.raise_for_status()
+        init_data = init_resp.json()
+
+        upload_id = init_data.get("upload_id", "")
+        total_parts = -(-file_size // part_size)
+        logger.info("Initiated Events multipart upload: %s (%d parts)", upload_id, total_parts)
+
+        # Step 2: Upload parts
+        part_num = 1
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(part_size)
+                if not chunk:
+                    break
+
+                part_url = f"{ZOOM_FILE_API}/zoom_events/files/multipart"
+                with requests.post(
+                    part_url,
+                    files={"file": (f"part{part_num}", chunk, "application/octet-stream")},
+                    data={
+                        "upload_context": upload_id,
+                        "part_number": part_num,
+                    },
+                    headers=self._headers(),
+                    timeout=300,
+                ) as part_resp:
+                    if not part_resp.ok:
+                        logger.error("Events part %d upload failed: %d %s",
+                                     part_num, part_resp.status_code, part_resp.text[:500])
+                    part_resp.raise_for_status()
+                    logger.debug("Uploaded Events part %d/%d", part_num, total_parts)
+                part_num += 1
+
+        # Step 3: Complete multipart upload
+        complete_url = f"{ZOOM_FILE_API}/zoom_events/files/multipart/upload"
+        complete_resp = requests.post(
+            complete_url,
+            headers={**self._headers(), "Content-Type": "application/json"},
+            json={
+                "method": "CompleteMultipartUpload",
+                "upload_id": upload_id,
+                "part_count": str(part_num - 1),
+            },
+            timeout=60,
+        )
+        if not complete_resp.ok:
+            logger.error("Events multipart completion failed: %d %s | %s",
+                         complete_resp.status_code, complete_resp.reason, complete_resp.text[:1000])
+        complete_resp.raise_for_status()
+        result = complete_resp.json()
+
+        file_id = result.get("file_id", "")
+        video_id = result.get("video_id", "")
+        logger.info("Completed Events multipart upload: file_id=%s, video_id=%s", file_id, video_id)
+
+        # Set metadata
+        if video_id and (title or description or tags):
+            try:
+                self.set_events_metadata(video_id, title=title, description=description, tags=tags)
+            except Exception as e:
+                logger.warning("Failed to set Events metadata on %s (non-fatal): %s", video_id, e)
+
+        return result
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  UNIFIED UPLOAD METHOD
+    # ═══════════════════════════════════════════════════════════════════
+    #
+    # Routes to Clips or Events based on config.target_api:
+    #   "clips"  → upload_video_clips()    (default)
+    #   "events" → upload_video_events()   (for Zoom Events / VOD channels)
 
     def upload_video(self, file_path: str, title: str, description: str = "", **kwargs) -> dict:
         """
         Upload a video to Zoom.
 
-        All uploads go through the Zoom Clips API at fileapi.zoom.us —
-        the only Zoom API with file upload support. The config.target_api
-        setting ("events", "vm", "clips") is logged for tracking but does
-        not change the upload destination.
+        Routes to the correct API based on config.target_api:
+          - "clips"  → Zoom Clips API  (POST /clips/files)
+          - "events" → Zoom Events API (POST /zoom_events/files)
 
-        Files ≤ 2 GB: single streaming POST to /clips/files
-        Files > 2 GB: chunked multipart via /clips/files/multipart
+        Both use fileapi.zoom.us for the actual file transfer.
+
+        Files ≤ 2 GB: single streaming POST
+        Files > 2 GB: chunked multipart upload
         """
         target = self.config.target_api
         file_size_mb = Path(file_path).stat().st_size / (1024 * 1024)
 
-        if target != "clips":
-            logger.info(
-                "target_api=%s but Clips is the only upload API. "
-                "Uploading %.1f MB via Clips API: %s",
-                target, file_size_mb, title,
+        if target == "events":
+            logger.info("Uploading %.1f MB via Zoom Events API: %s", file_size_mb, title)
+            return self.upload_video_events(
+                file_path, title, description,
+                hub_id=kwargs.get("hub_id", ""),
+                tags=kwargs.get("tags"),
             )
+        else:
+            if target not in ("clips", ""):
+                logger.info("target_api=%s — defaulting to Clips API", target)
+            return self.upload_video_clips(file_path, title, description)
 
-        return self.upload_video_clips(file_path, title, description)
+    # ═══════════════════════════════════════════════════════════════════
+    #  CLIPS METADATA
+    # ═══════════════════════════════════════════════════════════════════
 
-    # ─── Metadata management ───
-
-    def set_metadata(self, video_id: str, title: str = "", description: str = "",
-                     scope: str = "SAME_ORGANIZATION") -> dict:
-        """Update metadata on an uploaded video."""
+    def set_clip_metadata(self, video_id: str, title: str = "", description: str = "",
+                          scope: str = "SAME_ORGANIZATION") -> dict:
+        """Update metadata on an uploaded Clips video."""
         payload = {}
         if title:
             payload["title"] = title
@@ -293,7 +495,105 @@ class ZoomClient:
 
         return self._api_call("PATCH", f"/clips/{video_id}", json=payload)
 
-    # ─── Clip listing ───
+    # Backward compat alias
+    set_metadata = set_clip_metadata
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  EVENTS METADATA & VOD CHANNEL MANAGEMENT
+    # ═══════════════════════════════════════════════════════════════════
+    #
+    # After uploading via Events API, the video_id can be used to:
+    #   1. Set metadata (title, description, tags)
+    #   2. Add to a VOD channel on a hub
+    #
+    # Scopes: zoom_events_videos:write:admin, zoom_events_vod_channels:write:admin
+
+    def set_events_metadata(self, video_id: str, title: str = "",
+                            description: str = "", tags: list[str] | None = None) -> dict:
+        """Update metadata on a Zoom Events video.
+
+        PATCH /zoom_events/videos/{videoId}/metadata
+        """
+        payload: dict[str, Any] = {}
+        if title:
+            payload["title"] = title
+        if description:
+            payload["description"] = description
+        if tags:
+            payload["tags"] = tags[:20]  # API max 20 tags
+
+        if not payload:
+            return {}
+
+        return self._api_call("PATCH", f"/zoom_events/videos/{video_id}/metadata", json=payload)
+
+    def get_events_metadata(self, video_id: str) -> dict:
+        """Get metadata for a Zoom Events video.
+
+        GET /zoom_events/videos/{videoId}/metadata
+        Returns: { title, description, duration, created_at, updated_at, tags }
+        """
+        return self._api_call("GET", f"/zoom_events/videos/{video_id}/metadata")
+
+    def list_hubs(self) -> list[dict]:
+        """List all Zoom Events hubs.
+
+        GET /zoom_events/hubs
+        Returns list of { hub_id, name, ... }
+        """
+        result = self._api_call("GET", "/zoom_events/hubs")
+        return result.get("hubs", [])
+
+    def list_hub_videos(self, hub_id: str, page_size: int = 50,
+                        next_page_token: str | None = None) -> dict:
+        """List videos in a hub.
+
+        GET /zoom_events/hubs/{hubId}/videos
+        Returns { total_records, next_page_token, videos: [...] }
+        """
+        params: dict[str, Any] = {"page_size": min(page_size, 300)}
+        if next_page_token:
+            params["next_page_token"] = next_page_token
+        return self._api_call("GET", f"/zoom_events/hubs/{hub_id}/videos", params=params)
+
+    def list_vod_channels(self, hub_id: str) -> list[dict]:
+        """List VOD channels in a hub.
+
+        GET /zoom_events/hubs/{hubId}/vod_channels
+        Returns list of { channel_id, name, type, ... }
+        """
+        result = self._api_call("GET", f"/zoom_events/hubs/{hub_id}/vod_channels")
+        return result.get("vod_channels", [])
+
+    def create_vod_channel(self, hub_id: str, name: str,
+                           channel_type: str = "on_demand",
+                           description: str = "") -> dict:
+        """Create a VOD channel on a hub.
+
+        POST /zoom_events/hubs/{hubId}/vod_channels
+        channel_type: "on_demand" or "live"
+        Returns { channel_id, name, ... }
+        """
+        payload: dict[str, Any] = {"name": name, "type": channel_type}
+        if description:
+            payload["description"] = description
+        return self._api_call("POST", f"/zoom_events/hubs/{hub_id}/vod_channels", json=payload)
+
+    def add_to_vod_channel(self, hub_id: str, channel_id: str, video_ids: list[str]) -> dict:
+        """Add videos to a VOD channel.
+
+        POST /zoom_events/hubs/{hubId}/vod_channels/{channelId}/videos
+        video_ids: list of video IDs (max 30 per call)
+        """
+        return self._api_call(
+            "POST",
+            f"/zoom_events/hubs/{hub_id}/vod_channels/{channel_id}/videos",
+            json={"video_ids": video_ids[:30]},
+        )
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  CLIP LISTING
+    # ═══════════════════════════════════════════════════════════════════
 
     def list_clips(self, page_size: int = 50, next_page_token: str | None = None) -> dict:
         """List clips in the account.
