@@ -1831,6 +1831,17 @@ async def get_reconciliation(user: dict = Depends(_verify_jwt)):
     except Exception as e:
         logger.warning("Reconciliation: failed to query Kaltura: %s", e)
 
+    # ── 1b. Get live Zoom clips count (ground truth) ──
+    zoom_live_total = 0
+    zoom_live_clips: list[dict] = []
+    try:
+        if _pipeline and hasattr(_pipeline, "zoom"):
+            zr = _pipeline.zoom.list_clips(page_size=50)
+            zoom_live_total = zr.get("total_records", 0)
+            zoom_live_clips = zr.get("clips", [])
+    except Exception as e:
+        logger.warning("Reconciliation: failed to query Zoom clips: %s", e)
+
     # ── 2. Build per-video status from audit events ──
     video_states: dict[str, dict] = {}
     all_audit_events = _audit_store._read_all()
@@ -1962,13 +1973,24 @@ async def get_reconciliation(user: dict = Depends(_verify_jwt)):
         },
         "destination": {
             "system": "Zoom",
-            "count": len(destination_videos),
+            "count": max(len(destination_videos), zoom_live_total),
             "videos": destination_videos[:100],
             "total_size_gb": _size_gb(destination_videos),
+            "zoom_api_total": zoom_live_total,
+            "zoom_api_clips": [
+                {
+                    "id": c.get("id") or c.get("clip_id", ""),
+                    "title": c.get("title") or c.get("clip_name", "Untitled"),
+                    "created_at": c.get("created_at", ""),
+                    "duration": c.get("duration", 0),
+                }
+                for c in zoom_live_clips[:50]
+            ],
         },
         "issues": issue_videos[:100],
         "summary": summary,
         "total": kaltura_total or len(video_states),
+        "zoom_live_total": zoom_live_total,
         "demo_mode": False,
     }
 

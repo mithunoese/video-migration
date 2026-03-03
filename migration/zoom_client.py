@@ -302,7 +302,7 @@ class ZoomClient:
         differently from user-level OAuth:
           1. GET /clips (Clips API)
           2. GET /clips with scope=shared
-          3. GET /videomanagement/videos (Video Management API)
+          3. GET /video_management/videos (Video Management API)
 
         Returns dict with 'clips' (list), 'next_page_token', 'total_records'.
         """
@@ -336,12 +336,12 @@ class ZoomClient:
         # Attempt 3: Try Video Management API
         if total > 0 and not clips:
             try:
-                vm_result = self._api_call("GET", "/videomanagement/videos", params={"page_size": min(page_size, 100)})
+                vm_result = self._api_call("GET", "/video_management/videos", params={"page_size": min(page_size, 100)})
                 vm_videos = vm_result.get("videos", [])
                 if vm_videos:
                     clips = vm_videos
                     total = vm_result.get("total_records", len(vm_videos))
-                    logger.info("GET /videomanagement/videos returned %d videos", len(clips))
+                    logger.info("GET /video_management/videos returned %d videos", len(clips))
             except Exception as e:
                 logger.debug("Video Management API not available: %s", e)
 
@@ -363,12 +363,12 @@ class ZoomClient:
 
     def list_channels(self) -> list[dict]:
         """List all Video Management channels."""
-        result = self._api_call("GET", "/videomanagement/channels")
+        result = self._api_call("GET", "/video_management/channels")
         return result.get("channels", [])
 
     def assign_to_channel(self, video_id: str, channel_id: str) -> dict:
         """Assign a video to a channel."""
-        return self._api_call("POST", f"/videomanagement/channels/{channel_id}/videos", json={
+        return self._api_call("POST", f"/video_management/channels/{channel_id}/videos", json={
             "video_ids": [video_id],
         })
 
@@ -414,20 +414,20 @@ class ZoomClient:
         field_type : str
             Field type: "text", "number", "date", "dropdown".
         """
-        return self._api_call("POST", "/videomanagement/custom_fields", json={
+        return self._api_call("POST", "/video_management/custom_fields", json={
             "field_name": field_name,
             "field_type": field_type,
         })
 
     def set_custom_field_value(self, video_id: str, field_id: str, value: str) -> dict:
         """Set a custom field value on a video."""
-        return self._api_call("PATCH", f"/videomanagement/videos/{video_id}/custom_fields/{field_id}", json={
+        return self._api_call("PATCH", f"/video_management/videos/{video_id}/custom_fields/{field_id}", json={
             "value": value,
         })
 
     def list_custom_fields(self) -> list[dict]:
         """List all custom metadata fields."""
-        result = self._api_call("GET", "/videomanagement/custom_fields")
+        result = self._api_call("GET", "/video_management/custom_fields")
         return result.get("custom_fields", [])
 
     # ─── Utility ───
