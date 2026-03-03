@@ -199,6 +199,8 @@ _SETTINGS_FIELDS = {
     "kaltura_partner_id":   {"env": "KALTURA_PARTNER_ID",   "secret": False},
     "kaltura_admin_secret":  {"env": "KALTURA_ADMIN_SECRET",  "secret": True},
     "kaltura_user_id":       {"env": "KALTURA_USER_ID",       "secret": False},
+    "aws_access_key_id":     {"env": "AWS_ACCESS_KEY_ID",     "secret": False},
+    "aws_secret_access_key": {"env": "AWS_SECRET_ACCESS_KEY", "secret": True},
     "aws_s3_bucket":         {"env": "AWS_S3_BUCKET",         "secret": False},
     "aws_region":            {"env": "AWS_REGION",            "secret": False},
     "aws_state_table":       {"env": "AWS_STATE_TABLE",       "secret": False},

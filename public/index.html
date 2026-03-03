@@ -767,6 +767,8 @@
           </div>
           <div x-show="settings.skip_s3 !== 'true'" class="space-y-4">
             <p class="text-xs text-gray-400 leading-relaxed">Secure staging area. Videos are temporarily stored here during transfer. Recommended for large migrations (30K+ videos).</p>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Your AWS IAM access key ID. Found in AWS Console > IAM > Security Credentials.">Access Key ID</label><input type="text" x-model="settings.aws_access_key_id" placeholder="AKIA..." class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Your AWS IAM secret access key. Treat this like a password.">Secret Access Key</label><input type="password" x-model="settings.aws_secret_access_key" placeholder="••••••••" class="input-field mt-1.5"></div>
             <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="The name of the Amazon cloud storage container where videos are temporarily held during transfer.">Cloud Storage Bucket</label><input type="text" x-model="settings.aws_s3_bucket" placeholder="my-migration-bucket" class="input-field mt-1.5"></div>
             <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="The Amazon data center location, e.g. us-east-1 (Virginia). Use the same region as your storage bucket.">Region</label><input type="text" x-model="settings.aws_region" placeholder="us-east-1" class="input-field mt-1.5"></div>
             <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="A cloud database that tracks the progress of each video. Created automatically during setup.">Progress Database</label><input type="text" x-model="settings.aws_state_table" placeholder="video-migration-state" class="input-field mt-1.5"></div>
@@ -1409,6 +1411,7 @@
         // Settings persistence
         settings: {
           kaltura_partner_id: '', kaltura_admin_secret: '', kaltura_user_id: '',
+          aws_access_key_id: '', aws_secret_access_key: '',
           aws_s3_bucket: '', aws_region: 'us-east-1', aws_state_table: 'video-migration-state', aws_endpoint_url: '',
           zoom_client_id: '', zoom_client_secret: '', zoom_account_id: '',
           zoom_target_api: 'clips',
