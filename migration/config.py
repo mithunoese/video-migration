@@ -16,6 +16,17 @@ except ImportError:
     pass
 
 
+def _int_or_default(env_var: str, default: int) -> int:
+    """Read an env var as int, returning *default* for empty/missing/invalid values."""
+    raw = os.getenv(env_var, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
 @dataclass
 class KalturaConfig:
     partner_id: str = ""
@@ -59,8 +70,12 @@ class ZoomConfig:
     client_id: str = ""
     client_secret: str = ""
     account_id: str = ""
-    # Target API: "events" for Zoom Events CMS, "vm" for Video Management
-    target_api: str = "events"
+    # Target API label — all uploads go through Clips (the only upload API).
+    # This field is kept for tracking/logging which project the upload is for.
+    # Values: "clips" (default), "events" (IFRS), "vm" (Video Management)
+    target_api: str = "clips"
+    # REST API base URL (for metadata, channels, etc. — NOT for uploads).
+    # File uploads always go to https://fileapi.zoom.us/v2 via ZoomClient.
     base_url: str = "https://api.zoom.us/v2"
 
     @classmethod
@@ -69,7 +84,7 @@ class ZoomConfig:
             client_id=os.getenv("ZOOM_CLIENT_ID", ""),
             client_secret=os.getenv("ZOOM_CLIENT_SECRET", ""),
             account_id=os.getenv("ZOOM_ACCOUNT_ID", ""),
-            target_api=os.getenv("ZOOM_TARGET_API", "events"),
+            target_api=os.getenv("ZOOM_TARGET_API", "clips"),
         )
 
 
@@ -85,12 +100,12 @@ class PipelineConfig:
     @classmethod
     def from_env(cls):
         return cls(
-            batch_size=int(os.getenv("BATCH_SIZE", "10")),
-            max_concurrency=int(os.getenv("MAX_CONCURRENCY", "5")),
-            retry_attempts=int(os.getenv("RETRY_ATTEMPTS", "3")),
-            retry_delay=int(os.getenv("RETRY_DELAY", "5")),
-            download_dir=os.getenv("DOWNLOAD_DIR", "/tmp/video-migration"),
-            log_level=os.getenv("LOG_LEVEL", "INFO"),
+            batch_size=min(_int_or_default("BATCH_SIZE", 10), 500),
+            max_concurrency=min(_int_or_default("MAX_CONCURRENCY", 5), 20),
+            retry_attempts=min(_int_or_default("RETRY_ATTEMPTS", 3), 10),
+            retry_delay=_int_or_default("RETRY_DELAY", 5),
+            download_dir=os.getenv("DOWNLOAD_DIR", "/tmp/video-migration") or "/tmp/video-migration",
+            log_level=os.getenv("LOG_LEVEL", "INFO") or "INFO",
         )
 
 
@@ -130,6 +145,11 @@ class Config:
             ),
         )
 
+    @property
+    def skip_s3(self) -> bool:
+        """Whether to skip S3 staging (direct Kaltura → Zoom)."""
+        return os.getenv("SKIP_S3", "").strip().lower() in ("true", "1", "yes")
+
     def validate(self) -> list[str]:
         """Return list of missing required config values."""
         missing = []
@@ -137,7 +157,8 @@ class Config:
             missing.append("KALTURA_PARTNER_ID")
         if not self.kaltura.admin_secret:
             missing.append("KALTURA_ADMIN_SECRET")
-        if not self.aws.bucket_name:
+        # S3 is only required when not skipping
+        if not self.skip_s3 and not self.aws.bucket_name:
             missing.append("AWS_S3_BUCKET")
         if not self.zoom.client_id:
             missing.append("ZOOM_CLIENT_ID")

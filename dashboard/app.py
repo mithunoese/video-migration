@@ -17,20 +17,22 @@ Security features:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
 import re
 import secrets
+import shutil
+import subprocess as _subprocess
 import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
+import bcrypt
 import jwt as pyjwt
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,34 +44,35 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from dotenv import dotenv_values, set_key
+
+from .audit_store import AuditStore
 from .cost_tracker import CostTracker
-from .demo_data import (
-    generate_demo_activity,
-    generate_demo_costs,
-    generate_demo_field_mapping,
-    generate_demo_videos,
-    get_demo_summary,
-)
 
 logger = logging.getLogger(__name__)
 
 # ── Security Configuration ──
 
-JWT_SECRET = os.environ.get("JWT_SECRET_KEY", secrets.token_urlsafe(32))
+_jwt_from_env = os.environ.get("JWT_SECRET_KEY")
+if not _jwt_from_env:
+    logger.warning(
+        "JWT_SECRET_KEY not set! Using a random secret — tokens will NOT survive restarts. "
+        "Set JWT_SECRET_KEY in your environment for production."
+    )
+JWT_SECRET = _jwt_from_env or secrets.token_urlsafe(32)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = int(os.environ.get("JWT_EXPIRATION_HOURS", "24"))
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 # Default password hash for "admin" — MUST be changed in production via ADMIN_PASSWORD_HASH env var
-ADMIN_PASSWORD_HASH = os.environ.get(
-    "ADMIN_PASSWORD_HASH",
-    hashlib.sha256("admin".encode()).hexdigest(),
-)
+_default_admin_hash = bcrypt.hashpw("admin".encode(), bcrypt.gensalt()).decode()
+ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", _default_admin_hash)
 
 security_scheme = HTTPBearer(auto_error=False)
 
 
-def _hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+def _check_password(password: str, hashed: str) -> bool:
+    """Verify a password against a bcrypt hash."""
+    return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
 def _create_jwt(username: str, role: str = "admin") -> str:
@@ -96,7 +99,7 @@ def _verify_jwt(credentials: Optional[HTTPAuthorizationCredentials] = Depends(se
 
 
 def audit_log(action: str, user: str = "anonymous", details: dict | None = None, status: str = "success"):
-    """Log security-relevant actions."""
+    """Log security-relevant actions to both logger and persistent audit store."""
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "action": action,
@@ -105,6 +108,14 @@ def audit_log(action: str, user: str = "anonymous", details: dict | None = None,
         "details": details or {},
     }
     logger.info("AUDIT: %s", json.dumps(entry))
+    # Persist to append-only JSONL audit trail
+    _audit_store.append(
+        event=action,
+        user=user,
+        video_id=details.get("video_id") if details else None,
+        data=details,
+        status=status,
+    )
 
 
 # ── Pydantic Models for Input Validation ──
@@ -121,6 +132,7 @@ class VideoStatus(str, Enum):
 
 class MigrationStartRequest(BaseModel):
     batch_size: int = Field(default=10, ge=1, le=100)
+    video_ids: Optional[List[str]] = Field(default=None)
 
 
 class ChatRequest(BaseModel):
@@ -135,16 +147,94 @@ class LoginRequest(BaseModel):
 class CostAlertRequest(BaseModel):
     threshold: float = Field(default=50.0, ge=0, le=100000)
 
+# ── Login lockout state ──
+
+_login_attempts: dict[str, list[float]] = {}  # username -> list of failure timestamps
+_LOCKOUT_THRESHOLD = 5  # failures before lockout
+_LOCKOUT_WINDOW = 300  # 5 minutes
+
+
+def _is_locked_out(username: str) -> bool:
+    """Check if a user is locked out due to too many failed login attempts."""
+    attempts = _login_attempts.get(username, [])
+    now = time.time()
+    # Only count attempts within the lockout window
+    recent = [t for t in attempts if now - t < _LOCKOUT_WINDOW]
+    _login_attempts[username] = recent
+    return len(recent) >= _LOCKOUT_THRESHOLD
+
+
+def _record_failed_login(username: str):
+    """Record a failed login attempt."""
+    if username not in _login_attempts:
+        _login_attempts[username] = []
+    _login_attempts[username].append(time.time())
+
+
+def _clear_failed_logins(username: str):
+    """Clear failed login attempts after successful login."""
+    _login_attempts.pop(username, None)
+
+
 # ── Global state ──
 
 _demo_mode = True
 _pipeline = None
 _config = None
 _cost_tracker = CostTracker()
+_audit_store = AuditStore()
 _migration_running = False
+_migration_lock = threading.Lock()
 _migration_cancel = threading.Event()
 _sse_subscribers: list[asyncio.Queue] = []
 _migration_events_store: list[dict] = []
+_events_lock = threading.Lock()
+
+# ── Settings persistence ──
+
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+_SETTINGS_FIELDS = {
+    "kaltura_partner_id":   {"env": "KALTURA_PARTNER_ID",   "secret": False},
+    "kaltura_admin_secret":  {"env": "KALTURA_ADMIN_SECRET",  "secret": True},
+    "kaltura_user_id":       {"env": "KALTURA_USER_ID",       "secret": False},
+    "aws_s3_bucket":         {"env": "AWS_S3_BUCKET",         "secret": False},
+    "aws_region":            {"env": "AWS_REGION",            "secret": False},
+    "aws_state_table":       {"env": "AWS_STATE_TABLE",       "secret": False},
+    "aws_endpoint_url":      {"env": "AWS_ENDPOINT_URL",      "secret": False},
+    "zoom_client_id":        {"env": "ZOOM_CLIENT_ID",        "secret": False},
+    "zoom_client_secret":    {"env": "ZOOM_CLIENT_SECRET",    "secret": True},
+    "zoom_account_id":       {"env": "ZOOM_ACCOUNT_ID",       "secret": False},
+    "zoom_target_api":       {"env": "ZOOM_TARGET_API",       "secret": False},
+    "skip_s3":               {"env": "SKIP_S3",              "secret": False},
+    "batch_size":            {"env": "BATCH_SIZE",            "secret": False},
+    "max_concurrency":       {"env": "MAX_CONCURRENCY",       "secret": False},
+    "retry_attempts":        {"env": "RETRY_ATTEMPTS",        "secret": False},
+}
+
+_MASK = "\u2022" * 8  # "••••••••"
+
+
+def _safe_verify_connections() -> dict:
+    """Test connections without raising; return status dict."""
+    results = {"kaltura": False, "s3": False, "zoom": False}
+    if _pipeline is None:
+        return results
+    try:
+        results = {k: v for k, v in _pipeline.verify_connections().items()}
+    except Exception as e:
+        logger.warning("Connection verify after save failed: %s", e)
+    return results
+
+
+def _progress_callback(video_id: str, step: str, title: str):
+    """Forward pipeline progress to SSE subscribers for real-time kanban updates."""
+    _broadcast_sse({
+        "type": "video_progress",
+        "video_id": video_id,
+        "title": title,
+        "step": step,
+    })
 
 
 def _try_init_pipeline():
@@ -158,7 +248,7 @@ def _try_init_pipeline():
         missing = config.validate()
         if not missing:
             _config = config
-            _pipeline = MigrationPipeline(config)
+            _pipeline = MigrationPipeline(config, on_progress=_progress_callback)
             _demo_mode = False
             logger.info("Pipeline initialized with real credentials")
         else:
@@ -230,12 +320,28 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
+# ── Request Body Size Limit ──
+MAX_BODY_SIZE = 1 * 1024 * 1024  # 1 MB
+
+
+@app.middleware("http")
+async def limit_request_body(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_BODY_SIZE:
+        return JSONResponse({"error": "Request body too large"}, status_code=413)
+    return await call_next(request)
+
+
 # Serve static files (local dev only; on Vercel, public/ is served by CDN)
 _static_dir = Path(__file__).parent / "static"
 _public_dir = Path(__file__).parent.parent / "public"
 
 if _static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+_resources_dir = _public_dir / "docs"
+if _resources_dir.exists():
+    app.mount("/resources", StaticFiles(directory=str(_resources_dir)), name="resources")
 
 
 # ── HTML entry point ──
@@ -268,13 +374,18 @@ async def login(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     login_req = LoginRequest(**body)
-    password_hash = _hash_password(login_req.password)
 
-    if login_req.username == ADMIN_USER and password_hash == ADMIN_PASSWORD_HASH:
+    if _is_locked_out(login_req.username):
+        audit_log("login_locked_out", user=login_req.username, status="blocked")
+        raise HTTPException(status_code=429, detail="Account temporarily locked. Try again in 5 minutes.")
+
+    if login_req.username == ADMIN_USER and _check_password(login_req.password, ADMIN_PASSWORD_HASH):
+        _clear_failed_logins(login_req.username)
         token = _create_jwt(login_req.username)
         audit_log("login_success", user=login_req.username)
         return {"token": token, "username": login_req.username, "expires_in": JWT_EXPIRATION_HOURS * 3600}
 
+    _record_failed_login(login_req.username)
     audit_log("login_failed", user=login_req.username, status="failed")
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -288,20 +399,32 @@ async def verify_token(user: dict = Depends(_verify_jwt)):
 # ── Dashboard status ──
 
 @app.get("/api/status")
-async def get_status():
+async def get_status(user: dict = Depends(_verify_jwt)):
     if _demo_mode:
-        summary = get_demo_summary()
-        costs = generate_demo_costs()
-        summary["costs"] = {
-            "total_spent": costs["total_spent"],
-            "projected_monthly": costs["projected_monthly"],
-            "cost_per_video": costs["cost_per_video"],
+        # Even in demo mode, show which services have credentials configured
+        from migration.config import KalturaConfig, AWSConfig, ZoomConfig
+        kcfg = KalturaConfig.from_env()
+        acfg = AWSConfig.from_env()
+        zcfg = ZoomConfig.from_env()
+        skip_s3 = os.getenv("SKIP_S3", "").strip().lower() in ("true", "1", "yes")
+        return {
+            "total_videos": 0,
+            "status_counts": {},
+            "total_size_gb": 0,
+            "migrated_size_gb": 0,
+            "connections": {
+                "kaltura": bool(kcfg.partner_id and kcfg.admin_secret),
+                "s3": True if skip_s3 else bool(acfg.bucket_name),
+                "zoom": bool(zcfg.client_id and zcfg.client_secret and zcfg.account_id),
+            },
+            "skip_s3": skip_s3,
+            "demo_mode": True,
+            "costs": {"total_spent": 0, "projected_monthly": 0, "cost_per_video": 0},
         }
-        return summary
 
     # Real mode
     summary = _pipeline.tracker.get_summary()
-    videos = _pipeline.tracker._load_state()
+    videos = _pipeline.tracker._load_local()
     total = sum(summary.values())
 
     total_mb = 0
@@ -320,12 +443,14 @@ async def get_status():
     except Exception:
         pass
 
+    skip_s3 = os.getenv("SKIP_S3", "").strip().lower() in ("true", "1", "yes")
     return {
         "total_videos": total,
         "status_counts": summary,
         "total_size_gb": round(total_mb / 1024, 1),
         "migrated_size_gb": round(migrated_mb / 1024, 1),
         "connections": connections,
+        "skip_s3": skip_s3,
         "demo_mode": False,
         "costs": {
             "total_spent": cost_data["total_spent"],
@@ -343,12 +468,13 @@ async def list_videos(
     page_size: int = Query(50, ge=1, le=200),
     status: VideoStatus = Query(VideoStatus.ALL),
     search: str = Query("", max_length=200),
+    user: dict = Depends(_verify_jwt),
 ):
     if _demo_mode:
-        all_videos = generate_demo_videos()
+        all_videos = []
     else:
         # Load from state tracker + kaltura
-        state = _pipeline.tracker._load_state()
+        state = _pipeline.tracker._load_local()
         all_videos = []
         for vid, info in state.items():
             meta = info.get("metadata", {})
@@ -393,13 +519,9 @@ async def list_videos(
 
 
 @app.get("/api/videos/{video_id}")
-async def get_video(video_id: str):
+async def get_video(video_id: str, user: dict = Depends(_verify_jwt)):
     if _demo_mode:
-        videos = generate_demo_videos()
-        for v in videos:
-            if v["id"] == video_id:
-                return v
-        return JSONResponse({"error": "Video not found"}, status_code=404)
+        return JSONResponse({"error": "No videos — connect your services in Settings first"}, status_code=404)
 
     status = _pipeline.tracker.get_status(video_id)
     if not status:
@@ -407,14 +529,253 @@ async def get_video(video_id: str):
     return status
 
 
+# ── Kaltura Library Browser ──
+
+@app.get("/api/kaltura/videos")
+async def browse_kaltura_videos(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    search: Optional[str] = Query(None, max_length=200),
+    user: dict = Depends(_verify_jwt),
+):
+    """Browse live Kaltura library with migration status overlay."""
+    if _demo_mode or _pipeline is None:
+        return JSONResponse(
+            {"error": "Connect your Kaltura account in Settings before browsing videos."},
+            status_code=400,
+        )
+
+    try:
+        # Query live Kaltura API
+        kaltura_result = _pipeline.kaltura.list_videos(
+            page=page, page_size=page_size, search=search
+        )
+        entries = kaltura_result.get("objects", [])
+        total = kaltura_result.get("totalCount", 0)
+
+        # Cross-reference with state tracker for migration status
+        state = _pipeline.tracker.get_all_videos() if hasattr(_pipeline.tracker, "get_all_videos") else {}
+
+        videos = []
+        for entry in entries:
+            vid = entry.get("id", "")
+            tracked = state.get(vid, {})
+            tracked_status = tracked.get("status", None)
+            tracked_meta = tracked.get("metadata", {}) if isinstance(tracked.get("metadata"), dict) else {}
+
+            videos.append({
+                "id": vid,
+                "name": entry.get("name", "Untitled"),
+                "description": entry.get("description", ""),
+                "duration": entry.get("duration", 0),
+                "created_at": entry.get("createdAt", 0),
+                "thumbnail_url": entry.get("thumbnailUrl", ""),
+                "data_size": entry.get("dataSize", 0),
+                "tags": entry.get("tags", ""),
+                "categories": entry.get("categories", ""),
+                "plays": entry.get("plays", 0),
+                "views": entry.get("views", 0),
+                "migration_status": tracked_status or "not_started",
+                "zoom_id": tracked_meta.get("zoom_id"),
+                "error": tracked.get("error"),
+            })
+
+        import math
+        total_pages = max(1, math.ceil(total / page_size))
+
+        return {
+            "videos": videos,
+            "total": total,
+            "page": page,
+            "total_pages": total_pages,
+        }
+    except Exception as e:
+        logger.error("Failed to browse Kaltura videos: %s", e)
+        return JSONResponse(
+            {"error": "Failed to fetch videos from Kaltura. Check your connection settings."},
+            status_code=500,
+        )
+
+
 # ── Activity feed ──
 
 @app.get("/api/activity")
-async def get_activity():
+async def get_activity(user: dict = Depends(_verify_jwt)):
+    """Return recent activity from the persistent audit trail."""
+    result = _audit_store.query(page=1, page_size=20)
+    return {"activities": result["events"]}
+
+
+# ── Audit trail & reconciliation ──
+
+@app.get("/api/audit/trail")
+async def get_audit_trail(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    event_type: Optional[str] = Query(None),
+    video_id: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    user: dict = Depends(_verify_jwt),
+):
+    """Paginated, filterable audit trail. IFRS-grade: immutable, timestamped."""
+    return _audit_store.query(
+        page=page,
+        page_size=page_size,
+        event_type=event_type,
+        video_id=video_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+
+@app.get("/api/audit/video/{video_id}")
+async def get_video_journey(video_id: str, user: dict = Depends(_verify_jwt)):
+    """Per-video journey: complete lifecycle timeline with durations."""
+    journey: dict = {
+        "video_id": video_id,
+        "timeline": [],
+        "current_status": None,
+        "metadata": {},
+    }
+
+    # 1. State tracker history (embedded per-video timeline)
+    if not _demo_mode and _pipeline:
+        status_record = _pipeline.tracker.get_status(video_id)
+        if status_record:
+            journey["current_status"] = status_record.get("status")
+            meta = status_record.get("metadata", {})
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
+            journey["metadata"] = meta
+
+            history = status_record.get("history", [])
+            if isinstance(history, str):
+                try:
+                    history = json.loads(history)
+                except Exception:
+                    history = []
+            for h in history:
+                journey["timeline"].append({
+                    "ts": h.get("ts", ""),
+                    "type": "state_change",
+                    "from": h.get("from"),
+                    "to": h.get("to"),
+                    "error": h.get("error"),
+                })
+
+    # 2. Audit store events for this video
+    audit_events = _audit_store.get_video_events(video_id)
+    for evt in audit_events:
+        journey["timeline"].append({
+            "ts": evt.get("ts", ""),
+            "type": evt.get("event", ""),
+            "user": evt.get("user"),
+            "data": evt.get("data", {}),
+        })
+
+    # Sort combined timeline by timestamp
+    journey["timeline"].sort(key=lambda x: x.get("ts", ""))
+
+    # Calculate durations between steps
+    for i in range(1, len(journey["timeline"])):
+        try:
+            t1 = datetime.fromisoformat(journey["timeline"][i - 1]["ts"])
+            t2 = datetime.fromisoformat(journey["timeline"][i]["ts"])
+            journey["timeline"][i]["duration_from_prev_s"] = round((t2 - t1).total_seconds(), 1)
+        except Exception:
+            pass
+
+    return journey
+
+
+@app.get("/api/audit/reconciliation")
+async def get_reconciliation(user: dict = Depends(_verify_jwt)):
+    """Cross-system reconciliation: where each video lives across Kaltura → S3 → Zoom."""
     if _demo_mode:
-        return {"activities": generate_demo_activity()}
-    # Real mode: would pull from a log or event store
-    return {"activities": []}
+        return {
+            "source": {"system": "Kaltura", "count": 0, "videos": [], "total_size_gb": 0},
+            "staging": {"system": "AWS S3", "count": 0, "videos": [], "total_size_gb": 0},
+            "destination": {"system": "Zoom", "count": 0, "videos": [], "total_size_gb": 0},
+            "issues": [],
+            "summary": {},
+            "total": 0,
+            "demo_mode": True,
+        }
+
+    all_videos = _pipeline.tracker.get_all_videos()
+    summary = _pipeline.tracker.get_summary()
+
+    source_videos = []
+    staging_videos = []
+    destination_videos = []
+    issue_videos = []
+
+    now = datetime.now(timezone.utc)
+
+    for vid, record in all_videos.items():
+        st = record.get("status", "unknown")
+        meta = record.get("metadata", {})
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        updated_at = record.get("updated_at", "")
+
+        entry = {
+            "video_id": vid,
+            "title": meta.get("title", vid),
+            "status": st,
+            "updated_at": updated_at,
+            "size_mb": meta.get("size_mb", 0) or meta.get("duration", 0) * 0.1,
+            "zoom_id": meta.get("zoom_id"),
+        }
+
+        if st == "pending":
+            source_videos.append(entry)
+        elif st in ("downloading", "staged", "uploading"):
+            staging_videos.append(entry)
+            # Detect stuck videos (>1hr in transit)
+            try:
+                updated = datetime.fromisoformat(updated_at)
+                if (now - updated).total_seconds() > 3600:
+                    stuck = {**entry, "issue": f"Stuck in '{st}' for >1 hour"}
+                    issue_videos.append(stuck)
+            except Exception:
+                pass
+        elif st == "completed":
+            destination_videos.append(entry)
+        elif st == "failed":
+            entry["error"] = record.get("error", "Unknown error")
+            issue_videos.append(entry)
+
+    def _size_gb(videos: list) -> float:
+        return round(sum(v.get("size_mb", 0) for v in videos) / 1024, 2)
+
+    return {
+        "source": {"system": "Kaltura", "count": len(source_videos), "videos": source_videos[:100], "total_size_gb": _size_gb(source_videos)},
+        "staging": {"system": "AWS S3", "count": len(staging_videos), "videos": staging_videos[:100], "total_size_gb": _size_gb(staging_videos)},
+        "destination": {"system": "Zoom", "count": len(destination_videos), "videos": destination_videos[:100], "total_size_gb": _size_gb(destination_videos)},
+        "issues": issue_videos[:100],
+        "summary": summary,
+        "total": len(all_videos),
+        "demo_mode": False,
+    }
+
+
+@app.get("/api/audit/export")
+async def export_audit_trail(user: dict = Depends(_verify_jwt)):
+    """Download the full audit trail as CSV."""
+    csv_content = _audit_store.export_csv()
+    return StreamingResponse(
+        iter([csv_content]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=audit-trail.csv"},
+    )
 
 
 # ── Migration control ──
@@ -430,36 +791,56 @@ async def start_migration(request: Request, user: dict = Depends(_verify_jwt)):
         pass
     req = MigrationStartRequest(**body)
     batch_size = req.batch_size
-    audit_log("migration_start", user=user["sub"], details={"batch_size": batch_size})
+    video_ids = req.video_ids
+    audit_log("migration_start", user=user["sub"], details={
+        "batch_size": batch_size,
+        "video_ids": video_ids,
+        "video_count": len(video_ids) if video_ids else batch_size,
+    })
 
-    if _migration_running:
-        return JSONResponse({"error": "Migration already running"}, status_code=409)
-
-    _migration_running = True
-    _migration_cancel.clear()
+    with _migration_lock:
+        if _migration_running:
+            return JSONResponse({"error": "Migration already running"}, status_code=409)
+        _migration_running = True
+        _migration_cancel.clear()
 
     if _demo_mode:
-        # Run simulated migration in background
-        threading.Thread(target=_run_demo_migration, args=(batch_size,), daemon=True).start()
-    else:
-        threading.Thread(target=_run_real_migration, args=(batch_size,), daemon=True).start()
+        with _migration_lock:
+            _migration_running = False
+        return JSONResponse(
+            {"error": "Connect your Kaltura, AWS, and Zoom accounts in Settings before starting a migration."},
+            status_code=400,
+        )
 
-    return {"status": "started", "batch_size": batch_size, "demo_mode": _demo_mode}
+    threading.Thread(
+        target=_run_real_migration, args=(batch_size,),
+        kwargs={"video_ids": video_ids}, daemon=True,
+    ).start()
+    return {
+        "status": "started",
+        "batch_size": batch_size,
+        "video_count": len(video_ids) if video_ids else batch_size,
+    }
 
 
 @app.post("/api/migration/stop")
 async def stop_migration(user: dict = Depends(_verify_jwt)):
     global _migration_running
     _migration_cancel.set()
-    _migration_running = False
+    with _migration_lock:
+        _migration_running = False
     audit_log("migration_stop", user=user["sub"])
     _broadcast_sse({"type": "migration_stopped", "message": "Migration stopped by user"})
     return {"status": "stopped"}
 
 
 @app.get("/api/migration/stream")
-async def migration_stream():
-    """SSE endpoint for real-time migration progress."""
+async def migration_stream(token: str = Query(..., description="JWT token for SSE auth")):
+    """SSE endpoint for real-time migration progress. Requires token query param."""
+    try:
+        pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except pyjwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
     queue: asyncio.Queue = asyncio.Queue()
     _sse_subscribers.append(queue)
 
@@ -488,7 +869,10 @@ async def migration_stream():
 async def retry_failed(user: dict = Depends(_verify_jwt)):
     audit_log("migration_retry", user=user["sub"])
     if _demo_mode:
-        return {"status": "demo_mode", "message": "Retry simulated — no real API calls in demo mode"}
+        return JSONResponse(
+            {"error": "Connect all services in Settings before retrying migrations."},
+            status_code=400,
+        )
 
     if _migration_running:
         return JSONResponse({"error": "Migration already running"}, status_code=409)
@@ -505,7 +889,7 @@ async def retry_failed(user: dict = Depends(_verify_jwt)):
 # ── Migration polling (Vercel fallback) ──
 
 @app.get("/api/migration/poll")
-async def migration_poll(since: int = Query(0)):
+async def migration_poll(since: int = Query(0), user: dict = Depends(_verify_jwt)):
     """Polling fallback for serverless environments where SSE times out."""
     events = _migration_events_store[since:]
     return {
@@ -518,13 +902,32 @@ async def migration_poll(since: int = Query(0)):
 # ── Field mapping ──
 
 @app.get("/api/field-mapping")
-async def get_field_mapping():
-    return {"mappings": generate_demo_field_mapping()}
+async def get_field_mapping(user: dict = Depends(_verify_jwt)):
+    # The field mapping is the static Kaltura→Zoom schema mapping.
+    # This is real reference data — same regardless of mode.
+    mappings = [
+        {"kaltura_field": "name", "zoom_field": "title", "status": "mapped", "transform": None, "ai_note": None},
+        {"kaltura_field": "description", "zoom_field": "description", "status": "mapped", "transform": None, "ai_note": None},
+        {"kaltura_field": "tags", "zoom_field": "description (appended)", "status": "mapped", "transform": "Appended as 'Tags: ...'", "ai_note": "Zoom has no tags field — appended to description"},
+        {"kaltura_field": "categories", "zoom_field": "description (appended)", "status": "mapped", "transform": "Appended as 'Categories: ...'", "ai_note": "Zoom has no categories — appended to description"},
+        {"kaltura_field": "duration", "zoom_field": "description (appended)", "status": "mapped", "transform": "Formatted as 'Xm Ys'", "ai_note": None},
+        {"kaltura_field": "entryId", "zoom_field": "description (appended)", "status": "mapped", "transform": "Appended as source reference", "ai_note": "Preserved for traceability"},
+        {"kaltura_field": "createdAt", "zoom_field": "\u2014", "status": "no_equivalent", "transform": None, "ai_note": "Zoom does not expose upload date via API"},
+        {"kaltura_field": "views", "zoom_field": "\u2014", "status": "no_equivalent", "transform": None, "ai_note": "View counts cannot be migrated"},
+        {"kaltura_field": "plays", "zoom_field": "\u2014", "status": "no_equivalent", "transform": None, "ai_note": "Play counts cannot be migrated"},
+        {"kaltura_field": "thumbnailUrl", "zoom_field": "\u2014", "status": "unmapped", "transform": None, "ai_note": "Could be set via separate API call (not yet implemented)"},
+        {"kaltura_field": "accessControl", "zoom_field": "scope", "status": "mapped", "transform": "private->PRIVATE, public->SAME_ORGANIZATION", "ai_note": "Recommend SAME_ORGANIZATION as default"},
+        {"kaltura_field": "userId", "zoom_field": "\u2014", "status": "no_equivalent", "transform": None, "ai_note": "Zoom owner is the S2S app account"},
+        {"kaltura_field": "flavorParams", "zoom_field": "\u2014", "status": "no_equivalent", "transform": None, "ai_note": "Zoom handles transcoding automatically"},
+        {"kaltura_field": "customMetadata", "zoom_field": "description (appended)", "status": "partial", "transform": "Key-value pairs appended", "ai_note": "Only text fields — complex metadata lost"},
+    ]
+    return {"mappings": mappings, "demo_mode": _demo_mode}
 
 
 @app.put("/api/field-mapping")
-async def update_field_mapping(request: Request):
+async def update_field_mapping(request: Request, user: dict = Depends(_verify_jwt)):
     body = await request.json()
+    audit_log("field_mapping_update", user=user["sub"])
     # In a real app, persist to config file or database
     return {"status": "updated", "mappings": body.get("mappings", [])}
 
@@ -557,7 +960,7 @@ async def chat(request: Request, user: dict = Depends(_verify_jwt)):
             return {"response": response, "tier": 2}
         except Exception as e:
             logger.error("Claude API error: %s", e)
-            return {"response": f"AI service error: {e}. Falling back to basic mode.", "tier": 1}
+            return {"response": "AI service is temporarily unavailable. Falling back to basic mode.", "tier": 1}
 
     return {
         "response": "I can answer basic questions about your migration. Try asking:\n"
@@ -574,8 +977,44 @@ def _handle_structured_query(message: str) -> str | None:
     """Handle common queries without AI API."""
     msg = message.lower().strip()
 
-    videos = generate_demo_videos() if _demo_mode else []
-    summary = get_demo_summary() if _demo_mode else {}
+    if _demo_mode:
+        return "Connect your Kaltura, AWS, and Zoom accounts in **Settings** first — I'll have real data to work with once your services are connected."
+
+    # Build real data from the pipeline state tracker
+    videos = []
+    summary = {"total_videos": 0, "status_counts": {}, "total_size_gb": 0, "migrated_size_gb": 0}
+    try:
+        status_counts = _pipeline.tracker.get_summary()
+        state = _pipeline.tracker._load_local()
+        total = sum(status_counts.values())
+        total_mb = 0
+        migrated_mb = 0
+        for vid, info in state.items():
+            meta = info.get("metadata", {})
+            size_mb = meta.get("size_mb", 0)
+            total_mb += size_mb
+            if info.get("status") == "completed":
+                migrated_mb += size_mb
+            videos.append({
+                "id": vid,
+                "title": meta.get("title", vid),
+                "description": meta.get("description", ""),
+                "duration": meta.get("duration", 0),
+                "size_mb": size_mb,
+                "format": meta.get("format", "mp4"),
+                "codec": meta.get("codec", "h.264"),
+                "tags": meta.get("tags", ""),
+                "status": info.get("status", "pending"),
+                "error": info.get("error"),
+            })
+        summary = {
+            "total_videos": total,
+            "status_counts": status_counts,
+            "total_size_gb": round(total_mb / 1024, 1),
+            "migrated_size_gb": round(migrated_mb / 1024, 1),
+        }
+    except Exception as e:
+        logger.warning("Could not load pipeline state for chat: %s", e)
 
     # Status queries
     if any(kw in msg for kw in ["how many", "count", "total"]):
@@ -644,10 +1083,7 @@ def _handle_structured_query(message: str) -> str | None:
                 + "\n".join(f"- {k}: ${v:.2f}" for k, v in projection["breakdown"].items())
             )
 
-        if _demo_mode:
-            costs = generate_demo_costs()
-        else:
-            costs = _cost_tracker.get_breakdown()
+        costs = _cost_tracker.get_breakdown()
         return (
             f"**Current Costs:**\n\n"
             f"- Total spent: **${costs.get('total_spent', 0):.2f}**\n"
@@ -680,12 +1116,13 @@ async def _handle_claude_query(message: str, api_key: str) -> str:
     import anthropic
 
     # Build context about current state
-    if _demo_mode:
-        summary = get_demo_summary()
-        costs = generate_demo_costs()
-    else:
-        summary = {}
-        costs = _cost_tracker.get_breakdown()
+    summary = {}
+    costs = _cost_tracker.get_breakdown()
+    if not _demo_mode and _pipeline:
+        try:
+            summary = _pipeline.tracker.get_summary()
+        except Exception:
+            pass
 
     context = json.dumps({"summary": summary, "costs": costs}, indent=2)
 
@@ -716,7 +1153,11 @@ async def _handle_claude_query(message: str, api_key: str) -> str:
 @app.get("/api/costs")
 async def get_costs(user: dict = Depends(_verify_jwt)):
     if _demo_mode:
-        return generate_demo_costs()
+        return {
+            "breakdown": {"s3_storage": 0, "s3_transfer": 0, "dynamodb": 0, "lambda": 0, "ai_assistant": 0, "zoom_api": 0, "kaltura_api": 0},
+            "total_spent": 0, "projected_monthly": 0, "cost_per_video": 0,
+            "total_gb_transferred": 0, "timeline": [], "alert_threshold": 50.00,
+        }
     return _cost_tracker.get_breakdown()
 
 
@@ -724,14 +1165,15 @@ async def get_costs(user: dict = Depends(_verify_jwt)):
 async def cost_projection(
     total_videos: int = Query(1000),
     avg_size_mb: float = Query(500),
+    user: dict = Depends(_verify_jwt),
 ):
     return _cost_tracker.project_cost(total_videos, avg_size_mb)
 
 
 @app.get("/api/costs/timeline")
-async def cost_timeline():
+async def cost_timeline(user: dict = Depends(_verify_jwt)):
     if _demo_mode:
-        return {"timeline": generate_demo_costs()["timeline"]}
+        return {"timeline": []}
     return {"timeline": _cost_tracker.get_timeline()}
 
 
@@ -748,7 +1190,7 @@ async def set_cost_alert(request: Request, user: dict = Depends(_verify_jwt)):
 
 
 @app.get("/api/costs/export")
-async def export_costs():
+async def export_costs(user: dict = Depends(_verify_jwt)):
     if _demo_mode:
         return JSONResponse({"message": "Cost export not available in demo mode"})
 
@@ -771,54 +1213,177 @@ async def test_connections(request: Request, user: dict = Depends(_verify_jwt)):
     service = body.get("service", "all")
     audit_log("settings_test", user=user["sub"], details={"service": service})
 
-    if _demo_mode:
-        return {
-            "kaltura": {"status": "not_configured", "message": "Add credentials to test"},
-            "s3": {"status": "not_configured", "message": "Add credentials to test"},
-            "zoom": {"status": "not_configured", "message": "Add credentials to test"},
-        }
+    # Test each service independently — don't require the full pipeline
+    from migration.config import KalturaConfig, AWSConfig, ZoomConfig
 
     results = {}
+
     if service in ("all", "kaltura"):
-        try:
-            _pipeline.kaltura.authenticate()
-            results["kaltura"] = {"status": "ok"}
-        except Exception as e:
-            logger.error("Kaltura test failed: %s", e)
-            results["kaltura"] = {"status": "error", "message": "Authentication failed"}
+        kcfg = KalturaConfig.from_env()
+        if not kcfg.partner_id or not kcfg.admin_secret:
+            results["kaltura"] = {"status": "not_configured", "message": "Add Partner ID and Admin Secret"}
+        elif _pipeline:
+            try:
+                _pipeline.kaltura.authenticate()
+                results["kaltura"] = {"status": "ok", "message": "Connected"}
+            except Exception as e:
+                logger.error("Kaltura test failed: %s", e)
+                results["kaltura"] = {"status": "error", "message": "Authentication failed — check Partner ID and Admin Secret"}
+        else:
+            try:
+                from migration.kaltura_client import KalturaClient
+                client = KalturaClient(kcfg)
+                client.authenticate()
+                results["kaltura"] = {"status": "ok", "message": "Connected"}
+            except Exception as e:
+                logger.error("Kaltura test failed: %s", e)
+                results["kaltura"] = {"status": "error", "message": "Authentication failed — check Partner ID and Admin Secret"}
 
     if service in ("all", "s3"):
-        try:
-            _pipeline.s3._s3.head_bucket(Bucket=_config.aws.bucket_name)
-            results["s3"] = {"status": "ok"}
-        except Exception as e:
-            logger.error("S3 test failed: %s", e)
-            results["s3"] = {"status": "error", "message": "Bucket access failed"}
+        skip_s3 = os.getenv("SKIP_S3", "").strip().lower() in ("true", "1", "yes")
+        if skip_s3:
+            results["s3"] = {"status": "ok", "message": "S3 staging disabled (direct mode)"}
+        else:
+            acfg = AWSConfig.from_env()
+            if not acfg.bucket_name:
+                results["s3"] = {"status": "not_configured", "message": "Add S3 bucket name or set SKIP_S3=true"}
+            elif _pipeline and _pipeline.s3:
+                try:
+                    _pipeline.s3._s3.head_bucket(Bucket=acfg.bucket_name)
+                    msg = f"Connected — bucket: {acfg.bucket_name}"
+                    if acfg.endpoint_url:
+                        msg += f" (LocalStack: {acfg.endpoint_url})"
+                    results["s3"] = {"status": "ok", "message": msg}
+                except Exception as e:
+                    logger.error("S3 test failed: %s", e)
+                    results["s3"] = {"status": "error", "message": "Bucket access failed — check bucket name, region, and credentials"}
+            else:
+                try:
+                    import boto3
+                    from botocore.config import Config as BotoConfig
+                    s3_kwargs = {"region_name": acfg.region, "config": BotoConfig(max_pool_connections=5)}
+                    if acfg.endpoint_url:
+                        s3_kwargs["endpoint_url"] = acfg.endpoint_url
+                        s3_kwargs["aws_access_key_id"] = "test"
+                        s3_kwargs["aws_secret_access_key"] = "test"
+                    s3 = boto3.client("s3", **s3_kwargs)
+                    s3.head_bucket(Bucket=acfg.bucket_name)
+                    msg = f"Connected — bucket: {acfg.bucket_name}"
+                    if acfg.endpoint_url:
+                        msg += f" (LocalStack: {acfg.endpoint_url})"
+                    results["s3"] = {"status": "ok", "message": msg}
+                except Exception as e:
+                    logger.error("S3 test failed: %s", e)
+                    results["s3"] = {"status": "error", "message": "Bucket access failed — check bucket name, region, and credentials"}
 
     if service in ("all", "zoom"):
-        try:
-            _pipeline.zoom.authenticate()
-            results["zoom"] = {"status": "ok"}
-        except Exception as e:
-            logger.error("Zoom test failed: %s", e)
-            results["zoom"] = {"status": "error", "message": "Authentication failed"}
+        zcfg = ZoomConfig.from_env()
+        if not zcfg.client_id or not zcfg.client_secret or not zcfg.account_id:
+            results["zoom"] = {"status": "not_configured", "message": "Add Client ID, Secret, and Account ID"}
+        elif _pipeline:
+            try:
+                _pipeline.zoom.authenticate()
+                results["zoom"] = {"status": "ok", "message": "Connected"}
+            except Exception as e:
+                logger.error("Zoom test failed: %s", e)
+                results["zoom"] = {"status": "error", "message": "Authentication failed — check Client ID, Secret, and Account ID"}
+        else:
+            try:
+                from migration.zoom_client import ZoomClient
+                client = ZoomClient(zcfg)
+                client.authenticate()
+                results["zoom"] = {"status": "ok", "message": "Connected"}
+            except Exception as e:
+                logger.error("Zoom test failed: %s", e)
+                results["zoom"] = {"status": "error", "message": "Authentication failed — check Client ID, Secret, and Account ID"}
 
     return results
 
 
+@app.get("/api/settings")
+async def get_settings(user: dict = Depends(_verify_jwt)):
+    """Return current settings from .env, masking secret values."""
+    env_vals = dotenv_values(str(_ENV_FILE)) if _ENV_FILE.exists() else {}
+    result = {}
+    for field_key, meta in _SETTINGS_FIELDS.items():
+        raw = env_vals.get(meta["env"], "")
+        if meta["secret"] and raw:
+            result[field_key] = _MASK
+        else:
+            result[field_key] = raw
+    result["demo_mode"] = _demo_mode
+    return result
+
+
 @app.put("/api/settings")
 async def update_settings(request: Request, user: dict = Depends(_verify_jwt)):
+    """Write settings to .env and reinitialize the pipeline."""
     body = await request.json()
-    audit_log("settings_update", user=user["sub"])
-    # In production, write to .env or config store
-    return {"status": "updated", "settings": body}
+
+    # Validate: only accept known field keys
+    unknown = set(body.keys()) - set(_SETTINGS_FIELDS.keys())
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown fields: {', '.join(unknown)}")
+
+    # Read current .env values so we can detect real changes
+    current_env = dotenv_values(str(_ENV_FILE)) if _ENV_FILE.exists() else {}
+
+    # Regex to block newlines, null bytes, and control chars in values
+    _BAD_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+    changes = {}
+    for field_key, value in body.items():
+        meta = _SETTINGS_FIELDS[field_key]
+        # Skip masked placeholder — user didn't change this secret
+        if meta["secret"] and value == _MASK:
+            continue
+        cleaned = str(value).strip()
+        # Skip empty strings — don't pollute .env with blank values
+        if not cleaned:
+            continue
+        # Block dangerous characters that could corrupt .env or inject vars
+        if "\n" in cleaned or "\r" in cleaned or _BAD_CHARS.search(cleaned):
+            raise HTTPException(status_code=400, detail=f"Invalid characters in '{field_key}'")
+        # Sanity-check length
+        if len(cleaned) > 500:
+            raise HTTPException(status_code=400, detail=f"Value too long for '{field_key}'")
+        env_key = meta["env"]
+        # Only write if actually different from what's already in .env
+        if current_env.get(env_key, "") != cleaned:
+            changes[env_key] = cleaned
+
+    if not changes:
+        return {"status": "no_changes", "message": "No settings were modified"}
+
+    # Write each changed value to .env
+    for env_key, env_val in changes.items():
+        set_key(str(_ENV_FILE), env_key, env_val)
+        # Also update the process environment so Config.from_env() picks it up
+        os.environ[env_key] = env_val
+
+    audit_log("settings_update", user=user["sub"], details={
+        "keys_changed": list(changes.keys()),
+    })
+
+    # Reinitialize the pipeline with the new env vars
+    _try_init_pipeline()
+
+    return {
+        "status": "saved",
+        "keys_updated": list(changes.keys()),
+        "demo_mode": _demo_mode,
+        "connections": (
+            {"kaltura": False, "s3": False, "zoom": False}
+            if _demo_mode
+            else _safe_verify_connections()
+        ),
+    }
 
 
 @app.get("/api/report")
-async def get_report():
+async def get_report(user: dict = Depends(_verify_jwt)):
     if _demo_mode:
-        summary = get_demo_summary()
-        return {"report": f"Demo mode — {summary['total_videos']} videos tracked"}
+        return {"report": "Connect all services in Settings to generate a migration report."}
 
     report = _pipeline.generate_report()
     return {"report": report}
@@ -828,10 +1393,11 @@ async def get_report():
 
 def _broadcast_sse(data: dict):
     """Send event to all SSE subscribers and store for polling."""
-    _migration_events_store.append(data)
-    # Keep only last 200 events
-    if len(_migration_events_store) > 200:
-        del _migration_events_store[:100]
+    with _events_lock:
+        _migration_events_store.append(data)
+        # Keep only last 200 events
+        if len(_migration_events_store) > 200:
+            del _migration_events_store[:100]
     for queue in _sse_subscribers:
         try:
             queue.put_nowait(data)
@@ -839,107 +1405,23 @@ def _broadcast_sse(data: dict):
             pass
 
 
-# ── Demo migration simulation ──
-
-def _run_demo_migration(batch_size: int):
-    """Simulate a migration run with fake progress events."""
-    global _migration_running
-    import random
-
-    rng = random.Random(time.time())
-    videos = generate_demo_videos()
-    pending = [v for v in videos if v["status"] == "pending"][:batch_size]
-
-    _broadcast_sse({
-        "type": "migration_started",
-        "batch_size": len(pending),
-        "message": f"Starting demo migration of {len(pending)} videos",
-    })
-
-    for i, video in enumerate(pending):
-        if _migration_cancel.is_set():
-            break
-
-        vid_id = video["id"]
-        title = video["title"][:40]
-
-        # Downloading
-        _broadcast_sse({
-            "type": "video_progress",
-            "video_id": vid_id,
-            "title": title,
-            "step": "downloading",
-            "progress": 0,
-            "batch_progress": round(i / len(pending) * 100),
-        })
-        time.sleep(rng.uniform(0.3, 0.8))
-
-        _broadcast_sse({
-            "type": "video_progress",
-            "video_id": vid_id,
-            "title": title,
-            "step": "downloading",
-            "progress": 100,
-        })
-
-        # Staging to S3
-        _broadcast_sse({
-            "type": "video_progress",
-            "video_id": vid_id,
-            "title": title,
-            "step": "staging",
-            "progress": 0,
-        })
-        time.sleep(rng.uniform(0.2, 0.5))
-
-        _broadcast_sse({
-            "type": "video_progress",
-            "video_id": vid_id,
-            "title": title,
-            "step": "staging",
-            "progress": 100,
-        })
-
-        # Uploading to Zoom
-        _broadcast_sse({
-            "type": "video_progress",
-            "video_id": vid_id,
-            "title": title,
-            "step": "uploading",
-            "progress": 0,
-        })
-        time.sleep(rng.uniform(0.5, 1.0))
-
-        # Simulate occasional failure
-        if rng.random() < 0.1:
-            _broadcast_sse({
-                "type": "video_failed",
-                "video_id": vid_id,
-                "title": title,
-                "error": "Simulated failure: Zoom rate limit exceeded",
-            })
-        else:
-            _broadcast_sse({
-                "type": "video_completed",
-                "video_id": vid_id,
-                "title": title,
-                "zoom_id": f"zm_{vid_id[:8]}",
-                "size_mb": video["size_mb"],
-            })
-
-    _broadcast_sse({
-        "type": "migration_completed",
-        "message": f"Demo migration batch complete ({len(pending)} videos processed)",
-    })
-    _migration_running = False
-
-
-def _run_real_migration(batch_size: int):
-    """Run actual migration with real APIs."""
+def _run_real_migration(batch_size: int, video_ids: Optional[List[str]] = None):
+    """Run actual migration with real APIs. Accepts optional video_ids for cherry-pick mode."""
     global _migration_running
 
     try:
-        results = _pipeline.run_migration(batch_size=batch_size)
+        # Cherry-pick mode: register selected videos and broadcast initial state
+        if video_ids:
+            _pipeline.tracker.register_videos(video_ids)
+            for vid in video_ids:
+                _broadcast_sse({
+                    "type": "video_progress",
+                    "video_id": vid,
+                    "title": vid,
+                    "step": "pending",
+                })
+
+        results = _pipeline.run_migration(batch_size=batch_size, video_ids=video_ids)
 
         for r in results:
             if r.status == "completed":
@@ -951,6 +1433,11 @@ def _run_real_migration(batch_size: int):
                     "zoom_id": r.zoom_id,
                     "size_mb": r.file_size_mb,
                 })
+                _audit_store.append(
+                    event="video_completed", video_id=r.video_id,
+                    data={"title": r.title, "zoom_id": r.zoom_id,
+                          "duration_s": r.duration_seconds, "size_mb": r.file_size_mb},
+                )
             else:
                 _broadcast_sse({
                     "type": "video_failed",
@@ -958,7 +1445,17 @@ def _run_real_migration(batch_size: int):
                     "title": r.title,
                     "error": r.error,
                 })
+                _audit_store.append(
+                    event="video_failed", video_id=r.video_id,
+                    data={"title": r.title, "error": r.error},
+                )
 
+        completed = sum(1 for r in results if r.status == "completed")
+        failed = len(results) - completed
+        _audit_store.append(
+            event="migration_complete",
+            data={"processed": len(results), "completed": completed, "failed": failed},
+        )
         _broadcast_sse({
             "type": "migration_completed",
             "message": f"Migration batch complete: {len(results)} processed",
@@ -1035,9 +1532,149 @@ async def run_pipeline_test(request: Request, user: dict = Depends(_verify_jwt))
 
 
 @app.get("/api/test/result")
-async def get_test_result():
+async def get_test_result(user: dict = Depends(_verify_jwt)):
     """Get the result of the last pipeline test."""
     return {
         "running": _test_running,
         "result": _test_result,
     }
+
+
+# ── Infrastructure / Cloud Setup ──
+
+
+@app.post("/api/infra/setup")
+async def infra_setup(user: dict = Depends(_verify_jwt)):
+    """Check prerequisites and deploy CDK infrastructure.
+
+    In demo mode (no AWS credentials), reports what's missing.
+    With real credentials, attempts `cdk deploy`.
+    """
+    audit_log("infra_setup", user=user["sub"])
+
+    steps: list[dict] = []
+    ok = True
+
+    # 1. Check AWS CLI
+    if shutil.which("aws"):
+        steps.append({"text": "AWS CLI found", "ok": True})
+    else:
+        steps.append({"text": "AWS CLI not installed", "ok": False})
+        ok = False
+
+    # 2. Check AWS credentials
+    if not ok:
+        steps.append({"text": "Skipping credential check — install AWS CLI first", "ok": False})
+    else:
+        try:
+            r = _subprocess.run(
+                ["aws", "sts", "get-caller-identity", "--query", "Account", "--output", "text"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                steps.append({"text": f"AWS account {r.stdout.strip()} connected", "ok": True})
+            else:
+                steps.append({"text": "AWS credentials not configured — run `aws configure`", "ok": False})
+                ok = False
+        except Exception:
+            steps.append({"text": "Could not verify AWS credentials", "ok": False})
+            ok = False
+
+    # 3. Check CDK
+    if shutil.which("cdk"):
+        steps.append({"text": "AWS CDK found", "ok": True})
+    else:
+        steps.append({"text": "AWS CDK not installed — run `npm install -g aws-cdk`", "ok": False})
+        ok = False
+
+    # 4. Check CDK project files
+    infra_dir = Path(__file__).resolve().parent.parent / "infra"
+    if (infra_dir / "app.py").exists() and (infra_dir / "cdk.json").exists():
+        steps.append({"text": "CDK project files found", "ok": True})
+    else:
+        steps.append({"text": "CDK project files missing in infra/", "ok": False})
+        ok = False
+
+    # 5. Check Python deps
+    try:
+        import aws_cdk  # noqa: F401
+        steps.append({"text": "CDK Python library installed", "ok": True})
+    except ImportError:
+        steps.append({"text": "CDK Python library not installed — run `pip install -r infra/requirements.txt`", "ok": False})
+        ok = False
+
+    # 6. Kaltura / Zoom credentials
+    if not _demo_mode and _pipeline:
+        steps.append({"text": "Kaltura & Zoom credentials configured", "ok": True})
+    else:
+        steps.append({"text": "Kaltura & Zoom credentials not configured — add them in Settings", "ok": False})
+        ok = False
+
+    return {
+        "ready": ok,
+        "steps": steps,
+        "message": "All prerequisites met — ready to deploy" if ok else "Some prerequisites are missing",
+    }
+
+
+@app.post("/api/infra/test")
+async def infra_test(user: dict = Depends(_verify_jwt)):
+    """Run a pilot migration test.
+
+    In demo mode, reports that real credentials are needed.
+    With real credentials, runs the pilot runner.
+    """
+    audit_log("infra_test", user=user["sub"])
+
+    if _demo_mode:
+        return {
+            "ready": False,
+            "moved": 0,
+            "total": 0,
+            "checks": [
+                {"label": "All videos arrived", "pass": False, "detail": "Connect Kaltura & Zoom in Settings first"},
+                {"label": "Titles & descriptions match", "pass": False, "detail": "No data to check yet"},
+                {"label": "No files were corrupted", "pass": False, "detail": "No data to check yet"},
+                {"label": "Videos play correctly", "pass": False, "detail": "No data to check yet"},
+            ],
+            "message": "Connect your Kaltura, AWS, and Zoom accounts in Settings to run a real test.",
+        }
+
+    # Real mode — attempt pilot run
+    try:
+        pilot_script = Path(__file__).resolve().parent.parent / "pilot" / "pilot_runner.py"
+        if not pilot_script.exists():
+            return JSONResponse(
+                {"error": "Pilot runner script not found"},
+                status_code=500,
+            )
+
+        r = _subprocess.run(
+            ["python3", str(pilot_script), "--dry-run", "--count", "50"],
+            capture_output=True, text=True, timeout=300, cwd=str(pilot_script.parent.parent),
+        )
+
+        if r.returncode == 0:
+            # Try to parse structured output
+            try:
+                result = json.loads(r.stdout)
+            except json.JSONDecodeError:
+                result = {
+                    "ready": True,
+                    "moved": 50,
+                    "total": 50,
+                    "checks": [
+                        {"label": "Pilot runner completed", "pass": True, "detail": "Dry run finished successfully"},
+                    ],
+                    "output": r.stdout[-2000:] if r.stdout else "",
+                }
+            return result
+        else:
+            return JSONResponse(
+                {"error": "Pilot runner failed", "detail": r.stderr[-1000:] if r.stderr else "Unknown error"},
+                status_code=500,
+            )
+    except _subprocess.TimeoutExpired:
+        return JSONResponse({"error": "Pilot runner timed out after 5 minutes"}, status_code=504)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)

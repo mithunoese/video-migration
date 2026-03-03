@@ -37,15 +37,28 @@ class MigrationResult:
 
 
 class MigrationPipeline:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, on_progress=None):
         self.config = config
+        self.skip_s3 = config.skip_s3
         self.kaltura = KalturaClient(config.kaltura)
-        self.s3 = S3Staging(config.aws)
+        self.s3 = None if self.skip_s3 else S3Staging(config.aws)
         self.zoom = ZoomClient(config.zoom)
         self.tracker = MigrationStateTracker(config.aws, use_local=True)
+        self._on_progress = on_progress
 
         # Ensure download directory exists
         Path(config.pipeline.download_dir).mkdir(parents=True, exist_ok=True)
+
+        if self.skip_s3:
+            logger.info("S3 staging DISABLED (SKIP_S3=true) — direct Kaltura → Zoom mode")
+
+    def _notify(self, video_id: str, step: str, title: str):
+        """Fire progress callback for real-time SSE updates. Never throws."""
+        if self._on_progress:
+            try:
+                self._on_progress(video_id, step, title)
+            except Exception:
+                pass
 
     def _build_zoom_description(self, metadata: dict) -> str:
         """
@@ -79,44 +92,55 @@ class MigrationPipeline:
 
     def migrate_single_video(self, entry_id: str) -> MigrationResult:
         """
-        Migrate a single video: Kaltura -> S3 -> Zoom.
+        Migrate a single video: Kaltura -> (S3) -> Zoom.
 
-        This is the core per-video pipeline:
+        Pipeline steps:
         1. Fetch metadata from Kaltura
-        2. Get download URL
-        3. Download to local disk (or stream to S3)
-        4. Upload to Zoom
-        5. Update state tracker
+        2. Download video to local disk
+        3. Stage to S3 (if enabled)
+        4. Upload to Zoom (from local file)
+        5. Cleanup S3 + local file
+        6. Mark completed
         """
         start_time = time.time()
         title = entry_id
         file_size_mb = 0.0
+        s3_key = None  # track for cleanup
+
+        # Sanitize entry_id before any file operations to prevent path traversal
+        safe_id = os.path.basename(entry_id).replace("..", "")
+        if not safe_id:
+            self.tracker.update_status(entry_id, MigrationStatus.FAILED, error="Invalid entry_id")
+            return MigrationResult(video_id=entry_id, title=entry_id, status="failed", error="Invalid entry_id")
+
+        local_path = os.path.join(self.config.pipeline.download_dir, f"{safe_id}.mp4")
 
         try:
             # Step 1: Fetch metadata
             self.tracker.update_status(entry_id, MigrationStatus.DOWNLOADING)
             metadata = self.kaltura.extract_full_metadata(entry_id)
             title = metadata.get("title", entry_id)
+            self._notify(entry_id, "downloading", title)
             logger.info("[%s] Starting migration: %s", entry_id, title)
 
-            # Step 2: Get download URL
+            # Step 2: Download from Kaltura to local disk
             download_url = self.kaltura.get_download_url(entry_id)
-
-            # Step 3: Download to local staging
-            local_path = os.path.join(
-                self.config.pipeline.download_dir,
-                f"{entry_id}.mp4",
-            )
             self.kaltura.download_video(download_url, local_path)
             file_size_mb = Path(local_path).stat().st_size / (1024 * 1024)
 
-            # Step 4: Upload to S3 staging
-            s3_key = f"{self.config.aws.staging_prefix}{entry_id}.mp4"
-            self.s3.upload_file(local_path, s3_key)
-            self.tracker.update_status(entry_id, MigrationStatus.STAGED, metadata=metadata)
+            # Step 3: Stage to S3 (backup/audit copy — skipped if SKIP_S3)
+            if self.s3:
+                s3_key = f"{self.config.aws.staging_prefix}{safe_id}.mp4"
+                self.s3.upload_file(local_path, s3_key)
+                self.tracker.update_status(entry_id, MigrationStatus.STAGED, metadata=metadata)
+            else:
+                logger.info("[%s] S3 staging skipped (direct mode)", entry_id)
+                self.tracker.update_status(entry_id, MigrationStatus.STAGED, metadata=metadata)
+            self._notify(entry_id, "staging", title)
 
-            # Step 5: Upload to Zoom
+            # Step 4: Upload to Zoom (from local file)
             self.tracker.update_status(entry_id, MigrationStatus.UPLOADING)
+            self._notify(entry_id, "uploading", title)
             zoom_description = self._build_zoom_description(metadata)
             zoom_result = self.zoom.upload_video(
                 local_path,
@@ -125,18 +149,23 @@ class MigrationPipeline:
             )
             zoom_id = zoom_result.get("id", "")
 
-            # Step 6: Mark completed
+            # Step 5: Mark completed
             self.tracker.update_status(
                 entry_id,
                 MigrationStatus.COMPLETED,
                 metadata={**metadata, "zoom_id": zoom_id},
             )
 
-            # Step 7: Cleanup local file
+            # Step 6: Cleanup — local file + S3 staging copy
             try:
                 os.remove(local_path)
             except OSError:
                 pass
+            if self.s3 and s3_key:
+                try:
+                    self.s3.delete_file(s3_key)
+                except Exception as e:
+                    logger.warning("[%s] S3 cleanup failed (non-fatal): %s", entry_id, e)
 
             elapsed = time.time() - start_time
             logger.info(
@@ -161,8 +190,7 @@ class MigrationPipeline:
 
             self.tracker.update_status(entry_id, MigrationStatus.FAILED, error=error_msg)
 
-            # Cleanup local file on failure
-            local_path = os.path.join(self.config.pipeline.download_dir, f"{entry_id}.mp4")
+            # Cleanup local file on failure (uses sanitized local_path from above)
             try:
                 os.remove(local_path)
             except OSError:
@@ -328,15 +356,18 @@ class MigrationPipeline:
             results["kaltura"] = False
             logger.error("Kaltura: FAILED - %s", e)
 
-        # Test S3
-        try:
-            # Just test we can list the bucket
-            self.s3._s3.head_bucket(Bucket=self.config.aws.bucket_name)
-            results["s3"] = True
-            logger.info("S3: OK (bucket: %s)", self.config.aws.bucket_name)
-        except Exception as e:
-            results["s3"] = False
-            logger.error("S3: FAILED - %s", e)
+        # Test S3 (skipped if SKIP_S3)
+        if self.skip_s3:
+            results["s3"] = True  # not needed
+            logger.info("S3: SKIPPED (direct mode — SKIP_S3=true)")
+        else:
+            try:
+                self.s3._s3.head_bucket(Bucket=self.config.aws.bucket_name)
+                results["s3"] = True
+                logger.info("S3: OK (bucket: %s)", self.config.aws.bucket_name)
+            except Exception as e:
+                results["s3"] = False
+                logger.error("S3: FAILED - %s", e)
 
         # Test Zoom
         try:

@@ -1,0 +1,49 @@
+# Production-ready docker-compose for the Video Migration Platform
+#
+# Usage:
+#   cp .env.example .env   # fill in your credentials
+#   docker compose up -d   # start the dashboard
+#   docker compose logs -f # follow logs
+#
+# With LocalStack S3 for testing:
+#   docker compose --profile testing up -d
+
+services:
+  dashboard:
+    build: .
+    container_name: video-migration-dashboard
+    ports:
+      - "${DASHBOARD_PORT:-8000}:8000"
+    env_file: .env
+    environment:
+      - STATE_DIR=/app/data
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+    volumes:
+      - migration_data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/status')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # Optional: LocalStack for S3 staging (testing only)
+  localstack:
+    image: localstack/localstack:latest
+    container_name: video-migration-localstack
+    profiles: ["testing"]
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3,dynamodb
+      - DEFAULT_REGION=us-east-1
+      - DEBUG=0
+    volumes:
+      - localstack_data:/var/lib/localstack
+
+volumes:
+  migration_data:
+    driver: local
+  localstack_data:
+    driver: local

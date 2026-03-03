@@ -13,7 +13,7 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import requests
 
@@ -76,11 +76,12 @@ class KalturaClient:
 
         return result
 
-    def list_videos(self, page: int = 1, page_size: int = 100) -> dict:
+    def list_videos(self, page: int = 1, page_size: int = 100, search: Optional[str] = None) -> dict:
         """
-        List media entries with pagination.
+        List media entries with pagination and optional search.
 
         Returns dict with 'objects' (list of entries) and 'totalCount'.
+        Search uses Kaltura's freeTextLike filter (name, description, tags, referenceId).
         """
         params = {
             "filter[mediaTypeEqual]": 1,  # VIDEO
@@ -89,6 +90,8 @@ class KalturaClient:
             "pager[pageSize]": page_size,
             "pager[pageIndex]": page,
         }
+        if search:
+            params["filter[freeTextLike]"] = search
 
         result = self._api_call("media", "list", params)
         total = result.get("totalCount", 0)
@@ -133,11 +136,12 @@ class KalturaClient:
             return result
         return result.get("url", result)
 
-    def download_video(self, url: str, dest_path: str, chunk_size: int = 8192) -> Path:
+    def download_video(self, url: str, dest_path: str, chunk_size: int = 1048576) -> Path:
         """
         Stream-download a video file from a Kaltura URL.
 
         Returns the path to the downloaded file.
+        Raises RuntimeError if the download is truncated (size mismatch).
         """
         dest = Path(dest_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -148,17 +152,28 @@ class KalturaClient:
 
         total_size = int(resp.headers.get("content-length", 0))
         downloaded = 0
+        next_log_at = 5 * 1024 * 1024  # log every 5 MB
 
         with open(dest, "wb") as f:
             for chunk in resp.iter_content(chunk_size=chunk_size):
                 if chunk:
                     f.write(chunk)
                     downloaded += len(chunk)
-                    if total_size > 0 and downloaded % (chunk_size * 100) == 0:
+                    if total_size > 0 and downloaded >= next_log_at:
                         pct = (downloaded / total_size) * 100
-                        logger.debug("Download progress: %.1f%%", pct)
+                        logger.debug("Download progress: %.1f%% (%.1f MB)", pct, downloaded / (1024 * 1024))
+                        next_log_at += 5 * 1024 * 1024
 
-        file_size_mb = dest.stat().st_size / (1024 * 1024)
+        # Verify download integrity
+        actual_size = dest.stat().st_size
+        if total_size > 0 and actual_size != total_size:
+            dest.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"Download truncated: expected {total_size} bytes, got {actual_size} "
+                f"({actual_size * 100 // total_size}% complete)"
+            )
+
+        file_size_mb = actual_size / (1024 * 1024)
         logger.info("Downloaded %.1f MB to %s", file_size_mb, dest)
         return dest
 

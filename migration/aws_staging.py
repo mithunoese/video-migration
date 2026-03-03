@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from enum import Enum
@@ -116,7 +117,9 @@ class MigrationStateTracker:
     def __init__(self, config: AWSConfig, use_local: bool = False):
         self.config = config
         self.use_local = use_local
-        self._local_path = Path("/tmp/migration-state.json")
+        _state_dir = os.environ.get("STATE_DIR", str(Path.home() / ".video-migration"))
+        Path(_state_dir).mkdir(parents=True, exist_ok=True)
+        self._local_path = Path(_state_dir) / "migration-state.json"
 
         if not use_local:
             try:
@@ -155,6 +158,10 @@ class MigrationStateTracker:
         if self.use_local:
             data = self._load_local()
             record = data.get(video_id, {})
+
+            # Capture previous status before overwriting
+            prev_status = record.get("status")
+
             record.update({
                 "video_id": video_id,
                 "status": status.value,
@@ -166,13 +173,35 @@ class MigrationStateTracker:
                 record["error"] = error
             if status == MigrationStatus.COMPLETED:
                 record["completed_at"] = now
+
+            # Append to immutable history array (IFRS audit trail)
+            if "history" not in record:
+                record["history"] = []
+            record["history"].append({
+                "ts": now,
+                "from": prev_status,
+                "to": status.value,
+                "error": error,
+            })
+
             data[video_id] = record
             self._save_local(data)
         else:
+            # Fetch existing to capture previous status
+            existing = self.get_status(video_id)
+            prev_status = existing.get("status") if existing else None
+            prev_history = json.loads(existing.get("history", "[]")) if existing else []
+
+            history_entry = {"ts": now, "from": prev_status, "to": status.value}
+            if error:
+                history_entry["error"] = error
+            prev_history.append(history_entry)
+
             item = {
                 "video_id": video_id,
                 "status": status.value,
                 "updated_at": now,
+                "history": json.dumps(prev_history),
             }
             if metadata:
                 item["metadata"] = json.dumps(metadata)
@@ -194,6 +223,25 @@ class MigrationStateTracker:
             resp = self._table.get_item(Key={"video_id": video_id})
             return resp.get("Item")
 
+    def _query_by_status(self, status_value: str) -> list[dict]:
+        """Query GSI by status. Falls back to scan if GSI doesn't exist."""
+        try:
+            resp = self._table.query(
+                IndexName="status-index",
+                KeyConditionExpression="#s = :val",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":val": status_value},
+            )
+            return resp.get("Items", [])
+        except Exception:
+            # GSI not available, fall back to scan with filter
+            resp = self._table.scan(
+                FilterExpression="#s = :val",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":val": status_value},
+            )
+            return resp.get("Items", [])
+
     def get_pending_videos(self) -> list[str]:
         """Get list of video IDs that haven't been migrated yet."""
         if self.use_local:
@@ -203,18 +251,12 @@ class MigrationStateTracker:
                 if rec.get("status") in (MigrationStatus.PENDING.value, MigrationStatus.FAILED.value)
             ]
         else:
-            resp = self._table.scan(
-                FilterExpression="attribute_not_exists(#s) OR #s IN (:p, :f)",
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={
-                    ":p": MigrationStatus.PENDING.value,
-                    ":f": MigrationStatus.FAILED.value,
-                },
-            )
-            return [item["video_id"] for item in resp.get("Items", [])]
+            pending = self._query_by_status(MigrationStatus.PENDING.value)
+            failed = self._query_by_status(MigrationStatus.FAILED.value)
+            return [item["video_id"] for item in pending + failed]
 
     def get_summary(self) -> dict[str, int]:
-        """Get a summary count of videos by status."""
+        """Get a summary count of videos by status. Uses paginated scan."""
         if self.use_local:
             data = self._load_local()
             summary: dict[str, int] = {}
@@ -223,12 +265,38 @@ class MigrationStateTracker:
                 summary[status] = summary.get(status, 0) + 1
             return summary
         else:
-            resp = self._table.scan()
             summary: dict[str, int] = {}
-            for item in resp.get("Items", []):
-                status = item.get("status", "unknown")
-                summary[status] = summary.get(status, 0) + 1
+            scan_kwargs: dict[str, Any] = {"ProjectionExpression": "#s", "ExpressionAttributeNames": {"#s": "status"}}
+            while True:
+                resp = self._table.scan(**scan_kwargs)
+                for item in resp.get("Items", []):
+                    status = item.get("status", "unknown")
+                    summary[status] = summary.get(status, 0) + 1
+                if "LastEvaluatedKey" not in resp:
+                    break
+                scan_kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
             return summary
+
+    def get_all_videos(self) -> dict:
+        """Return full state dict for reconciliation views."""
+        if self.use_local:
+            return self._load_local()
+        else:
+            items = {}
+            scan_kwargs: dict[str, Any] = {}
+            while True:
+                resp = self._table.scan(**scan_kwargs)
+                for item in resp.get("Items", []):
+                    vid = item.get("video_id")
+                    if "metadata" in item and isinstance(item["metadata"], str):
+                        item["metadata"] = json.loads(item["metadata"])
+                    if "history" in item and isinstance(item["history"], str):
+                        item["history"] = json.loads(item["history"])
+                    items[vid] = item
+                if "LastEvaluatedKey" not in resp:
+                    break
+                scan_kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+            return items
 
     def register_videos(self, video_ids: list[str]) -> int:
         """Register a batch of video IDs as pending. Returns count of newly registered."""

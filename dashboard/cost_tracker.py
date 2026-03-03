@@ -36,9 +36,9 @@ COST_RATES = {
 class CostTracker:
     """Tracks and persists cost data for migration operations."""
 
-    def __init__(self, state_dir: str = "/tmp/video-migration"):
-        self._state_dir = state_dir
-        self._cost_file = os.path.join(state_dir, "cost-data.json")
+    def __init__(self, state_dir: str = None):
+        self._state_dir = state_dir or os.environ.get("STATE_DIR", os.path.join(Path.home(), ".video-migration"))
+        self._cost_file = os.path.join(self._state_dir, "cost-data.json")
         self._data = self._load()
 
     def _load(self) -> dict:

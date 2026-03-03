@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gap Analysis — Solution Doc vs Built Project</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --font-body: 'DM Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    --bg: #f4f7f7;
+    --surface: #ffffff;
+    --surface2: #eef3f3;
+    --surface-elevated: #f9fbfb;
+    --border: rgba(0, 0, 0, 0.06);
+    --border-bright: rgba(0, 0, 0, 0.12);
+    --text: #0f1a1a;
+    --text-dim: #5a706e;
+    --accent: #008285;
+    --accent-dim: rgba(0, 130, 133, 0.07);
+    --accent-light: #00a5a8;
+    --green: #059669;
+    --green-dim: rgba(5, 150, 105, 0.08);
+    --red: #dc2626;
+    --red-dim: rgba(220, 38, 38, 0.07);
+    --orange: #d97706;
+    --orange-dim: rgba(217, 119, 6, 0.07);
+    --blue: #2563eb;
+    --blue-dim: rgba(37, 99, 235, 0.07);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c1616;
+      --surface: #142020;
+      --surface2: #1a2b2b;
+      --surface-elevated: #1f3232;
+      --border: rgba(255, 255, 255, 0.06);
+      --border-bright: rgba(255, 255, 255, 0.1);
+      --text: #e0efef;
+      --text-dim: #7fa3a0;
+      --accent: #2dd4bf;
+      --accent-dim: rgba(45, 212, 191, 0.1);
+      --accent-light: #5eead4;
+      --green: #34d399;
+      --green-dim: rgba(52, 211, 153, 0.1);
+      --red: #f87171;
+      --red-dim: rgba(248, 113, 113, 0.1);
+      --orange: #fbbf24;
+      --orange-dim: rgba(251, 191, 36, 0.1);
+      --blue: #60a5fa;
+      --blue-dim: rgba(96, 165, 250, 0.1);
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    background-image:
+      radial-gradient(ellipse at 20% 0%, var(--accent-dim) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 100%, var(--blue-dim) 0%, transparent 40%);
+    color: var(--text);
+    font-family: var(--font-body);
+    padding: 40px;
+    min-height: 100vh;
+  }
+  @keyframes fadeUp { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes fadeScale { from { opacity:0; transform:scale(0.92); } to { opacity:1; transform:scale(1); } }
+  @keyframes countUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+  .anim { animation: fadeUp 0.4s ease-out both; animation-delay: calc(var(--i,0) * 0.05s); }
+  .anim-s { animation: fadeScale 0.4s ease-out both; animation-delay: calc(var(--i,0) * 0.05s); }
+  @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation-duration:0.01ms!important; transition-duration:0.01ms!important; } }
+
+  /* Layout */
+  .wrap { max-width:1400px; margin:0 auto; display:grid; grid-template-columns:170px 1fr; gap:0 40px; }
+  .main { min-width:0; }
+
+  /* TOC */
+  .toc { position:sticky; top:24px; align-self:start; padding:14px 0; grid-row:1/-1; max-height:calc(100dvh - 48px); overflow-y:auto; }
+  .toc::-webkit-scrollbar { width:3px; }
+  .toc::-webkit-scrollbar-thumb { background:var(--surface-elevated); border-radius:2px; }
+  .toc-title { font-family:var(--font-mono); font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:2px; color:var(--text-dim); padding:0 0 10px; margin-bottom:8px; border-bottom:1px solid var(--border); }
+  .toc a { display:block; font-size:11px; color:var(--text-dim); text-decoration:none; padding:4px 8px; border-radius:5px; border-left:2px solid transparent; transition:all 0.15s; line-height:1.4; margin-bottom:1px; }
+  .toc a:hover { color:var(--text); background:var(--surface2); }
+  .toc a.active { color:var(--text); border-left-color:var(--accent); }
+  @media (max-width:1000px) {
+    .wrap { grid-template-columns:1fr; padding-top:0; }
+    body { padding-top:0; }
+    .toc { position:sticky; top:0; z-index:200; max-height:none; display:flex; gap:4px; align-items:center; overflow-x:auto; -webkit-overflow-scrolling:touch; background:var(--bg); border-bottom:1px solid var(--border); padding:10px 0; margin:0 -40px; padding-left:40px; padding-right:40px; grid-row:auto; }
+    .toc::-webkit-scrollbar { display:none; }
+    .toc-title { display:none; }
+    .toc a { white-space:nowrap; flex-shrink:0; border-left:none; border-bottom:2px solid transparent; border-radius:4px 4px 0 0; padding:6px 10px; font-size:10px; }
+    .toc a.active { border-left:none; border-bottom-color:var(--accent); background:var(--surface); }
+    .main { padding-top:20px; }
+  }
+
+  /* Header */
+  .page-label { font-family:var(--font-mono); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:2px; color:var(--accent); margin-bottom:8px; }
+  h1 { font-size:36px; font-weight:700; letter-spacing:-0.5px; margin-bottom:6px; line-height:1.15; }
+  .subtitle { color:var(--text-dim); font-size:14px; margin-bottom:36px; line-height:1.5; }
+  .subtitle strong { color:var(--text); }
+
+  /* Hero KPI */
+  .hero-kpi { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px,1fr)); gap:14px; margin-bottom:32px; }
+  .kpi { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:20px; box-shadow:0 2px 8px rgba(0,0,0,0.04); }
+  .kpi--hero { border-color:var(--accent); border-width:2px; background:var(--accent-dim); }
+  .kpi__val { font-size:38px; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums; }
+  .kpi__val--accent { color:var(--accent); }
+  .kpi__val--green { color:var(--green); }
+  .kpi__val--red { color:var(--red); }
+  .kpi__val--orange { color:var(--orange); }
+  .kpi__label { font-family:var(--font-mono); font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:1.2px; color:var(--text-dim); margin-top:6px; }
+
+  /* Section heads */
+  .sec-head { font-family:var(--font-mono); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1.5px; color:var(--accent); padding:10px 0 16px; margin-top:40px; border-bottom:2px solid var(--accent-dim); scroll-margin-top:80px; }
+
+  /* Chart container */
+  .chart-wrap { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; margin-bottom:24px; }
+  .chart-wrap canvas { max-height:320px; }
+  .chart-row { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px; }
+  @media (max-width:768px) { .chart-row { grid-template-columns:1fr; } }
+
+  /* Table */
+  .table-wrap { background:var(--surface); border:1px solid var(--border); border-radius:12px; overflow:hidden; margin-bottom:24px; }
+  .table-scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .data-table { width:100%; border-collapse:collapse; font-size:13px; line-height:1.55; }
+  .data-table thead { position:sticky; top:0; z-index:2; }
+  .data-table th { background:var(--surface2); font-family:var(--font-mono); font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:1.2px; color:var(--text-dim); text-align:left; padding:14px 16px; border-bottom:2px solid var(--border-bright); white-space:nowrap; }
+  .data-table td { padding:14px 16px; border-bottom:1px solid var(--border); vertical-align:top; }
+  .data-table tbody tr:last-child td { border-bottom:none; }
+  .data-table .wide { min-width:200px; max-width:400px; }
+  .data-table tbody tr:nth-child(even) { background:var(--accent-dim); }
+  .data-table tbody tr { transition:background 0.15s ease; animation:fadeUp 0.35s ease-out both; animation-delay:calc(var(--i,0)*0.04s); }
+  .data-table tbody tr:hover { background:var(--border); }
+  .data-table code { font-family:var(--font-mono); font-size:11px; background:var(--accent-dim); color:var(--accent); padding:1px 5px; border-radius:3px; }
+  .data-table small { display:block; color:var(--text-dim); font-size:11px; margin-top:3px; }
+  .data-table tfoot td { background:var(--surface2); font-weight:600; font-family:var(--font-mono); font-size:12px; border-top:2px solid var(--border-bright); border-bottom:none; padding:14px 16px; }
+
+  /* Status badges */
+  .st { display:inline-flex; align-items:center; gap:5px; font-family:var(--font-mono); font-size:10px; font-weight:600; padding:3px 10px; border-radius:6px; white-space:nowrap; letter-spacing:0.3px; }
+  .st::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .st--built { background:var(--green-dim); color:var(--green); }
+  .st--gap { background:var(--red-dim); color:var(--red); }
+  .st--partial { background:var(--orange-dim); color:var(--orange); }
+
+  /* Progress bar */
+  .prog-bar { width:100%; height:8px; background:var(--surface2); border-radius:4px; overflow:hidden; margin-top:8px; }
+  .prog-fill { height:100%; border-radius:4px; transition:width 1s ease; }
+
+  /* Item lists */
+  .item-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:16px 0; }
+  @media (max-width:768px) { .item-grid { grid-template-columns:1fr; } }
+  .item { display:flex; align-items:flex-start; gap:8px; font-size:13px; padding:8px 12px; border-radius:8px; background:var(--surface); border:1px solid var(--border); overflow-wrap:break-word; min-width:0; }
+  .item--built { border-left:3px solid var(--green); }
+  .item--gap { border-left:3px solid var(--red); }
+  .item__icon { flex-shrink:0; font-size:14px; line-height:1.3; }
+  .item__text { min-width:0; overflow-wrap:break-word; }
+
+  /* Bonus section */
+  .bonus-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px,1fr)); gap:10px; margin:16px 0; }
+  .bonus-card { display:flex; align-items:flex-start; gap:10px; padding:14px 16px; border-radius:10px; background:var(--accent-dim); border:1px solid var(--accent); font-size:13px; }
+  .bonus-card__icon { font-size:16px; flex-shrink:0; }
+  .bonus-card__text { min-width:0; overflow-wrap:break-word; }
+
+  /* Collapsible */
+  details.col { border:1px solid var(--border); border-radius:10px; overflow:hidden; margin-bottom:16px; }
+  details.col summary { padding:14px 20px; background:var(--surface); font-family:var(--font-mono); font-size:12px; font-weight:600; cursor:pointer; list-style:none; display:flex; align-items:center; gap:8px; color:var(--text); transition:background 0.15s ease; }
+  details.col summary:hover { background:var(--surface-elevated); }
+  details.col summary::-webkit-details-marker { display:none; }
+  details.col summary::before { content:'▸'; font-size:11px; color:var(--text-dim); transition:transform 0.15s ease; }
+  details.col[open] summary::before { transform:rotate(90deg); }
+  details.col .col__body { padding:16px 20px; border-top:1px solid var(--border); font-size:13px; line-height:1.6; color:var(--text-dim); }
+  details.col .col__body strong { color:var(--text); font-weight:600; }
+
+  /* Legend */
+  .legend { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:20px; }
+  .legend-item { display:flex; align-items:center; gap:6px; font-family:var(--font-mono); font-size:11px; color:var(--text-dim); }
+  .legend-swatch { width:10px; height:10px; border-radius:3px; }
+
+  @media (max-width:768px) { body { padding:16px; } h1 { font-size:26px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav class="toc" id="toc">
+  <div class="toc-title">Gap Analysis</div>
+  <a href="#s0">Overview</a>
+  <a href="#s1">1. Core Pipeline</a>
+  <a href="#s2">2. AWS Orchestration</a>
+  <a href="#s3">3. Data Protection</a>
+  <a href="#s4">4. State Tracking</a>
+  <a href="#s5">5. Reconciliation</a>
+  <a href="#s6">6. Infrastructure</a>
+  <a href="#s7">7. Monitoring</a>
+  <a href="#s8">8. Pilot/Validation</a>
+  <a href="#s9">Beyond the Doc</a>
+  <a href="#s10">Verdict</a>
+</nav>
+
+<div class="main">
+
+  <div class="page-label anim" style="--i:0">OpenExchange VideoMigrate</div>
+  <h1 class="anim" style="--i:1">Solution Doc vs. What's Built</h1>
+  <p class="subtitle anim" style="--i:2">Comparing the <strong>"Zoom CMS Migration Framework &mdash; Solution Deep Dive v2"</strong> against the current video-migration codebase. Weighted by effort and complexity per area.</p>
+
+  <!-- ===== HERO KPIs ===== -->
+  <div id="s0" class="sec-head anim" style="--i:3">Overview</div>
+
+  <div class="hero-kpi anim-s" style="--i:4">
+    <div class="kpi kpi--hero">
+      <div class="kpi__val kpi__val--accent">42%</div>
+      <div class="kpi__label">Overall Match</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi__val kpi__val--green">20</div>
+      <div class="kpi__label">Items Built</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi__val kpi__val--orange">11</div>
+      <div class="kpi__label">Partial</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi__val kpi__val--red">19</div>
+      <div class="kpi__label">Not Built</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi__val" style="color:var(--blue)">11</div>
+      <div class="kpi__label">Bonus (Beyond Doc)</div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="chart-row anim" style="--i:5">
+    <div class="chart-wrap">
+      <canvas id="barChart"></canvas>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="doughnutChart"></canvas>
+    </div>
+  </div>
+
+  <!-- ===== SECTION 1: Core Pipeline ===== -->
+  <div id="s1" class="sec-head anim" style="--i:6">1 &mdash; Core Pipeline Flow</div>
+  <div class="hero-kpi anim-s" style="--i:7">
+    <div class="kpi"><div class="kpi__val kpi__val--green">80%</div><div class="kpi__label">Built</div></div>
+    <div class="kpi"><div class="kpi__val" style="color:var(--text-dim)">25%</div><div class="kpi__label">Doc Weight</div></div>
+    <div class="kpi"><div class="kpi__val kpi__val--accent">20%</div><div class="kpi__label">Weighted Score</div></div>
+  </div>
+  <div class="item-grid anim" style="--i:8">
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Kaltura auth (KS session + auto-refresh)</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Asset discovery with pagination</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Full metadata extraction (18 fields)</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Stream download to local disk</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">S3 staging upload with AES256</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Zoom CMS upload (3 API targets)</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Multipart upload for files &gt;2GB</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">State tracking (6 statuses)</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Retry with exponential backoff</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Skip already-completed videos</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Checksum/size validation on staged objects</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Playback verification after Zoom upload</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Range-based streaming downloads</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">S3-stored manifest generation</span></div>
+  </div>
+
+  <!-- ===== SECTION 2: AWS Orchestration ===== -->
+  <div id="s2" class="sec-head anim" style="--i:9">2 &mdash; AWS Orchestration Infrastructure</div>
+  <div class="hero-kpi anim-s" style="--i:10">
+    <div class="kpi"><div class="kpi__val kpi__val--red">10%</div><div class="kpi__label">Built</div></div>
+    <div class="kpi"><div class="kpi__val" style="color:var(--text-dim)">25%</div><div class="kpi__label">Doc Weight</div></div>
+    <div class="kpi"><div class="kpi__val kpi__val--accent">2.5%</div><div class="kpi__label">Weighted Score</div></div>
+  </div>
+  <p style="color:var(--red); font-weight:600; font-size:13px; margin:12px 0;">Biggest gap area. Doc describes full AWS-native architecture; project uses Python threads + Docker.</p>
+  <div class="item-grid anim" style="--i:11">
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">S3 bucket operations (upload/download/delete/presign)</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">DynamoDB state tracking + local JSON fallback</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">AWS Step Functions <small>(uses ThreadPoolExecutor)</small></span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">AWS Lambda functions <small>(uses FastAPI/uvicorn)</small></span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Amazon SQS job queues <small>(uses in-process threading)</small></span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">AWS Fargate workers <small>(uses local threads)</small></span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">AWS CDK infrastructure-as-code <small>(uses Docker/Vercel)</small></span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">AWS Secrets Manager <small>(uses .env files)</small></span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Per-project isolated stack deployment</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Async callback pattern to Step Functions</span></div>
+  </div>
+
+  <!-- ===== SECTION 3: Data Protection ===== -->
+  <div id="s3" class="sec-head anim" style="--i:12">3 &mdash; Data Protection &amp; Encryption</div>
+  <div class="hero-kpi anim-s" style="--i:13">
+    <div class="kpi"><div class="kpi__val kpi__val--orange">30%</div><div class="kpi__label">Built</div></div>
+    <div class="kpi"><div class="kpi__val" style="color:var(--text-dim)">10%</div><div class="kpi__label">Doc Weight</div></div>
+    <div class="kpi"><div class="kpi__val kpi__val--accent">3%</div><div class="kpi__label">Weighted Score</div></div>
+  </div>
+  <div class="item-grid anim" style="--i:14">
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">S3 server-side encryption (AES256)</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">JWT auth with HS256</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">bcrypt password hashing</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Security headers (CSP, HSTS, X-Frame-Options)</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Rate limiting on sensitive endpoints</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Path traversal protection</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">JSON structured audit logging</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">SSE-KMS with Customer Managed Key (CMK)</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Dedicated KMS key per migration</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Key policy scoped to IAM roles</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Automatic key rotation</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">IAM role-based access control</span></div>
+  </div>
+
+  <!-- ===== SECTION 4: State Tracking ===== -->
+  <div id="s4" class="sec-head anim" style="--i:15">4 &mdash; State Tracking &amp; DynamoDB</div>
+  <div class="hero-kpi anim-s" style="--i:16">
+    <div class="kpi"><div class="kpi__val kpi__val--green">85%</div><div class="kpi__label">Built</div></div>
+    <div class="kpi"><div class="kpi__val" style="color:var(--text-dim)">10%</div><div class="kpi__label">Doc Weight</div></div>
+    <div class="kpi"><div class="kpi__val kpi__val--accent">8.5%</div><div class="kpi__label">Weighted Score</div></div>
+  </div>
+  <div class="item-grid anim" style="--i:17">
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">DynamoDB table with per-video status</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">GSI query by status (scan fallback)</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Paginated scan for summaries</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Local JSON fallback if DynamoDB down</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">6-state enum (PENDING through COMPLETED/FAILED)</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Batch registration of discovered videos</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Dedicated SourceID &rarr; ZoomID mapping table</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Per-chunk checkpoint writes for resume</span></div>
+  </div>
+
+  <!-- ===== SECTION 5: Reconciliation ===== -->
+  <div id="s5" class="sec-head anim" style="--i:18">5 &mdash; Reconciliation &amp; Audit</div>
+  <div class="hero-kpi anim-s" style="--i:19">
+    <div class="kpi"><div class="kpi__val kpi__val--red">30%</div><div class="kpi__label">Built</div></div>
+    <div class="kpi"><div class="kpi__val" style="color:var(--text-dim)">10%</div><div class="kpi__label">Doc Weight</div></div>
+    <div class="kpi"><div class="kpi__val kpi__val--accent">3%</div><div class="kpi__label">Weighted Score</div></div>
+  </div>
+  <div class="item-grid anim" style="--i:20">
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Status summary report (counts by status)</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Failed video details with error messages</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Cost tracking with per-operation breakdown</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Manifest vs migrated reconciliation report</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Metadata match validation (&ge;99.5%)</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Corrupted file / playback verification</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Formal audit-grade sign-off report</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Archive logs &amp; environment teardown</span></div>
+  </div>
+
+  <!-- ===== SECTION 6: Infrastructure ===== -->
+  <div id="s6" class="sec-head anim" style="--i:21">6 &mdash; Infrastructure &amp; Deployment</div>
+  <div class="hero-kpi anim-s" style="--i:22">
+    <div class="kpi"><div class="kpi__val kpi__val--red">15%</div><div class="kpi__label">Built</div></div>
+    <div class="kpi"><div class="kpi__val" style="color:var(--text-dim)">10%</div><div class="kpi__label">Doc Weight</div></div>
+    <div class="kpi"><div class="kpi__val kpi__val--accent">1.5%</div><div class="kpi__label">Weighted Score</div></div>
+  </div>
+  <div class="item-grid anim" style="--i:23">
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Docker + docker-compose (health checks)</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Vercel serverless deployment</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Local dev server with auto-browser-open</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">AWS CDK stack per project</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Per-project isolation (no cross-contamination)</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Automated environment teardown</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">CloudWatch integration</span></div>
+  </div>
+
+  <!-- ===== SECTION 7: Monitoring ===== -->
+  <div id="s7" class="sec-head anim" style="--i:24">7 &mdash; Monitoring &amp; Observability</div>
+  <div class="hero-kpi anim-s" style="--i:25">
+    <div class="kpi"><div class="kpi__val kpi__val--orange">40%</div><div class="kpi__label">Built</div></div>
+    <div class="kpi"><div class="kpi__val" style="color:var(--text-dim)">5%</div><div class="kpi__label">Doc Weight</div></div>
+    <div class="kpi"><div class="kpi__val kpi__val--accent">2%</div><div class="kpi__label">Weighted Score</div></div>
+  </div>
+  <div class="item-grid anim" style="--i:26">
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Real-time SSE streaming of events</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Polling fallback for serverless</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Dashboard with live stats &amp; charts</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Cost tracking with daily timeline</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">CloudWatch metrics &amp; alarms</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Heartbeat monitoring for stuck jobs</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Auto-recovery from stuck workers</span></div>
+  </div>
+
+  <!-- ===== SECTION 8: Pilot ===== -->
+  <div id="s8" class="sec-head anim" style="--i:27">8 &mdash; Pilot &amp; Validation</div>
+  <div class="hero-kpi anim-s" style="--i:28">
+    <div class="kpi"><div class="kpi__val kpi__val--red">25%</div><div class="kpi__label">Built</div></div>
+    <div class="kpi"><div class="kpi__val" style="color:var(--text-dim)">5%</div><div class="kpi__label">Doc Weight</div></div>
+    <div class="kpi"><div class="kpi__val kpi__val--accent">1.25%</div><div class="kpi__label">Weighted Score</div></div>
+  </div>
+  <div class="item-grid anim" style="--i:29">
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Self-contained pipeline test (CC sample video)</span></div>
+    <div class="item item--built"><span class="item__icon">&#10003;</span><span class="item__text">Per-service connection testing</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Large file validation testing</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">50-100 asset pilot run framework</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Formal reconciliation for pilot</span></div>
+    <div class="item item--gap"><span class="item__icon">&#10007;</span><span class="item__text">Go/No-Go criteria (100% count, 99.5% metadata, playback)</span></div>
+  </div>
+
+  <!-- ===== SECTION 9: Beyond the Doc ===== -->
+  <div id="s9" class="sec-head anim" style="--i:30">Beyond the Doc &mdash; Bonus Features Built</div>
+  <p style="font-size:14px; color:var(--text-dim); margin:12px 0;">These capabilities exist in the project but are <strong style="color:var(--text)">not mentioned</strong> in the Solution Deep Dive document at all.</p>
+  <div class="bonus-grid anim" style="--i:31">
+    <div class="bonus-card"><span class="bonus-card__icon">&#9733;</span><span class="bonus-card__text">Full 7-tab web dashboard (Alpine.js + Tailwind)</span></div>
+    <div class="bonus-card"><span class="bonus-card__icon">&#9733;</span><span class="bonus-card__text">AI Assistant with Claude integration</span></div>
+    <div class="bonus-card"><span class="bonus-card__icon">&#9733;</span><span class="bonus-card__text">Cost Tracker with AWS pricing model</span></div>
+    <div class="bonus-card"><span class="bonus-card__icon">&#9733;</span><span class="bonus-card__text">Demo mode with 847 realistic fake videos</span></div>
+    <div class="bonus-card"><span class="bonus-card__icon">&#9733;</span><span class="bonus-card__text">Field Mapping UI (14 Kaltura&rarr;Zoom fields)</span></div>
+    <div class="bonus-card"><span class="bonus-card__icon">&#9733;</span><span class="bonus-card__text">3-stage visual pipeline with live animation</span></div>
+    <div class="bonus-card"><span class="bonus-card__icon">&#9733;</span><span class="bonus-card__text">Zoom rate limit handling (429 + Retry-After)</span></div>
+    <div class="bonus-card"><span class="bonus-card__icon">&#9733;</span><span class="bonus-card__text">3 Zoom API targets (Events, VM, Clips)</span></div>
+    <div class="bonus-card"><span class="bonus-card__icon">&#9733;</span><span class="bonus-card__text">Login lockout after 5 failed attempts</span></div>
+    <div class="bonus-card"><span class="bonus-card__icon">&#9733;</span><span class="bonus-card__text">Pitch deck &amp; security deck generators</span></div>
+    <div class="bonus-card"><span class="bonus-card__icon">&#9733;</span><span class="bonus-card__text">Architecture diagram page</span></div>
+  </div>
+
+  <!-- ===== SECTION 10: Verdict ===== -->
+  <div id="s10" class="sec-head anim" style="--i:32">Verdict</div>
+
+  <div class="table-wrap anim" style="--i:33">
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Area</th>
+            <th>Doc Weight</th>
+            <th>Built %</th>
+            <th>Weighted</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="--i:1"><td>Core Pipeline</td><td>25%</td><td>80%</td><td>20.0%</td><td><span class="st st--built">Strong</span></td></tr>
+          <tr style="--i:2"><td>AWS Orchestration</td><td>25%</td><td>10%</td><td>2.5%</td><td><span class="st st--gap">Major Gap</span></td></tr>
+          <tr style="--i:3"><td>Data Protection</td><td>10%</td><td>30%</td><td>3.0%</td><td><span class="st st--partial">Partial</span></td></tr>
+          <tr style="--i:4"><td>State Tracking</td><td>10%</td><td>85%</td><td>8.5%</td><td><span class="st st--built">Strong</span></td></tr>
+          <tr style="--i:5"><td>Reconciliation</td><td>10%</td><td>30%</td><td>3.0%</td><td><span class="st st--partial">Partial</span></td></tr>
+          <tr style="--i:6"><td>Infrastructure</td><td>10%</td><td>15%</td><td>1.5%</td><td><span class="st st--gap">Major Gap</span></td></tr>
+          <tr style="--i:7"><td>Monitoring</td><td>5%</td><td>40%</td><td>2.0%</td><td><span class="st st--partial">Partial</span></td></tr>
+          <tr style="--i:8"><td>Pilot/Validation</td><td>5%</td><td>25%</td><td>1.25%</td><td><span class="st st--gap">Gap</span></td></tr>
+        </tbody>
+        <tfoot>
+          <tr>
+            <td>Total</td>
+            <td>100%</td>
+            <td></td>
+            <td style="color:var(--accent); font-size:14px;">41.75%</td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+
+  <details class="col anim" style="--i:34">
+    <summary>What does this mean?</summary>
+    <div class="col__body">
+      <strong>The core pipeline logic is solid</strong> &mdash; the actual Kaltura&rarr;S3&rarr;Zoom flow works end-to-end with retry, state tracking, and concurrent execution.<br><br>
+      <strong>The single biggest gap is AWS-native infrastructure.</strong> The doc describes a full Step Functions + Lambda + SQS + Fargate + CDK architecture. The project replaces all of that with Python threads, Docker, and Vercel. This represents 25% of the doc's vision and is only 10% realized.<br><br>
+      <strong>However, the project also has 11 significant features the doc never mentions</strong> &mdash; a full web dashboard, AI assistant, cost tracking, demo mode, field mapping UI, and real-time visual pipeline. These go well beyond what the Solution Deep Dive describes.<br><br>
+      <strong>Bottom line:</strong> ~42% match to the document as written, but the project is building toward a different (more user-facing) architecture. The doc is infrastructure-heavy; the project is experience-heavy.
+    </div>
+  </details>
+
+</div><!-- /main -->
+</div><!-- /wrap -->
+
+<script>
+// Scroll spy
+(function() {
+  const toc = document.getElementById('toc');
+  const links = toc.querySelectorAll('a');
+  const sections = [];
+  links.forEach(link => {
+    const id = link.getAttribute('href').slice(1);
+    const el = document.getElementById(id);
+    if (el) sections.push({ id, el, link });
+  });
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const match = sections.find(s => s.el === entry.target);
+        if (match) {
+          match.link.classList.add('active');
+          if (window.innerWidth <= 1000) {
+            match.link.scrollIntoView({ behavior:'smooth', block:'nearest', inline:'center' });
+          }
+        }
+      }
+    });
+  }, { rootMargin:'-10% 0px -80% 0px' });
+  sections.forEach(s => observer.observe(s.el));
+  links.forEach(link => {
+    link.addEventListener('click', e => {
+      e.preventDefault();
+      const id = link.getAttribute('href').slice(1);
+      const el = document.getElementById(id);
+      if (el) { el.scrollIntoView({ behavior:'smooth', block:'start' }); history.replaceState(null,'','#'+id); }
+    });
+  });
+})();
+
+// Charts
+const teal = '#008285';
+const tealLight = '#00a5a8';
+const getTextColor = () => getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim() || '#5a706e';
+const getSurfaceColor = () => getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || 'rgba(0,0,0,0.06)';
+
+// Bar chart
+const barCtx = document.getElementById('barChart').getContext('2d');
+new Chart(barCtx, {
+  type: 'bar',
+  data: {
+    labels: ['Core Pipeline', 'AWS Orch.', 'Data Protect.', 'State Track.', 'Reconcil.', 'Infra.', 'Monitoring', 'Pilot'],
+    datasets: [{
+      label: 'Built %',
+      data: [80, 10, 30, 85, 30, 15, 40, 25],
+      backgroundColor: [
+        '#059669', '#dc2626', '#d97706', '#059669', '#d97706', '#dc2626', '#d97706', '#dc2626'
+      ],
+      borderRadius: 6,
+      barThickness: 28,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: true,
+    plugins: {
+      legend: { display: false },
+      title: { display: true, text: 'Coverage by Area', color: getTextColor(), font: { family: "'DM Sans'", size: 14, weight: '600' } }
+    },
+    scales: {
+      y: { max: 100, ticks: { callback: v => v + '%', color: getTextColor(), font: { family: "'JetBrains Mono'", size: 10 } }, grid: { color: getSurfaceColor() } },
+      x: { ticks: { color: getTextColor(), font: { family: "'JetBrains Mono'", size: 9 }, maxRotation: 45 }, grid: { display: false } }
+    }
+  }
+});
+
+// Doughnut
+const doughCtx = document.getElementById('doughnutChart').getContext('2d');
+new Chart(doughCtx, {
+  type: 'doughnut',
+  data: {
+    labels: ['Built (20)', 'Partial (11)', 'Not Built (19)'],
+    datasets: [{
+      data: [20, 11, 19],
+      backgroundColor: ['#059669', '#d97706', '#dc2626'],
+      borderWidth: 0,
+      spacing: 2,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: true,
+    cutout: '65%',
+    plugins: {
+      legend: { position: 'bottom', labels: { color: getTextColor(), font: { family: "'DM Sans'", size: 12 }, padding: 16, usePointStyle: true, pointStyleWidth: 10 } },
+      title: { display: true, text: 'Item Breakdown (50 total)', color: getTextColor(), font: { family: "'DM Sans'", size: 14, weight: '600' } }
+    }
+  }
+});
+</script>
+</body>
+</html>

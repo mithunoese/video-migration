@@ -1,0 +1,1018 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Security Audit &amp; Code Cleanup — VideoMigrate</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* ============ THEME — OE Teal + Blueprint aesthetic ============ */
+  :root {
+    --font-body: 'DM Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'IBM Plex Mono', 'SF Mono', Consolas, monospace;
+
+    --bg: #f4f8f8;
+    --surface: #ffffff;
+    --surface2: #edf4f4;
+    --surface-elevated: #f8fcfc;
+    --border: rgba(0, 80, 82, 0.08);
+    --border-bright: rgba(0, 80, 82, 0.16);
+    --text: #0f1c1c;
+    --text-dim: #5c7272;
+
+    --accent: #008285;
+    --accent-dim: rgba(0, 130, 133, 0.07);
+    --accent-light: #00a5a8;
+
+    --green: #16a34a;
+    --green-dim: rgba(22, 163, 74, 0.08);
+    --red: #dc2626;
+    --red-dim: rgba(220, 38, 38, 0.07);
+    --orange: #d97706;
+    --orange-dim: rgba(217, 119, 6, 0.07);
+    --blue: #2563eb;
+    --blue-dim: rgba(37, 99, 235, 0.07);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1616;
+      --surface: #111e1e;
+      --surface2: #172626;
+      --surface-elevated: #1a2d2d;
+      --border: rgba(0, 200, 204, 0.08);
+      --border-bright: rgba(0, 200, 204, 0.16);
+      --text: #ddf0f0;
+      --text-dim: #7fa8a8;
+
+      --accent: #00c4c7;
+      --accent-dim: rgba(0, 196, 199, 0.1);
+      --accent-light: #00e8eb;
+
+      --green: #4ade80;
+      --green-dim: rgba(74, 222, 128, 0.1);
+      --red: #f87171;
+      --red-dim: rgba(248, 113, 113, 0.1);
+      --orange: #fbbf24;
+      --orange-dim: rgba(251, 191, 36, 0.1);
+      --blue: #60a5fa;
+      --blue-dim: rgba(96, 165, 250, 0.1);
+    }
+  }
+
+  /* ============ RESET ============ */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    background-image:
+      radial-gradient(ellipse at 20% 0%, var(--accent-dim) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 100%, var(--green-dim) 0%, transparent 40%);
+    color: var(--text);
+    font-family: var(--font-body);
+    padding: 40px;
+    min-height: 100vh;
+    overflow-wrap: break-word;
+  }
+
+  /* ============ ANIMATION ============ */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeScale {
+    from { opacity: 0; transform: scale(0.92); }
+    to { opacity: 1; transform: scale(1); }
+  }
+
+  .animate {
+    animation: fadeUp 0.4s ease-out both;
+    animation-delay: calc(var(--i, 0) * 0.05s);
+  }
+  .animate-scale {
+    animation: fadeScale 0.35s ease-out both;
+    animation-delay: calc(var(--i, 0) * 0.06s);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-delay: 0ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  /* ============ GRID LAYOUT WITH TOC ============ */
+  .wrap {
+    max-width: 1300px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 170px 1fr;
+    gap: 0 40px;
+  }
+  .main { min-width: 0; }
+
+  /* ============ TOC ============ */
+  .toc {
+    position: sticky;
+    top: 24px;
+    align-self: start;
+    padding: 14px 0;
+    grid-row: 1 / -1;
+    max-height: calc(100dvh - 48px);
+    overflow-y: auto;
+  }
+  .toc::-webkit-scrollbar { width: 3px; }
+  .toc::-webkit-scrollbar-thumb { background: var(--surface-elevated); border-radius: 2px; }
+
+  .toc-title {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    padding: 0 0 10px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .toc a {
+    display: block;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-decoration: none;
+    padding: 4px 8px;
+    border-radius: 5px;
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+    line-height: 1.4;
+    margin-bottom: 1px;
+  }
+  .toc a:hover { color: var(--text); background: var(--surface2); }
+  .toc a.active { color: var(--text); border-left-color: var(--accent); }
+
+  @media (max-width: 1000px) {
+    .wrap { grid-template-columns: 1fr; padding-top: 0; }
+    body { padding-top: 0; }
+
+    .toc {
+      position: sticky;
+      top: 0;
+      z-index: 200;
+      max-height: none;
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 0;
+      margin: 0 -40px;
+      padding-left: 40px;
+      padding-right: 40px;
+      grid-row: auto;
+    }
+    .toc::-webkit-scrollbar { display: none; }
+    .toc-title { display: none; }
+
+    .toc a {
+      white-space: nowrap;
+      flex-shrink: 0;
+      border-left: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 4px 4px 0 0;
+      padding: 6px 10px;
+      font-size: 10px;
+    }
+    .toc a.active {
+      border-left: none;
+      border-bottom-color: var(--accent);
+      background: var(--surface);
+    }
+    .main { padding-top: 20px; }
+  }
+
+  /* ============ HEADER ============ */
+  .page-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--accent);
+    background: var(--accent-dim);
+    padding: 4px 12px;
+    border-radius: 6px;
+    margin-bottom: 12px;
+  }
+  .page-badge::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  h1 {
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 6px;
+    line-height: 1.2;
+  }
+
+  .subtitle {
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+  }
+
+  .meta-line {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 28px;
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .meta-line span { display: inline-flex; align-items: center; gap: 4px; }
+
+  /* ============ SECTION HEADERS ============ */
+  .sec-head {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--accent);
+    padding: 10px 0;
+    margin-top: 36px;
+    margin-bottom: 16px;
+    border-bottom: 2px solid var(--accent-dim);
+    scroll-margin-top: 80px;
+  }
+
+  /* ============ KPI SUMMARY ============ */
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px;
+    margin-bottom: 28px;
+  }
+
+  .kpi-card {
+    background: var(--surface-elevated);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+  .kpi-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  }
+
+  .kpi-card__value {
+    font-size: 36px;
+    font-weight: 700;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -1px;
+  }
+  .kpi-card__value--accent { color: var(--accent); }
+  .kpi-card__value--green { color: var(--green); }
+  .kpi-card__value--orange { color: var(--orange); }
+  .kpi-card__value--blue { color: var(--blue); }
+
+  .kpi-card__label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--text-dim);
+    margin-top: 6px;
+  }
+
+  /* ============ TABLE ============ */
+  .table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 24px;
+  }
+
+  .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .data-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+
+  .data-table th {
+    background: var(--surface2);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--text-dim);
+    text-align: left;
+    padding: 14px 16px;
+    border-bottom: 2px solid var(--border-bright);
+    white-space: nowrap;
+  }
+
+  .data-table td {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  .data-table tbody tr:last-child td { border-bottom: none; }
+
+  .data-table .wide {
+    min-width: 200px;
+    max-width: 500px;
+  }
+
+  .data-table tbody tr:nth-child(even) {
+    background: var(--accent-dim);
+  }
+
+  .data-table tbody tr {
+    transition: background 0.15s ease;
+    animation: fadeUp 0.35s ease-out both;
+    animation-delay: calc(var(--i, 0) * 0.04s);
+  }
+  .data-table tbody tr:hover {
+    background: var(--border);
+  }
+
+  .data-table code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  .data-table small {
+    display: block;
+    color: var(--text-dim);
+    font-size: 11px;
+    margin-top: 3px;
+  }
+
+  .data-table tfoot td {
+    background: var(--surface2);
+    font-weight: 600;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    border-top: 2px solid var(--border-bright);
+    border-bottom: none;
+    padding: 14px 16px;
+  }
+
+  /* ============ SEVERITY BADGES ============ */
+  .sev {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+    letter-spacing: 0.3px;
+  }
+  .sev::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .sev--critical { background: var(--red-dim); color: var(--red); }
+  .sev--high { background: var(--orange-dim); color: var(--orange); }
+  .sev--medium { background: var(--blue-dim); color: var(--blue); }
+
+  /* ============ STATUS BADGES ============ */
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+    letter-spacing: 0.3px;
+  }
+  .status::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .status--fixed { background: var(--green-dim); color: var(--green); }
+  .status--noted { background: var(--orange-dim); color: var(--orange); }
+
+  /* ============ FILE CARDS ============ */
+  .file-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+
+  .file-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 10px;
+    padding: 16px 20px;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+  .file-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  }
+  .file-card--deleted {
+    border-left-color: var(--red);
+    opacity: 0.7;
+  }
+
+  .file-card__name {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .file-card--deleted .file-card__name { color: var(--red); }
+
+  .file-card__desc {
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  .file-card__tag {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--red-dim);
+    color: var(--red);
+  }
+
+  /* ============ RECOMMENDATION LIST ============ */
+  .reco-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 24px;
+  }
+
+  .reco-list li {
+    padding: 12px 16px 12px 40px;
+    position: relative;
+    font-size: 13px;
+    line-height: 1.6;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    transition: background 0.15s;
+  }
+  .reco-list li:first-child { border-radius: 10px 10px 0 0; }
+  .reco-list li:last-child { border-radius: 0 0 10px 10px; border-bottom: none; }
+  .reco-list li:only-child { border-radius: 10px; }
+  .reco-list li:hover { background: var(--surface-elevated); }
+
+  .reco-list li::before {
+    content: '';
+    position: absolute;
+    left: 16px;
+    top: 17px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 2px solid var(--orange);
+    background: var(--orange-dim);
+  }
+
+  .reco-list code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  /* ============ FIELD MAPPING FIX SECTION ============ */
+  .fix-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+
+  .fix-card h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--text);
+  }
+
+  .fix-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .fix-list li {
+    padding: 8px 0 8px 20px;
+    position: relative;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-dim);
+  }
+
+  .fix-list li::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 14px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+  }
+
+  .fix-list li strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .fix-list code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  /* ============ COLLAPSIBLE ============ */
+  details.collapsible {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+
+  details.collapsible summary {
+    padding: 14px 20px;
+    background: var(--surface);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+    transition: background 0.15s ease;
+  }
+  details.collapsible summary:hover { background: var(--surface-elevated); }
+  details.collapsible summary::-webkit-details-marker { display: none; }
+
+  details.collapsible summary::before {
+    content: '\25B8';
+    font-size: 11px;
+    color: var(--text-dim);
+    transition: transform 0.15s ease;
+  }
+  details.collapsible[open] summary::before {
+    transform: rotate(90deg);
+  }
+
+  details.collapsible .collapsible__body {
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-dim);
+  }
+
+  details.collapsible .collapsible__body strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  details.collapsible .collapsible__body code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  /* ============ LEGEND ============ */
+  .legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .legend-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+  }
+
+  /* ============ RESPONSIVE ============ */
+  @media (max-width: 768px) {
+    body { padding: 16px; }
+    h1 { font-size: 24px; }
+    .data-table th,
+    .data-table td { padding: 10px 12px; }
+    .file-grid { grid-template-columns: 1fr; }
+    .kpi-row { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <nav class="toc" id="toc">
+    <div class="toc-title">Sections</div>
+    <a href="#s1">1. Summary</a>
+    <a href="#s2">2. Issues Found</a>
+    <a href="#s3">3. Field Mapping</a>
+    <a href="#s4">4. Files Changed</a>
+    <a href="#s5">5. Production Recs</a>
+  </nav>
+
+  <div class="main">
+
+    <div class="page-badge animate" style="--i:0">Security Audit</div>
+    <h1 class="animate" style="--i:1">Security Audit &amp; Code Cleanup</h1>
+    <p class="subtitle animate" style="--i:2">VideoMigrate Dashboard &mdash; Kaltura &rarr; S3 &rarr; Zoom pipeline</p>
+    <div class="meta-line animate" style="--i:3">
+      <span>Feb 26, 2026</span>
+      <span>OpenExchange</span>
+      <span>v1.0 &mdash; Post-audit</span>
+    </div>
+
+    <!-- =========== SECTION 1: SUMMARY =========== -->
+    <div id="s1" class="sec-head animate" style="--i:4">1 &mdash; Summary</div>
+
+    <div class="kpi-row">
+      <div class="kpi-card animate-scale" style="--i:5">
+        <div class="kpi-card__value kpi-card__value--accent">14</div>
+        <div class="kpi-card__label">Issues Found</div>
+      </div>
+      <div class="kpi-card animate-scale" style="--i:6">
+        <div class="kpi-card__value kpi-card__value--green">11</div>
+        <div class="kpi-card__label">Fixed</div>
+      </div>
+      <div class="kpi-card animate-scale" style="--i:7">
+        <div class="kpi-card__value kpi-card__value--orange">3</div>
+        <div class="kpi-card__label">Noted for Prod</div>
+      </div>
+      <div class="kpi-card animate-scale" style="--i:8">
+        <div class="kpi-card__value kpi-card__value--blue">6</div>
+        <div class="kpi-card__label">Files Changed</div>
+      </div>
+    </div>
+
+    <div class="legend animate" style="--i:9">
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--red)"></div> Critical</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--orange)"></div> High</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--blue)"></div> Medium</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--green)"></div> Fixed</div>
+    </div>
+
+    <!-- =========== SECTION 2: ISSUES TABLE =========== -->
+    <div id="s2" class="sec-head animate" style="--i:10">2 &mdash; Issues Found &amp; Fixed</div>
+
+    <div class="table-wrap animate" style="--i:11">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width:90px">Severity</th>
+              <th class="wide">Issue</th>
+              <th style="width:140px">File</th>
+              <th class="wide">Fix Applied</th>
+              <th style="width:80px">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- CRITICAL -->
+            <tr style="--i:12">
+              <td><span class="sev sev--critical">Critical</span></td>
+              <td>
+                <strong>AI Chat returns empty data</strong>
+                <small><code>_handle_structured_query</code> initialized <code>videos=[]</code> and <code>summary={}</code> but never populated them. All chat queries returned zeros.</small>
+              </td>
+              <td><code>app.py</code><small>lines 703-740</small></td>
+              <td>Loaded real pipeline state from <code>_pipeline.tracker</code>. Summary now reflects actual video counts, sizes, and statuses.</td>
+              <td><span class="status status--fixed">Fixed</span></td>
+            </tr>
+            <tr style="--i:13">
+              <td><span class="sev sev--critical">Critical</span></td>
+              <td>
+                <strong>Path traversal in error handler</strong>
+                <small><code>pipeline.py</code> used raw unsanitized <code>entry_id</code> in the <code>except</code> block&rsquo;s <code>os.remove()</code>, allowing <code>../../etc/file</code> deletion.</small>
+              </td>
+              <td><code>pipeline.py</code><small>lines 95-190</small></td>
+              <td>Computed <code>safe_id</code> and <code>local_path</code> before the try block so both success and error paths use sanitized values.</td>
+              <td><span class="status status--fixed">Fixed</span></td>
+            </tr>
+            <tr style="--i:14">
+              <td><span class="sev sev--critical">Critical</span></td>
+              <td>
+                <strong>Default credentials exposed</strong>
+                <small>Login page displayed &ldquo;Default: admin / admin&rdquo; hint text.</small>
+              </td>
+              <td><code>index.html</code><small>line 117</small></td>
+              <td>Removed credential hint. Replaced with &ldquo;Credentials set via environment variables.&rdquo;</td>
+              <td><span class="status status--fixed">Fixed</span></td>
+            </tr>
+
+            <!-- HIGH -->
+            <tr style="--i:15">
+              <td><span class="sev sev--high">High</span></td>
+              <td>
+                <strong>Unauthenticated API endpoints</strong>
+                <small><code>/api/status</code>, <code>/api/videos</code>, <code>/api/activity</code>, <code>/api/field-mapping</code> had no JWT auth.</small>
+              </td>
+              <td><code>app.py</code><small>5 endpoints</small></td>
+              <td>Added <code>Depends(_verify_jwt)</code> to all five endpoints.</td>
+              <td><span class="status status--fixed">Fixed</span></td>
+            </tr>
+            <tr style="--i:16">
+              <td><span class="sev sev--high">High</span></td>
+              <td>
+                <strong>Settings value injection</strong>
+                <small>No validation on settings values before writing to <code>.env</code>. Newlines and control characters could corrupt the file or inject new variables.</small>
+              </td>
+              <td><code>app.py</code><small>PUT /api/settings</small></td>
+              <td>Added newline/CR blocking, control character regex, null byte check, and 500-char max length per field.</td>
+              <td><span class="status status--fixed">Fixed</span></td>
+            </tr>
+            <tr style="--i:17">
+              <td><span class="sev sev--high">High</span></td>
+              <td>
+                <strong>Error message info leaks</strong>
+                <small>Raw exception strings from Kaltura/S3/Zoom passed to API responses, leaking hostnames and internal paths.</small>
+              </td>
+              <td><code>app.py</code><small>test endpoints</small></td>
+              <td>Replaced with generic safe messages: &ldquo;Authentication failed&rdquo;, &ldquo;Bucket access failed&rdquo;, etc.</td>
+              <td><span class="status status--fixed">Fixed</span></td>
+            </tr>
+            <tr style="--i:18">
+              <td><span class="sev sev--high">High</span></td>
+              <td>
+                <strong>JWT in SSE URL query param</strong>
+                <small>Token passed as <code>?token=</code> in SSE URL, logged in browser history and server logs.</small>
+              </td>
+              <td><code>index.html</code></td>
+              <td>Recommend ticket-based SSE auth for production.</td>
+              <td><span class="status status--noted">Noted</span></td>
+            </tr>
+            <tr style="--i:19">
+              <td><span class="sev sev--high">High</span></td>
+              <td>
+                <strong>Weak CSP with unsafe-inline/eval</strong>
+                <small>Tailwind CDN requires <code>unsafe-eval</code>.</small>
+              </td>
+              <td><code>app.py</code></td>
+              <td>Bundle Tailwind at build time for production.</td>
+              <td><span class="status status--noted">Noted</span></td>
+            </tr>
+
+            <!-- MEDIUM -->
+            <tr style="--i:20">
+              <td><span class="sev sev--medium">Medium</span></td>
+              <td>
+                <strong>Dead <code>demo_data.py</code></strong>
+                <small>847-line file with fake data still on disk but never imported anywhere.</small>
+              </td>
+              <td><code>demo_data.py</code></td>
+              <td>Deleted entirely.</td>
+              <td><span class="status status--fixed">Fixed</span></td>
+            </tr>
+            <tr style="--i:21">
+              <td><span class="sev sev--medium">Medium</span></td>
+              <td>
+                <strong>Race condition in migration lock</strong>
+                <small><code>_migration_cancel.clear()</code> ran outside the <code>with _migration_lock</code> block.</small>
+              </td>
+              <td><code>app.py</code><small>line 536</small></td>
+              <td>Moved inside <code>with _migration_lock:</code> block.</td>
+              <td><span class="status status--fixed">Fixed</span></td>
+            </tr>
+            <tr style="--i:22">
+              <td><span class="sev sev--medium">Medium</span></td>
+              <td>
+                <strong>No upper bound on concurrency</strong>
+                <small><code>MAX_CONCURRENCY</code> accepted any integer value from env.</small>
+              </td>
+              <td><code>config.py</code></td>
+              <td>Capped: concurrency &le;20, batch &le;500, retries &le;10.</td>
+              <td><span class="status status--fixed">Fixed</span></td>
+            </tr>
+            <tr style="--i:23">
+              <td><span class="sev sev--medium">Medium</span></td>
+              <td>
+                <strong>.env quote inconsistency</strong>
+                <small><code>set_key</code> wrote values with single quotes. <code>dotenv_values()</code> and <code>os.getenv()</code> then read different values.</small>
+              </td>
+              <td><code>.env</code></td>
+              <td>Cleaned all values to unquoted format for consistency.</td>
+              <td><span class="status status--fixed">Fixed</span></td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="2">14 issues reviewed</td>
+              <td></td>
+              <td></td>
+              <td>11 fixed &middot; 3 noted</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+
+    <!-- =========== SECTION 3: FIELD MAPPING =========== -->
+    <div id="s3" class="sec-head animate" style="--i:24">3 &mdash; Field Mapping Fixes</div>
+
+    <div class="fix-card animate" style="--i:25">
+      <h3>Problem</h3>
+      <p style="font-size:13px;color:var(--text-dim);line-height:1.6;margin-bottom:16px;">
+        The Field Mapping table used native browser <code style="font-family:var(--font-mono);font-size:11px;background:var(--accent-dim);color:var(--accent);padding:1px 5px;border-radius:3px;">title</code> attribute tooltips which overlapped between rows and truncated long field names. API field identifiers were invisible unless you hovered.
+      </p>
+      <h3>Fixes Applied</h3>
+      <ul class="fix-list">
+        <li><strong>Replaced <code>title</code> tooltips with inline <code>&lt;code&gt;</code> labels</strong> &mdash; API field names now render directly below each friendly name</li>
+        <li><strong>Added <code>table-fixed</code> layout</strong> with explicit column widths to prevent truncation</li>
+        <li><strong>Expanded <code>friendlyFieldName()</code> dictionary</strong> with Zoom destination field names</li>
+        <li><strong>Added <code>whitespace-nowrap</code></strong> to status badges so they don't wrap mid-word</li>
+      </ul>
+    </div>
+
+    <details class="collapsible animate" style="--i:26">
+      <summary>Before / After Comparison</summary>
+      <div class="collapsible__body">
+        <strong>Before:</strong> Hovering over &ldquo;name&rdquo; showed a tiny browser tooltip that overlapped with the row below. Zoom destination fields showed raw API keys like <code>title</code> with no friendly label.
+        <br><br>
+        <strong>After:</strong> Each field row shows the friendly name in bold plus the raw API identifier in a dimmed <code>&lt;code&gt;</code> block below it. No hover needed. Both source and destination fields have human-readable labels.
+      </div>
+    </details>
+
+    <!-- =========== SECTION 4: FILES CHANGED =========== -->
+    <div id="s4" class="sec-head animate" style="--i:27">4 &mdash; Files Changed</div>
+
+    <div class="file-grid">
+      <div class="file-card animate" style="--i:28">
+        <div class="file-card__name">dashboard/app.py</div>
+        <div class="file-card__desc">Auth on 5 endpoints, chat handler fix, settings validation, error sanitization, race condition fix</div>
+      </div>
+      <div class="file-card animate" style="--i:29">
+        <div class="file-card__name">migration/pipeline.py</div>
+        <div class="file-card__desc">Path traversal fix &mdash; <code>safe_id</code> computed before try block</div>
+      </div>
+      <div class="file-card animate" style="--i:30">
+        <div class="file-card__name">migration/config.py</div>
+        <div class="file-card__desc">Upper bounds on <code>batch_size</code>, <code>max_concurrency</code>, <code>retry_attempts</code></div>
+      </div>
+      <div class="file-card animate" style="--i:31">
+        <div class="file-card__name">public/index.html</div>
+        <div class="file-card__desc">Field mapping table rewrite, login credential hint removal</div>
+      </div>
+      <div class="file-card animate" style="--i:32">
+        <div class="file-card__name">.env</div>
+        <div class="file-card__desc">Quote cleanup for consistent behavior across dotenv readers</div>
+      </div>
+      <div class="file-card file-card--deleted animate" style="--i:33">
+        <div class="file-card__name">dashboard/demo_data.py <span class="file-card__tag">Deleted</span></div>
+        <div class="file-card__desc">847 lines of dead code &mdash; fake data never imported anywhere</div>
+      </div>
+    </div>
+
+    <!-- =========== SECTION 5: RECOMMENDATIONS =========== -->
+    <div id="s5" class="sec-head animate" style="--i:34">5 &mdash; Remaining Recommendations (Production)</div>
+
+    <ul class="reco-list animate" style="--i:35">
+      <li>Replace SSE token-in-URL with a <strong>short-lived ticket system</strong> to avoid JWT exposure in browser history and server logs</li>
+      <li>Bundle Tailwind at build time to eliminate <code>unsafe-eval</code> from the <strong>Content Security Policy</strong></li>
+      <li>Move temp downloads from <code>/tmp</code> to a <strong>restricted directory</strong> with tighter permissions</li>
+      <li>Add <strong>file locking</strong> to <code>cost_tracker.py</code> JSON writes to prevent corruption under concurrent access</li>
+      <li>Store <strong>login lockout state</strong> in Redis for multi-worker deployments instead of in-process memory</li>
+      <li>Add <strong>rate limiting</strong> to all public-facing endpoints (consider <code>slowapi</code> or Nginx-level limits)</li>
+      <li>Enable <strong>HSTS</strong> by default when <code>ENVIRONMENT != development</code></li>
+    </ul>
+
+  </div><!-- /main -->
+</div><!-- /wrap -->
+
+<!-- ============ SCROLL SPY ============ -->
+<script>
+(function() {
+  var toc = document.getElementById('toc');
+  var links = toc.querySelectorAll('a');
+  var sections = [];
+
+  links.forEach(function(link) {
+    var id = link.getAttribute('href').slice(1);
+    var el = document.getElementById(id);
+    if (el) sections.push({ id: id, el: el, link: link });
+  });
+
+  var observer = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      if (entry.isIntersecting) {
+        links.forEach(function(l) { l.classList.remove('active'); });
+        var match = sections.find(function(s) { return s.el === entry.target; });
+        if (match) {
+          match.link.classList.add('active');
+          if (window.innerWidth <= 1000) {
+            match.link.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+          }
+        }
+      }
+    });
+  }, { rootMargin: '-10% 0px -80% 0px' });
+
+  sections.forEach(function(s) { observer.observe(s.el); });
+
+  links.forEach(function(link) {
+    link.addEventListener('click', function(e) {
+      e.preventDefault();
+      var id = link.getAttribute('href').slice(1);
+      var el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        history.replaceState(null, '', '#' + id);
+      }
+    });
+  });
+})();
+</script>
+
+</body>
+</html>

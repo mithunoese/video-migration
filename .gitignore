@@ -28,6 +28,7 @@ build/
 # Temp files
 /tmp/
 *.log
+.pytest_cache/
 
 # Virtual env
 venv/

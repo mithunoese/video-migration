@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Security Audit — Video Migration Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --font-body: 'Space Grotesk', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+
+    --bg: #0f0f13;
+    --surface: #18181f;
+    --surface2: #1e1e28;
+    --surface-elevated: #242430;
+    --border: rgba(255, 255, 255, 0.06);
+    --border-bright: rgba(255, 255, 255, 0.12);
+    --text: #e8e6f0;
+    --text-dim: #8a8898;
+
+    --critical: #ff4d6a;
+    --critical-dim: rgba(255, 77, 106, 0.12);
+    --high: #ff8c42;
+    --high-dim: rgba(255, 140, 66, 0.10);
+    --medium: #ffc233;
+    --medium-dim: rgba(255, 194, 51, 0.10);
+    --low: #4da6ff;
+    --low-dim: rgba(77, 166, 255, 0.10);
+    --green: #4ade80;
+    --green-dim: rgba(74, 222, 128, 0.08);
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f5f3f8;
+      --surface: #ffffff;
+      --surface2: #f0edf5;
+      --surface-elevated: #ffffff;
+      --border: rgba(0, 0, 0, 0.07);
+      --border-bright: rgba(0, 0, 0, 0.14);
+      --text: #1a1825;
+      --text-dim: #6b6880;
+
+      --critical: #dc2626;
+      --critical-dim: rgba(220, 38, 38, 0.08);
+      --high: #d97706;
+      --high-dim: rgba(217, 119, 6, 0.07);
+      --medium: #ca8a04;
+      --medium-dim: rgba(202, 138, 4, 0.07);
+      --low: #2563eb;
+      --low-dim: rgba(37, 99, 235, 0.07);
+      --green: #16a34a;
+      --green-dim: rgba(22, 163, 74, 0.07);
+    }
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    background-image:
+      radial-gradient(ellipse at 20% 0%, var(--critical-dim) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 100%, var(--low-dim) 0%, transparent 40%);
+    color: var(--text);
+    font-family: var(--font-body);
+    min-height: 100vh;
+    overflow-wrap: break-word;
+    padding: 0;
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeScale {
+    from { opacity: 0; transform: scale(0.92); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  .animate { animation: fadeUp 0.35s ease-out both; animation-delay: calc(var(--i, 0) * 0.04s); }
+  .animate-scale { animation: fadeScale 0.35s ease-out both; animation-delay: calc(var(--i, 0) * 0.06s); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-delay: 0ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  /* NAV */
+  .wrap {
+    max-width: 1400px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 170px 1fr;
+    gap: 0 40px;
+    padding: 40px;
+  }
+  .main { min-width: 0; }
+
+  .toc {
+    position: sticky;
+    top: 24px;
+    align-self: start;
+    padding: 14px 0;
+    grid-row: 1 / -1;
+    max-height: calc(100dvh - 48px);
+    overflow-y: auto;
+  }
+  .toc::-webkit-scrollbar { width: 3px; }
+  .toc::-webkit-scrollbar-thumb { background: var(--surface-elevated); border-radius: 2px; }
+
+  .toc-title {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    padding: 0 0 10px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .toc a {
+    display: block;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-decoration: none;
+    padding: 4px 8px;
+    border-radius: 5px;
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+    line-height: 1.4;
+    margin-bottom: 1px;
+  }
+  .toc a:hover { color: var(--text); background: var(--surface2); }
+  .toc a.active { color: var(--text); border-left-color: var(--critical); }
+
+  .toc .toc-badge {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 4px;
+    vertical-align: middle;
+  }
+
+  @media (max-width: 1000px) {
+    .wrap { grid-template-columns: 1fr; padding: 16px; padding-top: 0; }
+    body { padding-top: 0; }
+
+    .toc {
+      position: sticky;
+      top: 0;
+      z-index: 200;
+      max-height: none;
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 0;
+      margin: 0 -16px;
+      padding-left: 16px;
+      padding-right: 16px;
+      grid-row: auto;
+    }
+    .toc::-webkit-scrollbar { display: none; }
+    .toc-title { display: none; }
+
+    .toc a {
+      white-space: nowrap;
+      flex-shrink: 0;
+      border-left: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 4px 4px 0 0;
+      padding: 6px 10px;
+      font-size: 10px;
+    }
+    .toc a.active {
+      border-left: none;
+      border-bottom-color: var(--critical);
+      background: var(--surface);
+    }
+    .main { padding-top: 20px; }
+  }
+
+  /* HEADER */
+  .header {
+    margin-bottom: 32px;
+  }
+  .header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 4px;
+  }
+  .header h1 .shield {
+    display: inline-block;
+    margin-right: 8px;
+    font-size: 24px;
+  }
+  .subtitle {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  /* KPI ROW */
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  @media (max-width: 768px) {
+    .kpi-row { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  .kpi-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    position: relative;
+    overflow: hidden;
+  }
+  .kpi-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+  }
+  .kpi-card--critical::before { background: var(--critical); }
+  .kpi-card--high::before { background: var(--high); }
+  .kpi-card--medium::before { background: var(--medium); }
+  .kpi-card--low::before { background: var(--low); }
+  .kpi-card--total::before { background: linear-gradient(90deg, var(--critical), var(--high), var(--medium), var(--low)); }
+
+  .kpi-card__value {
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+  .kpi-card__value--critical { color: var(--critical); }
+  .kpi-card__value--high { color: var(--high); }
+  .kpi-card__value--medium { color: var(--medium); }
+  .kpi-card__value--low { color: var(--low); }
+
+  .kpi-card__label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+
+  /* SECTION HEADS */
+  .sec-head {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 12px 0;
+    margin-top: 32px;
+    margin-bottom: 12px;
+    border-bottom: 2px solid var(--border-bright);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    scroll-margin-top: 80px;
+  }
+
+  .sec-head .sec-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .sec-head .sec-count {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: auto;
+  }
+
+  /* TABLE */
+  .table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+
+  .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .data-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+
+  .data-table th {
+    background: var(--surface2);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--text-dim);
+    text-align: left;
+    padding: 12px 14px;
+    border-bottom: 2px solid var(--border-bright);
+    white-space: nowrap;
+  }
+
+  .data-table td {
+    padding: 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  .data-table tbody tr:last-child td { border-bottom: none; }
+
+  .data-table tbody tr {
+    transition: background 0.15s ease;
+    animation: fadeUp 0.35s ease-out both;
+    animation-delay: calc(var(--i, 0) * 0.04s);
+  }
+  .data-table tbody tr:hover { background: var(--border); }
+
+  .data-table code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--surface2);
+    color: var(--text);
+    padding: 2px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+
+  .data-table small {
+    display: block;
+    color: var(--text-dim);
+    font-size: 11px;
+    margin-top: 4px;
+    line-height: 1.5;
+  }
+
+  .data-table .col-id {
+    width: 36px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+  }
+
+  .data-table .col-sev { width: 90px; }
+  .data-table .col-loc { min-width: 160px; max-width: 220px; }
+  .data-table .col-desc { min-width: 250px; }
+  .data-table .col-fix { min-width: 200px; }
+
+  /* SEVERITY BADGES */
+  .sev {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  .sev::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .sev--critical { background: var(--critical-dim); color: var(--critical); }
+  .sev--high { background: var(--high-dim); color: var(--high); }
+  .sev--medium { background: var(--medium-dim); color: var(--medium); }
+  .sev--low { background: var(--low-dim); color: var(--low); }
+
+  /* VULN TITLE */
+  .vuln-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text);
+    margin-bottom: 3px;
+  }
+
+  /* COLLAPSIBLE */
+  details.collapsible {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  details.collapsible summary {
+    padding: 14px 20px;
+    background: var(--surface);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+    transition: background 0.15s ease;
+  }
+  details.collapsible summary:hover { background: var(--surface-elevated); }
+  details.collapsible summary::-webkit-details-marker { display: none; }
+  details.collapsible summary::before {
+    content: '\25B8';
+    font-size: 11px;
+    color: var(--text-dim);
+    transition: transform 0.15s ease;
+  }
+  details.collapsible[open] summary::before { transform: rotate(90deg); }
+  details.collapsible .collapsible__body {
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--text-dim);
+  }
+  details.collapsible .collapsible__body strong { color: var(--text); }
+  details.collapsible .collapsible__body code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--surface2);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  details.collapsible .collapsible__body ul {
+    list-style: none;
+    padding: 0;
+    margin: 8px 0;
+  }
+  details.collapsible .collapsible__body li {
+    padding-left: 14px;
+    position: relative;
+    margin-bottom: 4px;
+  }
+  details.collapsible .collapsible__body li::before {
+    content: '\203A';
+    position: absolute;
+    left: 0;
+    color: var(--text-dim);
+    font-weight: 700;
+  }
+
+  /* FOOTER */
+  .footer {
+    margin-top: 40px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  @media (max-width: 768px) {
+    body { padding: 16px; }
+    .kpi-row { grid-template-columns: repeat(2, 1fr); }
+    .data-table th, .data-table td { padding: 10px 12px; }
+    .header h1 { font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <nav class="toc" id="toc">
+    <div class="toc-title">Audit Sections</div>
+    <a href="#summary">Summary</a>
+    <a href="#critical">Critical <span class="toc-badge" style="background:var(--critical-dim);color:var(--critical)">5</span></a>
+    <a href="#high">High <span class="toc-badge" style="background:var(--high-dim);color:var(--high)">7</span></a>
+    <a href="#medium">Medium <span class="toc-badge" style="background:var(--medium-dim);color:var(--medium)">5</span></a>
+    <a href="#low">Low <span class="toc-badge" style="background:var(--low-dim);color:var(--low)">3</span></a>
+    <a href="#next">Next Steps</a>
+  </nav>
+
+  <div class="main">
+
+    <div class="header animate" style="--i:0">
+      <h1><span class="shield" role="img" aria-label="shield">&#x1F6E1;</span> Security Audit Report</h1>
+      <p class="subtitle">Video Migration Platform &mdash; FastAPI + Alpine.js &mdash; Feb 2026</p>
+    </div>
+
+    <!-- KPI SUMMARY -->
+    <div id="summary" class="kpi-row" style="scroll-margin-top:80px">
+      <div class="kpi-card kpi-card--total animate-scale" style="--i:1">
+        <div class="kpi-card__value">20</div>
+        <div class="kpi-card__label">Total Findings</div>
+      </div>
+      <div class="kpi-card kpi-card--critical animate-scale" style="--i:2">
+        <div class="kpi-card__value kpi-card__value--critical">5</div>
+        <div class="kpi-card__label">Critical</div>
+      </div>
+      <div class="kpi-card kpi-card--high animate-scale" style="--i:3">
+        <div class="kpi-card__value kpi-card__value--high">7</div>
+        <div class="kpi-card__label">High</div>
+      </div>
+      <div class="kpi-card kpi-card--medium animate-scale" style="--i:4">
+        <div class="kpi-card__value kpi-card__value--medium">5</div>
+        <div class="kpi-card__label">Medium</div>
+      </div>
+      <div class="kpi-card kpi-card--low animate-scale" style="--i:5">
+        <div class="kpi-card__value kpi-card__value--low">3</div>
+        <div class="kpi-card__label">Low</div>
+      </div>
+    </div>
+
+    <!-- ═══════════ CRITICAL ═══════════ -->
+    <div id="critical" class="sec-head animate" style="--i:6">
+      <span class="sec-dot" style="background:var(--critical)"></span>
+      Critical &mdash; Fix Immediately
+      <span class="sec-count" style="background:var(--critical-dim);color:var(--critical)">5 findings</span>
+    </div>
+
+    <div class="table-wrap animate" style="--i:7">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="col-id">#</th>
+              <th class="col-sev">Severity</th>
+              <th class="col-loc">Location</th>
+              <th class="col-desc">Vulnerability</th>
+              <th class="col-fix">Recommended Fix</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="--i:8">
+              <td class="col-id">1</td>
+              <td><span class="sev sev--critical">Critical</span></td>
+              <td><code>app.py:72</code><small>_hash_password()</small></td>
+              <td>
+                <div class="vuln-title">Weak Password Hashing (SHA-256)</div>
+                Uses <code>hashlib.sha256()</code> for password storage. SHA-256 is a cryptographic hash, <strong>not</strong> a password hash. It runs in nanoseconds, making brute-force and rainbow table attacks trivial.
+              </td>
+              <td>Replace with <code>bcrypt</code> or <code>argon2</code>. These are intentionally slow and include salting. Add <code>bcrypt>=4.0.0</code> to requirements.txt.</td>
+            </tr>
+            <tr style="--i:9">
+              <td class="col-id">2</td>
+              <td><span class="sev sev--critical">Critical</span></td>
+              <td><code>app.py:58</code><small>JWT_SECRET init</small></td>
+              <td>
+                <div class="vuln-title">JWT Secret Regenerates on Restart</div>
+                If <code>JWT_SECRET_KEY</code> env var is unset, a random secret is generated each restart. On Vercel serverless, every cold start gets a <strong>different secret</strong>, silently invalidating all existing tokens.
+              </td>
+              <td>Require <code>JWT_SECRET_KEY</code> or derive a deterministic fallback from a stable project identifier. Log a warning at startup if using a generated secret.</td>
+            </tr>
+            <tr style="--i:10">
+              <td class="col-id">3</td>
+              <td><span class="sev sev--critical">Critical</span></td>
+              <td><code>app.py:460</code><small>/api/migration/stream</small></td>
+              <td>
+                <div class="vuln-title">SSE Stream Unauthenticated</div>
+                The Server-Sent Events endpoint for real-time migration progress has <strong>no auth check</strong>. Anyone can connect and receive all migration events including video IDs, titles, errors, and Zoom IDs.
+              </td>
+              <td>Add JWT token verification via query parameter (SSE can't use headers). Validate <code>?token=xxx</code> before subscribing.</td>
+            </tr>
+            <tr style="--i:11">
+              <td class="col-id">4</td>
+              <td><span class="sev sev--critical">Critical</span></td>
+              <td><code>app.py:507</code><small>/api/migration/poll</small></td>
+              <td>
+                <div class="vuln-title">Polling Endpoint Unauthenticated</div>
+                The polling fallback for serverless environments also has no authentication. Exposes migration event history to unauthenticated users.
+              </td>
+              <td>Add <code>Depends(_verify_jwt)</code> to the endpoint.</td>
+            </tr>
+            <tr style="--i:12">
+              <td class="col-id">5</td>
+              <td><span class="sev sev--critical">Critical</span></td>
+              <td><code>zoom_client.py:78</code><small>_api_call() retry</small></td>
+              <td>
+                <div class="vuln-title">Infinite Recursion on Rate Limit</div>
+                When Zoom returns HTTP 429, <code>_api_call()</code> sleeps then calls itself recursively with no depth limit. Sustained rate limiting causes a <strong>stack overflow</strong> and crashes the process.
+              </td>
+              <td>Add a <code>max_retries</code> parameter (default 5). Track retry count and raise after exhaustion. Use iterative loop instead of recursion.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══════════ HIGH ═══════════ -->
+    <div id="high" class="sec-head animate" style="--i:13">
+      <span class="sec-dot" style="background:var(--high)"></span>
+      High &mdash; Fix Before Production
+      <span class="sec-count" style="background:var(--high-dim);color:var(--high)">7 findings</span>
+    </div>
+
+    <div class="table-wrap animate" style="--i:14">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="col-id">#</th>
+              <th class="col-sev">Severity</th>
+              <th class="col-loc">Location</th>
+              <th class="col-desc">Vulnerability</th>
+              <th class="col-fix">Recommended Fix</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="--i:15">
+              <td class="col-id">6</td>
+              <td><span class="sev sev--high">High</span></td>
+              <td><code>app.py:560</code><small>chat() error handler</small></td>
+              <td>
+                <div class="vuln-title">Claude API Error Leaks Internals</div>
+                Raw exception object is interpolated into the response: <code>f"AI service error: {e}"</code>. Can expose API keys in error messages, stack traces, or internal service URLs.
+              </td>
+              <td>Replace with a generic error message. Log the real exception server-side only.</td>
+            </tr>
+            <tr style="--i:16">
+              <td class="col-id">7</td>
+              <td><span class="sev sev--high">High</span></td>
+              <td><code>app.py:525</code><small>PUT /api/field-mapping</small></td>
+              <td>
+                <div class="vuln-title">Field Mapping PUT Unauthenticated</div>
+                The field mapping update endpoint has no auth. An attacker could modify how Kaltura metadata maps to Zoom fields, causing data corruption during migration.
+              </td>
+              <td>Add <code>Depends(_verify_jwt)</code> to the endpoint.</td>
+            </tr>
+            <tr style="--i:17">
+              <td class="col-id">8</td>
+              <td><span class="sev sev--high">High</span></td>
+              <td><code>app.py:723</code><small>GET /api/costs/projection</small></td>
+              <td>
+                <div class="vuln-title">Cost Projection Unauthenticated</div>
+                Cost projection calculator exposed without authentication.
+              </td>
+              <td>Add <code>Depends(_verify_jwt)</code> or accept as intentionally public (read-only calculator with no sensitive data).</td>
+            </tr>
+            <tr style="--i:18">
+              <td class="col-id">9</td>
+              <td><span class="sev sev--high">High</span></td>
+              <td><code>app.py:730</code><small>GET /api/costs/timeline</small></td>
+              <td>
+                <div class="vuln-title">Cost Timeline Unauthenticated</div>
+                Daily cost aggregation data exposed without auth. Reveals migration activity patterns and spending.
+              </td>
+              <td>Add <code>Depends(_verify_jwt)</code>.</td>
+            </tr>
+            <tr style="--i:19">
+              <td class="col-id">10</td>
+              <td><span class="sev sev--high">High</span></td>
+              <td><code>app.py:750</code><small>GET /api/costs/export</small></td>
+              <td>
+                <div class="vuln-title">Cost Export Unauthenticated</div>
+                CSV download of all cost data with video IDs, timestamps, and spending breakdowns, accessible without authentication.
+              </td>
+              <td>Add <code>Depends(_verify_jwt)</code>.</td>
+            </tr>
+            <tr style="--i:20">
+              <td class="col-id">11</td>
+              <td><span class="sev sev--high">High</span></td>
+              <td><code>app.py:817</code><small>GET /api/report</small></td>
+              <td>
+                <div class="vuln-title">Report Endpoint Unauthenticated</div>
+                Full migration report exposed without auth. Contains status summaries, video counts, and failure details.
+              </td>
+              <td>Add <code>Depends(_verify_jwt)</code>.</td>
+            </tr>
+            <tr style="--i:21">
+              <td class="col-id">12</td>
+              <td><span class="sev sev--high">High</span></td>
+              <td><code>app.py:1037</code><small>GET /api/test/result</small></td>
+              <td>
+                <div class="vuln-title">Test Result Unauthenticated</div>
+                Pipeline test results (including file paths and internal error messages) exposed without authentication.
+              </td>
+              <td>Add <code>Depends(_verify_jwt)</code>.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══════════ MEDIUM ═══════════ -->
+    <div id="medium" class="sec-head animate" style="--i:22">
+      <span class="sec-dot" style="background:var(--medium)"></span>
+      Medium &mdash; Address in Next Sprint
+      <span class="sec-count" style="background:var(--medium-dim);color:var(--medium)">5 findings</span>
+    </div>
+
+    <div class="table-wrap animate" style="--i:23">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="col-id">#</th>
+              <th class="col-sev">Severity</th>
+              <th class="col-loc">Location</th>
+              <th class="col-desc">Vulnerability</th>
+              <th class="col-fix">Recommended Fix</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="--i:24">
+              <td class="col-id">13</td>
+              <td><span class="sev sev--medium">Medium</span></td>
+              <td><code>index.html:7-9</code><small>CDN script tags</small></td>
+              <td>
+                <div class="vuln-title">CDN Scripts Without SRI</div>
+                Tailwind CSS, Alpine.js, and Chart.js loaded from CDN without <code>integrity</code> (Subresource Integrity) attributes. A CDN compromise would allow arbitrary JavaScript execution.
+              </td>
+              <td>Add <code>integrity="sha384-..."</code> and <code>crossorigin="anonymous"</code> to each CDN script/link tag. Pin exact versions.</td>
+            </tr>
+            <tr style="--i:25">
+              <td class="col-id">14</td>
+              <td><span class="sev sev--medium">Medium</span></td>
+              <td><code>app.py:224</code><small>CSP header</small></td>
+              <td>
+                <div class="vuln-title">CSP Allows unsafe-inline/unsafe-eval</div>
+                Content Security Policy includes <code>'unsafe-inline'</code> and <code>'unsafe-eval'</code> for scripts. This significantly weakens XSS protection, as inline scripts and <code>eval()</code> remain executable.
+              </td>
+              <td>Move inline scripts to external files and use nonce-based CSP. Note: Alpine.js requires <code>'unsafe-eval'</code> unless using the CSP build (<code>@alpinejs/csp</code>).</td>
+            </tr>
+            <tr style="--i:26">
+              <td class="col-id">15</td>
+              <td><span class="sev sev--medium">Medium</span></td>
+              <td><code>app.py:262</code><small>login endpoint</small></td>
+              <td>
+                <div class="vuln-title">No Account Lockout</div>
+                Rate limiting (10/min) is the only brute-force protection. No progressive lockout after repeated failures. An attacker can try 10 passwords every minute indefinitely.
+              </td>
+              <td>Track failed attempts per IP/username. Lock account for 15 min after 5 failures. Log and alert on lockout events.</td>
+            </tr>
+            <tr style="--i:27">
+              <td class="col-id">16</td>
+              <td><span class="sev sev--medium">Medium</span></td>
+              <td><code>aws_staging.py:119</code> <code>cost_tracker.py:39</code></td>
+              <td>
+                <div class="vuln-title">State Files in /tmp (World-Readable)</div>
+                Migration state and cost data stored in <code>/tmp/migration-state.json</code> and <code>/tmp/video-migration/cost-data.json</code>. On shared systems, <code>/tmp</code> is world-readable. Data includes video IDs, metadata, and spending.
+              </td>
+              <td>Use a configurable directory with restricted permissions (700). Default to <code>~/.video-migration/</code> instead of <code>/tmp/</code>.</td>
+            </tr>
+            <tr style="--i:28">
+              <td class="col-id">17</td>
+              <td><span class="sev sev--medium">Medium</span></td>
+              <td><code>app.py:140-147</code><small>Global state vars</small></td>
+              <td>
+                <div class="vuln-title">Thread Safety Issues</div>
+                Global mutable state (<code>_migration_running</code>, <code>_sse_subscribers</code>, <code>_migration_events_store</code>) is mutated from background threads without locks. Race conditions can cause missed events or inconsistent state.
+              </td>
+              <td>Add <code>threading.Lock</code> around all mutations of shared state. Use thread-safe collections where possible.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══════════ LOW ═══════════ -->
+    <div id="low" class="sec-head animate" style="--i:29">
+      <span class="sec-dot" style="background:var(--low)"></span>
+      Low &mdash; Improvement Opportunities
+      <span class="sec-count" style="background:var(--low-dim);color:var(--low)">3 findings</span>
+    </div>
+
+    <div class="table-wrap animate" style="--i:30">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="col-id">#</th>
+              <th class="col-sev">Severity</th>
+              <th class="col-loc">Location</th>
+              <th class="col-desc">Vulnerability</th>
+              <th class="col-fix">Recommended Fix</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="--i:31">
+              <td class="col-id">18</td>
+              <td><span class="sev sev--low">Low</span></td>
+              <td><code>pipeline.py:106</code><small>migrate_single_video()</small></td>
+              <td>
+                <div class="vuln-title">Video ID Path Traversal</div>
+                Entry ID used directly in file path construction: <code>f"{entry_id}.mp4"</code>. If an entry_id contained <code>../</code>, it could write outside the download directory.
+              </td>
+              <td>Sanitize entry_id: strip path separators, validate against <code>[a-zA-Z0-9_-]</code> pattern, or use <code>Path.name</code> to extract filename component only.</td>
+            </tr>
+            <tr style="--i:32">
+              <td class="col-id">19</td>
+              <td><span class="sev sev--low">Low</span></td>
+              <td><code>app.py</code><small>FastAPI config</small></td>
+              <td>
+                <div class="vuln-title">No Request Body Size Limit</div>
+                No maximum body size configured. An attacker could send arbitrarily large payloads to POST endpoints, consuming memory.
+              </td>
+              <td>Add body size middleware or configure behind a reverse proxy (nginx, Vercel) with size limits. Vercel has a 4.5MB default.</td>
+            </tr>
+            <tr style="--i:33">
+              <td class="col-id">20</td>
+              <td><span class="sev sev--low">Low</span></td>
+              <td><code>aws_staging.py:206,226</code><small>DynamoDB scan()</small></td>
+              <td>
+                <div class="vuln-title">DynamoDB Full Table Scans</div>
+                <code>get_pending_videos()</code> and <code>get_summary()</code> perform full table scans. At scale (thousands of videos), this becomes slow and expensive.
+              </td>
+              <td>Add a Global Secondary Index (GSI) on the <code>status</code> field. Use <code>query()</code> instead of <code>scan()</code>.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══════════ NEXT STEPS ═══════════ -->
+    <div id="next" class="sec-head animate" style="--i:34">
+      <span class="sec-dot" style="background:var(--green)"></span>
+      Next Steps
+      <span class="sec-count" style="background:var(--green-dim);color:var(--green)">Action Items</span>
+    </div>
+
+    <details class="collapsible animate" style="--i:35" open>
+      <summary>Priority 1: Fix Critical Issues (Immediate)</summary>
+      <div class="collapsible__body">
+        <ul>
+          <li><strong>#1 Password Hashing:</strong> Replace <code>hashlib.sha256</code> with <code>bcrypt.hashpw()</code>. Update <code>.env.example</code> password hash generation instructions.</li>
+          <li><strong>#2 JWT Secret:</strong> Fail loudly or log a warning if <code>JWT_SECRET_KEY</code> is not set. For serverless, this env var is mandatory.</li>
+          <li><strong>#3-4 Auth on SSE/Poll:</strong> Add token validation to <code>/api/migration/stream</code> (via query param) and <code>/api/migration/poll</code> (via header).</li>
+          <li><strong>#5 Zoom Retry:</strong> Replace recursive retry with iterative loop, max 5 retries with exponential backoff.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="collapsible animate" style="--i:36">
+      <summary>Priority 2: Fix High Issues (Before Go-Live)</summary>
+      <div class="collapsible__body">
+        <ul>
+          <li><strong>#6:</strong> Sanitize Claude API error in chat response.</li>
+          <li><strong>#7-12:</strong> Add <code>Depends(_verify_jwt)</code> to all 6 unprotected endpoints: field-mapping PUT, costs/projection, costs/timeline, costs/export, report, test/result.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="collapsible animate" style="--i:37">
+      <summary>Priority 3: Medium/Low Issues (Next Sprint)</summary>
+      <div class="collapsible__body">
+        <ul>
+          <li><strong>#13:</strong> Add SRI hashes to CDN scripts (generate via <code>openssl dgst -sha384 -binary</code>).</li>
+          <li><strong>#14:</strong> Switch to Alpine.js CSP build or accept the tradeoff and document it.</li>
+          <li><strong>#15:</strong> Implement progressive account lockout.</li>
+          <li><strong>#16:</strong> Move state files out of <code>/tmp</code>.</li>
+          <li><strong>#17:</strong> Add threading locks to global mutable state.</li>
+          <li><strong>#18:</strong> Sanitize video IDs before path construction.</li>
+          <li><strong>#19-20:</strong> Configure body size limits and DynamoDB GSI.</li>
+        </ul>
+      </div>
+    </details>
+
+    <div class="footer animate" style="--i:38">
+      <span>Audit by Claude &mdash; 20 findings across 8 files</span>
+      <span>Generated Feb 2026</span>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /wrap -->
+
+<script>
+(function() {
+  const toc = document.getElementById('toc');
+  const links = toc.querySelectorAll('a');
+  const sections = [];
+
+  links.forEach(link => {
+    const id = link.getAttribute('href').slice(1);
+    const el = document.getElementById(id);
+    if (el) sections.push({ id, el, link });
+  });
+
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const match = sections.find(s => s.el === entry.target);
+        if (match) {
+          match.link.classList.add('active');
+          if (window.innerWidth <= 1000) {
+            match.link.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+          }
+        }
+      }
+    });
+  }, { rootMargin: '-10% 0px -80% 0px' });
+
+  sections.forEach(s => observer.observe(s.el));
+
+  links.forEach(link => {
+    link.addEventListener('click', e => {
+      e.preventDefault();
+      const id = link.getAttribute('href').slice(1);
+      const el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        history.replaceState(null, '', '#' + id);
+      }
+    });
+  });
+})();
+</script>
+
+</body>
+</html>
