@@ -1,7 +1,8 @@
 """
 Vercel Postgres (Neon) database layer for the Video Migration Dashboard.
 
-Handles connection pooling, table creation, and encrypted credential storage.
+Handles connections, table creation, and encrypted credential storage.
+Uses pg8000 (pure-Python PostgreSQL driver) for lightweight serverless deployment.
 Falls back gracefully when POSTGRES_URL is not set (single-project .env mode).
 """
 
@@ -9,13 +10,15 @@ from __future__ import annotations
 
 import logging
 import os
+import ssl
 from contextlib import contextmanager
 from typing import Any
+from urllib.parse import urlparse, parse_qs
 
 logger = logging.getLogger(__name__)
 
-_pool = None
 _available = False
+_conn_params: dict = {}
 _ENCRYPTION_KEY: str = ""
 
 # ---------------------------------------------------------------------------
@@ -32,9 +35,30 @@ def _get_encryption_key() -> str:
     return _ENCRYPTION_KEY
 
 
+def _parse_postgres_url(url: str) -> dict:
+    """Parse a postgres:// or postgresql:// URL into pg8000 connect kwargs."""
+    parsed = urlparse(url)
+    params: dict[str, Any] = {
+        "host": parsed.hostname or "localhost",
+        "port": parsed.port or 5432,
+        "database": (parsed.path or "/postgres").lstrip("/") or "postgres",
+        "user": parsed.username or "postgres",
+        "password": parsed.password or "",
+    }
+    # Neon / Vercel Postgres requires SSL
+    qs = parse_qs(parsed.query)
+    sslmode = qs.get("sslmode", ["require"])[0]
+    if sslmode != "disable":
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        params["ssl_context"] = ctx
+    return params
+
+
 def init() -> bool:
-    """Initialise the connection pool.  Returns True if DB is available."""
-    global _pool, _available
+    """Initialise the database connection.  Returns True if DB is available."""
+    global _available, _conn_params
 
     url = os.environ.get("POSTGRES_URL") or os.environ.get("DATABASE_URL")
     if not url:
@@ -43,17 +67,14 @@ def init() -> bool:
         return False
 
     try:
-        import psycopg2
-        from psycopg2 import pool as pg_pool
-
-        # Neon / Vercel Postgres requires sslmode=require
-        if "sslmode" not in url:
-            sep = "&" if "?" in url else "?"
-            url = f"{url}{sep}sslmode=require"
-
-        _pool = pg_pool.ThreadedConnectionPool(minconn=1, maxconn=5, dsn=url)
+        import pg8000.native  # noqa: F401 – verify importable
+        _conn_params = _parse_postgres_url(url)
+        # Quick connectivity test
+        import pg8000.dbapi
+        test_conn = pg8000.dbapi.connect(**_conn_params)
+        test_conn.close()
         _available = True
-        logger.info("Postgres connection pool initialised")
+        logger.info("Postgres connection verified (pg8000)")
         return True
     except Exception as e:
         logger.warning("Could not connect to Postgres: %s", e)
@@ -67,10 +88,11 @@ def is_available() -> bool:
 
 @contextmanager
 def get_conn():
-    """Yield a connection from the pool and return it afterwards."""
-    if not _available or _pool is None:
+    """Yield a fresh connection.  For Vercel serverless, creating per-request is fine."""
+    if not _available:
         raise RuntimeError("Database not available")
-    conn = _pool.getconn()
+    import pg8000.dbapi
+    conn = pg8000.dbapi.connect(**_conn_params)
     try:
         yield conn
         conn.commit()
@@ -78,12 +100,29 @@ def get_conn():
         conn.rollback()
         raise
     finally:
-        _pool.putconn(conn)
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
 # Generic query helpers
 # ---------------------------------------------------------------------------
+
+def _serialise_value(val: Any) -> Any:
+    """Ensure DB values are JSON-serialisable (UUID → str, etc.)."""
+    import uuid as _uuid
+    from datetime import datetime as _dt, date as _date
+    if isinstance(val, _uuid.UUID):
+        return str(val)
+    if isinstance(val, (_dt, _date)):
+        return val.isoformat()
+    if isinstance(val, memoryview):
+        return bytes(val)
+    return val
+
+
+def _row_to_dict(cols: list[str], row: tuple) -> dict:
+    return {c: _serialise_value(v) for c, v in zip(cols, row)}
+
 
 def fetch_one(sql: str, params: tuple = ()) -> dict | None:
     with get_conn() as conn:
@@ -93,7 +132,7 @@ def fetch_one(sql: str, params: tuple = ()) -> dict | None:
             if row is None:
                 return None
             cols = [desc[0] for desc in cur.description]
-            return dict(zip(cols, row))
+            return _row_to_dict(cols, row)
 
 
 def fetch_all(sql: str, params: tuple = ()) -> list[dict]:
@@ -101,7 +140,7 @@ def fetch_all(sql: str, params: tuple = ()) -> list[dict]:
         with conn.cursor() as cur:
             cur.execute(sql, params)
             cols = [desc[0] for desc in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
+            return [_row_to_dict(cols, row) for row in cur.fetchall()]
 
 
 def execute(sql: str, params: tuple = ()) -> int:
@@ -121,7 +160,7 @@ def execute_returning(sql: str, params: tuple = ()) -> dict | None:
             if row is None:
                 return None
             cols = [desc[0] for desc in cur.description]
-            return dict(zip(cols, row))
+            return _row_to_dict(cols, row)
 
 
 # ---------------------------------------------------------------------------
