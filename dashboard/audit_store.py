@@ -3,15 +3,16 @@ Append-only JSONL audit trail for IFRS-grade compliance.
 
 Each event is a single JSON object on its own line. The file is
 never rewritten — only appended to — ensuring immutability.
-Uses fcntl file locking for concurrent-write safety.
+Uses fcntl file locking for concurrent-write safety (when available).
 
-Storage: ~/.video-migration/audit-trail.jsonl
+Storage: ~/.video-migration/audit-trail.jsonl (local)
+         /tmp/.video-migration/audit-trail.jsonl (Vercel / serverless)
+         In-memory fallback for serverless environments.
 """
 
 from __future__ import annotations
 
 import csv
-import fcntl
 import io
 import json
 import logging
@@ -20,14 +21,29 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+# fcntl is Unix-only; gracefully degrade on platforms without it
+try:
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
+
 logger = logging.getLogger(__name__)
+
+# In-memory buffer for serverless environments where /tmp is ephemeral.
+# This survives across warm invocations within the same Lambda container.
+_memory_events: list[dict] = []
 
 
 class AuditStore:
     """Append-only JSONL audit store. Write-once, never overwrite."""
 
     def __init__(self, state_dir: str | None = None):
-        default_dir = os.path.join(Path.home(), ".video-migration")
+        # On Vercel/serverless, prefer /tmp which is writable
+        if os.environ.get("VERCEL"):
+            default_dir = os.path.join("/tmp", ".video-migration")
+        else:
+            default_dir = os.path.join(Path.home(), ".video-migration")
         self._state_dir = state_dir or os.environ.get("STATE_DIR", default_dir)
         try:
             Path(self._state_dir).mkdir(parents=True, exist_ok=True)
@@ -69,36 +85,52 @@ class AuditStore:
 
         try:
             with open(self._path, "a+") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
+                if _HAS_FCNTL:
+                    fcntl.flock(f, fcntl.LOCK_EX)
                 try:
                     # Count existing lines for monotonic seq number
                     f.seek(0)
                     seq = sum(1 for _ in f)
-                    entry["seq"] = seq + 1
+                    entry["seq"] = seq + 1 + len(_memory_events)
                     f.write(json.dumps(entry, default=str) + "\n")
                     f.flush()
                 finally:
-                    fcntl.flock(f, fcntl.LOCK_UN)
+                    if _HAS_FCNTL:
+                        fcntl.flock(f, fcntl.LOCK_UN)
         except OSError as e:
-            logger.error("Failed to write audit event: %s", e)
+            logger.warning("File audit write failed (serverless?): %s", e)
+            entry["seq"] = len(_memory_events) + 1
+
+        # Always store in memory so events survive across warm invocations
+        _memory_events.append(entry)
 
         return entry
 
     # ── Read ──
 
     def _read_all(self) -> list[dict]:
-        """Read all events from the JSONL file."""
-        if not os.path.exists(self._path):
-            return []
+        """Read all events from the JSONL file + in-memory buffer."""
         events = []
-        with open(self._path) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        events.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
+        # Read from file (if it exists)
+        if os.path.exists(self._path):
+            try:
+                with open(self._path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                events.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                continue
+            except OSError:
+                pass
+        # Merge in-memory events (dedup by seq number)
+        file_seqs = {e.get("seq") for e in events}
+        for mem_event in _memory_events:
+            if mem_event.get("seq") not in file_seqs:
+                events.append(mem_event)
+        # Sort by timestamp
+        events.sort(key=lambda e: e.get("ts", ""))
         return events
 
     def query(
