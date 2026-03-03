@@ -298,23 +298,58 @@ class ZoomClient:
     def list_clips(self, page_size: int = 50, next_page_token: str | None = None) -> dict:
         """List clips in the account.
 
-        Returns dict with 'clips' (list) and optional 'next_page_token'.
-        Each clip has: id, title, description, status, created_at, duration,
-        thumbnail_link, scope, etc.
+        Tries multiple Zoom API endpoints since S2S OAuth may scope clips
+        differently from user-level OAuth:
+          1. GET /clips (Clips API)
+          2. GET /clips with scope=shared
+          3. GET /videomanagement/videos (Video Management API)
+
+        Returns dict with 'clips' (list), 'next_page_token', 'total_records'.
         """
         params: dict[str, Any] = {"page_size": min(page_size, 100)}
         if next_page_token:
             params["next_page_token"] = next_page_token
+
+        clips: list[dict] = []
+        total = 0
+
+        # Attempt 1: Standard GET /clips
         try:
             result = self._api_call("GET", "/clips", params=params)
-            return {
-                "clips": result.get("clips", []),
-                "next_page_token": result.get("next_page_token", ""),
-                "total_records": result.get("total_records", 0),
-            }
+            clips = result.get("clips", []) or result.get("clip_list", [])
+            total = result.get("total_records", 0)
+            logger.info("GET /clips returned %d clips, total_records=%d", len(clips), total)
         except Exception as e:
-            logger.warning("Failed to list clips: %s", e)
-            return {"clips": [], "next_page_token": "", "total_records": 0}
+            logger.warning("GET /clips failed: %s", e)
+
+        # Attempt 2: If total > 0 but clips empty, try shared scope
+        if total > 0 and not clips:
+            try:
+                shared_params = {**params, "type": "shared"}
+                result2 = self._api_call("GET", "/clips", params=shared_params)
+                clips = result2.get("clips", []) or result2.get("clip_list", [])
+                if clips:
+                    logger.info("GET /clips?type=shared returned %d clips", len(clips))
+            except Exception:
+                pass
+
+        # Attempt 3: Try Video Management API
+        if total > 0 and not clips:
+            try:
+                vm_result = self._api_call("GET", "/videomanagement/videos", params={"page_size": min(page_size, 100)})
+                vm_videos = vm_result.get("videos", [])
+                if vm_videos:
+                    clips = vm_videos
+                    total = vm_result.get("total_records", len(vm_videos))
+                    logger.info("GET /videomanagement/videos returned %d videos", len(clips))
+            except Exception as e:
+                logger.debug("Video Management API not available: %s", e)
+
+        return {
+            "clips": clips,
+            "next_page_token": "",
+            "total_records": total,
+        }
 
     def get_clip(self, clip_id: str) -> dict:
         """Get details for a single clip."""
