@@ -2387,7 +2387,8 @@ async def update_settings(request: Request, user: dict = Depends(_verify_jwt)):
         raise HTTPException(status_code=400, detail=f"Unknown fields: {', '.join(unknown)}")
 
     # Read current .env values so we can detect real changes
-    current_env = dotenv_values(str(_ENV_FILE)) if _ENV_FILE.exists() else {}
+    # Also check os.environ for Vercel deployments where env vars are set in the dashboard
+    file_env = dotenv_values(str(_ENV_FILE)) if _ENV_FILE.exists() else {}
 
     # Regex to block newlines, null bytes, and control chars in values
     _BAD_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -2409,17 +2410,24 @@ async def update_settings(request: Request, user: dict = Depends(_verify_jwt)):
         if len(cleaned) > 500:
             raise HTTPException(status_code=400, detail=f"Value too long for '{field_key}'")
         env_key = meta["env"]
-        # Only write if actually different from what's already in .env
-        if current_env.get(env_key, "") != cleaned:
+        # Check both .env file and OS environment (Vercel env vars)
+        current_val = file_env.get(env_key, "") or os.environ.get(env_key, "")
+        if current_val != cleaned:
             changes[env_key] = cleaned
 
     if not changes:
         return {"status": "no_changes", "message": "No settings were modified"}
 
-    # Write each changed value to .env
+    # Write each changed value to .env (may fail on read-only filesystems like Vercel)
+    env_file_writable = True
     for env_key, env_val in changes.items():
-        set_key(str(_ENV_FILE), env_key, env_val)
-        # Also update the process environment so Config.from_env() picks it up
+        if env_file_writable:
+            try:
+                set_key(str(_ENV_FILE), env_key, env_val)
+            except (OSError, PermissionError):
+                env_file_writable = False
+                logger.info("Filesystem is read-only — skipping .env file writes (Vercel mode)")
+        # Always update the process environment so Config.from_env() picks it up
         os.environ[env_key] = env_val
 
     audit_log("settings_update", user=user["sub"], details={
