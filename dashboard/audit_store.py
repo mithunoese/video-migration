@@ -27,10 +27,13 @@ class AuditStore:
     """Append-only JSONL audit store. Write-once, never overwrite."""
 
     def __init__(self, state_dir: str | None = None):
-        self._state_dir = state_dir or os.environ.get(
-            "STATE_DIR", os.path.join(Path.home(), ".video-migration")
-        )
-        Path(self._state_dir).mkdir(parents=True, exist_ok=True)
+        default_dir = os.path.join(Path.home(), ".video-migration")
+        self._state_dir = state_dir or os.environ.get("STATE_DIR", default_dir)
+        try:
+            Path(self._state_dir).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self._state_dir = os.path.join("/tmp", ".video-migration")
+            Path(self._state_dir).mkdir(parents=True, exist_ok=True)
         self._path = os.path.join(self._state_dir, "audit-trail.jsonl")
 
     # ── Write ──

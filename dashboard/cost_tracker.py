@@ -37,7 +37,12 @@ class CostTracker:
     """Tracks and persists cost data for migration operations."""
 
     def __init__(self, state_dir: str = None):
-        self._state_dir = state_dir or os.environ.get("STATE_DIR", os.path.join(Path.home(), ".video-migration"))
+        default_dir = os.path.join(Path.home(), ".video-migration")
+        self._state_dir = state_dir or os.environ.get("STATE_DIR", default_dir)
+        try:
+            Path(self._state_dir).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self._state_dir = os.path.join("/tmp", ".video-migration")
         self._cost_file = os.path.join(self._state_dir, "cost-data.json")
         self._data = self._load()
 
@@ -66,7 +71,11 @@ class CostTracker:
 
     def _save(self):
         """Persist cost data to disk."""
-        Path(self._state_dir).mkdir(parents=True, exist_ok=True)
+        try:
+            Path(self._state_dir).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self._state_dir = os.path.join("/tmp", ".video-migration")
+            Path(self._state_dir).mkdir(parents=True, exist_ok=True)
         with open(self._cost_file, "w") as f:
             json.dump(self._data, f, indent=2)
 
