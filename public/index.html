@@ -1089,6 +1089,226 @@
 
     </div>
 
+    <!-- ═══ DRY RUN ═══ -->
+    <div x-show="currentTab === 'dryrun'" x-cloak class="fade-in">
+      <div class="mb-6">
+        <h2 class="section-title">Dry Run &amp; Batch Migration</h2>
+        <p class="section-subtitle">IFRS test batches: manifest generation, batch migration with captions &amp; thumbnails, and migration reports</p>
+      </div>
+
+      <!-- Step 1: Entry IDs -->
+      <div class="card p-5 mb-5">
+        <h3 class="font-semibold text-gray-800 text-sm mb-3">Step 1: Enter Kaltura Entry IDs</h3>
+        <p class="text-xs text-gray-500 mb-3">Paste one entry ID per line (e.g., 0_r88llmuv). These will be used for both manifest generation and batch migration.</p>
+        <textarea x-model="dryRunEntryIds" rows="6" class="input-field font-mono text-xs" placeholder="0_r88llmuv
+0_an5g1hjg
+0_un8cn4mj
+0_aakiui81
+0_hy5qffv7"></textarea>
+        <div class="flex items-center gap-3 mt-3">
+          <span class="text-xs text-gray-400" x-text="dryRunEntryIds.split('\\n').filter(x => x.trim()).length + ' entry IDs'"></span>
+          <button @click="dryRunEntryIds = '0_r88llmuv\n0_an5g1hjg\n0_un8cn4mj\n0_aakiui81\n0_hy5qffv7\n0_6nh2dq1v\n0_ocpkxpli\n0_808muumr\n0_mrpnq76u\n0_00cxrl9l'" class="text-xs text-brand-500 hover:text-brand-700 underline">Load IFRS test batch IDs</button>
+        </div>
+      </div>
+
+      <!-- Step 2: Generate Source Manifest -->
+      <div class="card p-5 mb-5">
+        <h3 class="font-semibold text-gray-800 text-sm mb-3">Step 2: Generate Source Manifest</h3>
+        <p class="text-xs text-gray-500 mb-3">Freeze a point-in-time snapshot of all metadata, captions, and thumbnails before migration.</p>
+        <div class="flex items-center gap-3">
+          <button @click="generateManifest()" :disabled="dryRunManifestLoading || !dryRunEntryIds.trim()" class="btn-primary px-5 py-2 text-xs flex items-center gap-1.5">
+            <template x-if="dryRunManifestLoading"><span class="animate-spin">&#9696;</span></template>
+            <span x-text="dryRunManifestLoading ? 'Generating...' : 'Generate Manifest'"></span>
+          </button>
+          <template x-if="dryRunManifest">
+            <button @click="downloadManifestCSV()" class="btn-secondary px-4 py-2 text-xs">Download CSV</button>
+          </template>
+        </div>
+        <template x-if="dryRunManifest">
+          <div class="mt-4">
+            <div class="grid grid-cols-4 gap-3 mb-4">
+              <div class="p-3 bg-gray-50 rounded-lg text-center">
+                <div class="text-lg font-bold text-gray-800" x-text="dryRunManifest.total"></div>
+                <div class="text-xs text-gray-500">Total entries</div>
+              </div>
+              <div class="p-3 bg-blue-50 rounded-lg text-center">
+                <div class="text-lg font-bold text-blue-700" x-text="dryRunManifest.with_captions"></div>
+                <div class="text-xs text-gray-500">With captions</div>
+              </div>
+              <div class="p-3 bg-amber-50 rounded-lg text-center">
+                <div class="text-lg font-bold text-amber-700" x-text="dryRunManifest.with_srt"></div>
+                <div class="text-xs text-gray-500">With SRT (need conversion)</div>
+              </div>
+              <div class="p-3 bg-purple-50 rounded-lg text-center">
+                <div class="text-lg font-bold text-purple-700" x-text="dryRunManifest.with_thumbnails"></div>
+                <div class="text-xs text-gray-500">With thumbnails</div>
+              </div>
+            </div>
+            <div class="overflow-x-auto max-h-80 overflow-y-auto">
+              <table class="w-full text-xs">
+                <thead class="bg-gray-50 sticky top-0">
+                  <tr>
+                    <th class="p-2 text-left font-semibold">Kaltura ID</th>
+                    <th class="p-2 text-left font-semibold">Title</th>
+                    <th class="p-2 text-right font-semibold">Duration</th>
+                    <th class="p-2 text-right font-semibold">Size (MB)</th>
+                    <th class="p-2 text-center font-semibold">Captions</th>
+                    <th class="p-2 text-center font-semibold">SRT?</th>
+                    <th class="p-2 text-center font-semibold">Thumbs</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="entry in dryRunManifest.manifest" :key="entry.kaltura_id">
+                    <tr class="border-t border-gray-100 hover:bg-gray-50">
+                      <td class="p-2 font-mono text-brand-600" x-text="entry.kaltura_id"></td>
+                      <td class="p-2 max-w-xs truncate" x-text="entry.title || entry.error || '-'"></td>
+                      <td class="p-2 text-right" x-text="entry.duration ? Math.floor(entry.duration/60) + 'm ' + (entry.duration%60) + 's' : '-'"></td>
+                      <td class="p-2 text-right" x-text="entry.source_file_size_kb ? (entry.source_file_size_kb / 1024).toFixed(1) : '-'"></td>
+                      <td class="p-2 text-center" x-text="entry.caption_count || 0"></td>
+                      <td class="p-2 text-center">
+                        <span x-show="entry.has_srt" class="inline-block px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded text-[10px] font-semibold">SRT</span>
+                        <span x-show="!entry.has_srt && entry.caption_count > 0" class="inline-block px-1.5 py-0.5 bg-green-100 text-green-700 rounded text-[10px] font-semibold">VTT</span>
+                      </td>
+                      <td class="p-2 text-center" x-text="entry.thumbnail_count || 0"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Step 3: Run Batch Migration -->
+      <div class="card p-5 mb-5">
+        <h3 class="font-semibold text-gray-800 text-sm mb-3">Step 3: Run Batch Migration</h3>
+        <p class="text-xs text-gray-500 mb-3">Migrate the specified entry IDs with full caption (SRT&rarr;VTT) and thumbnail support. Restartable &mdash; if interrupted, resumes from last checkpoint.</p>
+
+        <!-- Checkpoint indicator -->
+        <template x-if="dryRunCheckpoint && dryRunCheckpoint.has_checkpoint">
+          <div class="mb-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg flex items-center gap-3">
+            <span class="text-yellow-600 font-semibold text-xs">Checkpoint found</span>
+            <span class="text-xs text-gray-600" x-text="'Progress: ' + dryRunCheckpoint.progress + ' | Last updated: ' + dryRunCheckpoint.last_updated"></span>
+            <button @click="runBatchMigration(true)" class="ml-auto btn-primary px-3 py-1.5 text-xs">Resume</button>
+          </div>
+        </template>
+
+        <div class="flex items-center gap-3">
+          <button @click="runBatchMigration(true)" :disabled="dryRunBatchRunning || !dryRunEntryIds.trim() || migrationRunning" class="btn-primary px-5 py-2 text-xs flex items-center gap-1.5">
+            <template x-if="dryRunBatchRunning"><span class="animate-spin">&#9696;</span></template>
+            <span x-text="dryRunBatchRunning ? 'Running...' : 'Start Batch Migration'"></span>
+          </button>
+          <label class="flex items-center gap-1.5 text-xs text-gray-600">
+            <span>Resumable checkpoint enabled</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Step 4: Migration Report -->
+      <div class="card p-5 mb-5">
+        <h3 class="font-semibold text-gray-800 text-sm mb-3">Step 4: Migration Report (Kaltura ID &rarr; Zoom ID)</h3>
+        <p class="text-xs text-gray-500 mb-3">View the ID mapping report after migration completes. This is the critical document for AEM embed script replacement.</p>
+        <div class="flex items-center gap-3 mb-4">
+          <button @click="loadMigrationReport()" :disabled="dryRunReportLoading" class="btn-primary px-5 py-2 text-xs flex items-center gap-1.5">
+            <template x-if="dryRunReportLoading"><span class="animate-spin">&#9696;</span></template>
+            <span x-text="dryRunReportLoading ? 'Loading...' : 'Load Report'"></span>
+          </button>
+          <template x-if="dryRunReport && dryRunReport.csv">
+            <button @click="downloadReportCSV()" class="btn-secondary px-4 py-2 text-xs">Download CSV</button>
+          </template>
+        </div>
+        <template x-if="dryRunReport && dryRunReport.report">
+          <div>
+            <div class="grid grid-cols-4 gap-3 mb-4">
+              <div class="p-3 bg-green-50 rounded-lg text-center">
+                <div class="text-lg font-bold text-green-700" x-text="dryRunReport.report.summary.completed"></div>
+                <div class="text-xs text-gray-500">Completed</div>
+              </div>
+              <div class="p-3 bg-red-50 rounded-lg text-center">
+                <div class="text-lg font-bold text-red-600" x-text="dryRunReport.report.summary.failed"></div>
+                <div class="text-xs text-gray-500">Failed</div>
+              </div>
+              <div class="p-3 bg-blue-50 rounded-lg text-center">
+                <div class="text-lg font-bold text-blue-700" x-text="dryRunReport.report.summary.total_captions_migrated"></div>
+                <div class="text-xs text-gray-500">Captions migrated</div>
+              </div>
+              <div class="p-3 bg-purple-50 rounded-lg text-center">
+                <div class="text-lg font-bold text-purple-700" x-text="dryRunReport.report.summary.total_thumbnails_migrated"></div>
+                <div class="text-xs text-gray-500">Thumbnails migrated</div>
+              </div>
+            </div>
+            <div class="overflow-x-auto max-h-80 overflow-y-auto">
+              <table class="w-full text-xs">
+                <thead class="bg-gray-50 sticky top-0">
+                  <tr>
+                    <th class="p-2 text-left font-semibold">Kaltura ID</th>
+                    <th class="p-2 text-left font-semibold">Zoom ID</th>
+                    <th class="p-2 text-left font-semibold">Title</th>
+                    <th class="p-2 text-center font-semibold">Status</th>
+                    <th class="p-2 text-right font-semibold">Size (MB)</th>
+                    <th class="p-2 text-center font-semibold">Captions</th>
+                    <th class="p-2 text-center font-semibold">Thumbs</th>
+                    <th class="p-2 text-left font-semibold">Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="m in dryRunReport.report.mappings" :key="m.kaltura_id">
+                    <tr class="border-t border-gray-100 hover:bg-gray-50">
+                      <td class="p-2 font-mono text-brand-600" x-text="m.kaltura_id"></td>
+                      <td class="p-2 font-mono text-green-700" x-text="m.zoom_id || '-'"></td>
+                      <td class="p-2 max-w-xs truncate" x-text="m.title"></td>
+                      <td class="p-2 text-center">
+                        <span :class="m.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'" class="inline-block px-2 py-0.5 rounded text-[10px] font-semibold" x-text="m.status"></span>
+                      </td>
+                      <td class="p-2 text-right" x-text="m.file_size_mb"></td>
+                      <td class="p-2 text-center" x-text="m.captions_migrated"></td>
+                      <td class="p-2 text-center" x-text="m.thumbnails_migrated"></td>
+                      <td class="p-2 text-xs text-red-500 max-w-xs truncate" x-text="m.error || ''"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Caption Stats (account-wide) -->
+      <div class="card p-5 mb-5">
+        <h3 class="font-semibold text-gray-800 text-sm mb-3">Caption Format Analysis</h3>
+        <p class="text-xs text-gray-500 mb-3">Scan the Kaltura account to count SRT vs VTT caption files. Helps estimate conversion effort.</p>
+        <div class="flex items-center gap-3 mb-3">
+          <button @click="loadCaptionStats()" :disabled="dryRunCaptionStatsLoading" class="btn-primary px-5 py-2 text-xs flex items-center gap-1.5">
+            <template x-if="dryRunCaptionStatsLoading"><span class="animate-spin">&#9696;</span></template>
+            <span x-text="dryRunCaptionStatsLoading ? 'Scanning...' : 'Scan Caption Formats'"></span>
+          </button>
+          <span class="text-xs text-gray-400">(May take a while for large accounts)</span>
+        </div>
+        <template x-if="dryRunCaptionStats">
+          <div class="grid grid-cols-3 gap-3">
+            <div class="p-3 bg-gray-50 rounded-lg text-center">
+              <div class="text-lg font-bold text-gray-800" x-text="dryRunCaptionStats.total_videos"></div>
+              <div class="text-xs text-gray-500">Total videos scanned</div>
+            </div>
+            <div class="p-3 bg-blue-50 rounded-lg text-center">
+              <div class="text-lg font-bold text-blue-700" x-text="dryRunCaptionStats.videos_with_captions"></div>
+              <div class="text-xs text-gray-500">Videos with captions</div>
+            </div>
+            <div class="p-3 bg-amber-50 rounded-lg text-center">
+              <div class="text-lg font-bold text-amber-700" x-text="(dryRunCaptionStats.by_format && dryRunCaptionStats.by_format.srt) || 0"></div>
+              <div class="text-xs text-gray-500">SRT files (need conversion)</div>
+            </div>
+            <template x-for="[fmt, count] in Object.entries(dryRunCaptionStats.by_format || {})" :key="fmt">
+              <div class="p-2 bg-gray-50 rounded text-center">
+                <div class="text-sm font-bold text-gray-700" x-text="count"></div>
+                <div class="text-xs text-gray-400 uppercase" x-text="fmt"></div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+
     <!-- ═══ SECURITY AUDIT ═══ -->
     <div x-show="currentTab === 'audit'" x-cloak class="fade-in">
       <!-- ═══ AUDIT & RECONCILIATION ═══ -->
@@ -1470,6 +1690,7 @@
           { id: 'field-mapping', label: 'Field Mapping', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>' },
           { id: 'ai', label: 'AI Assistant', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>' },
           { id: 'settings', label: 'Settings', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>' },
+          { id: 'dryrun', label: 'Dry Run', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>' },
           { id: 'audit', label: 'Audit & Recon', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>' },
         ],
         // Multi-project state
@@ -1513,6 +1734,17 @@
         zoomCompletedVideos: [], zoomFailedVideos: [], zoomCompletedTotal: 0, zoomCompletedPage: 1, zoomCompletedTotalPages: 1, zoomLiveClips: [], zoomLiveClipsTotal: 0,
         // Zoom Events hub/channel state
         zoomHubs: [], selectedHubId: '', zoomVodChannels: [], selectedVodChannelId: '', hubVideoCount: -1,
+        // Dry Run state
+        dryRunEntryIds: '',
+        dryRunManifest: null,
+        dryRunManifestLoading: false,
+        dryRunManifestCsv: '',
+        dryRunBatchRunning: false,
+        dryRunReport: null,
+        dryRunReportLoading: false,
+        dryRunCheckpoint: null,
+        dryRunCaptionStats: null,
+        dryRunCaptionStatsLoading: false,
         chatMessages: [{ role: 'assistant', content: 'Welcome! I can help you understand your migration. Try asking:\n\n- "How many videos are pending?"\n- "Show me failed videos"\n- "Estimate cost for 5000 videos"\n- "What formats are in the library?"', tier: 0 }],
         chatInput: '', chatLoading: false,
         statusChart: null,
@@ -1619,6 +1851,7 @@
             if (tab === 'migration') { this.loadMigKaltura(); this.loadZoomCompleted(); }
             if (tab === 'field-mapping') this.loadFieldMappings();
             if (tab === 'settings') { this.loadSettings(); this.loadProjectCreds(); this.loadClientTokens(); this.loadCostProjection(); }
+            if (tab === 'dryrun') { this.checkDryRunCheckpoint(); }
             if (tab === 'audit') { this.loadReconciliation(); this.loadAuditTrail(); }
           });
           this.$nextTick(() => this.renderStatusChart());
@@ -2128,6 +2361,93 @@
           } catch(e) { console.warn('Failed to load hub videos:', e); }
         },
 
+        // ═══ DRY RUN METHODS ═══
+
+        _parseDryRunIds() {
+          return this.dryRunEntryIds.split('\n').map(x => x.trim()).filter(x => x);
+        },
+
+        async generateManifest() {
+          const ids = this._parseDryRunIds();
+          if (!ids.length) return alert('Enter at least one entry ID');
+          this.dryRunManifestLoading = true;
+          try {
+            const r = await fetch('/api/manifest/generate', {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({ entry_ids: ids })
+            });
+            const d = await r.json();
+            if (r.ok) {
+              this.dryRunManifest = d;
+              this.dryRunManifestCsv = d.csv || '';
+            } else { alert(d.error || 'Manifest generation failed'); }
+          } catch(e) { alert('Manifest generation error: ' + e.message); }
+          finally { this.dryRunManifestLoading = false; }
+        },
+
+        downloadManifestCSV() {
+          if (!this.dryRunManifestCsv) return;
+          const blob = new Blob([this.dryRunManifestCsv], { type: 'text/csv' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url;
+          a.download = 'source_manifest_' + new Date().toISOString().slice(0,10) + '.csv';
+          a.click(); URL.revokeObjectURL(url);
+        },
+
+        async runBatchMigration(resumable = true) {
+          const ids = this._parseDryRunIds();
+          if (!ids.length) return alert('Enter at least one entry ID');
+          if (!confirm(`Start batch migration for ${ids.length} videos with caption + thumbnail support?\n\nResumable: ${resumable ? 'Yes' : 'No'}`)) return;
+          this.dryRunBatchRunning = true;
+          try {
+            const r = await fetch('/api/migration/batch', {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({ entry_ids: ids, resumable })
+            });
+            const d = await r.json();
+            if (!r.ok) { alert(d.error || 'Batch migration failed to start'); this.dryRunBatchRunning = false; return; }
+            // Migration started — it runs in background, watch SSE for updates
+          } catch(e) { alert('Batch migration error: ' + e.message); this.dryRunBatchRunning = false; }
+        },
+
+        async loadMigrationReport() {
+          this.dryRunReportLoading = true;
+          try {
+            const r = await fetch('/api/migration/report', { headers: this._authHeaders() });
+            const d = await r.json();
+            if (r.ok) { this.dryRunReport = d; }
+            else { alert(d.error || 'No report found'); }
+          } catch(e) { alert('Report load error: ' + e.message); }
+          finally { this.dryRunReportLoading = false; }
+        },
+
+        downloadReportCSV() {
+          if (!this.dryRunReport || !this.dryRunReport.csv) return;
+          const blob = new Blob([this.dryRunReport.csv], { type: 'text/csv' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url;
+          a.download = 'migration_report_' + new Date().toISOString().slice(0,10) + '.csv';
+          a.click(); URL.revokeObjectURL(url);
+        },
+
+        async checkDryRunCheckpoint() {
+          try {
+            const r = await fetch('/api/migration/checkpoint', { headers: this._authHeaders() });
+            if (r.ok) { this.dryRunCheckpoint = await r.json(); }
+          } catch(e) { /* ignore */ }
+        },
+
+        async loadCaptionStats() {
+          this.dryRunCaptionStatsLoading = true;
+          try {
+            const r = await fetch('/api/kaltura/caption-stats', { headers: this._authHeaders() });
+            const d = await r.json();
+            if (r.ok) { this.dryRunCaptionStats = d; }
+            else { alert(d.error || 'Caption stats failed'); }
+          } catch(e) { alert('Caption stats error: ' + e.message); }
+          finally { this.dryRunCaptionStatsLoading = false; }
+        },
+
         async testConnection(svc) {
           try {
             // Auto-save current form values before testing so the backend sees them
@@ -2271,6 +2591,10 @@
           if (data.type === 'migration_completed' || data.type === 'migration_stopped') {
             // Refresh both columns when migration finishes
             if (this.currentTab === 'migration') { this.loadMigKaltura(); this.loadZoomCompleted(); }
+          }
+          if (data.type === 'batch_migration_completed') {
+            this.dryRunBatchRunning = false;
+            if (this.currentTab === 'dryrun') { this.loadMigrationReport(); }
           }
         },
       };

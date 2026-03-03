@@ -672,6 +672,98 @@ class ZoomClient:
             "video_ids": [video_id],
         })
 
+    # ─── Caption/subtitle upload ───
+
+    def upload_caption_clips(self, video_id: str, vtt_path: str, language: str = "en",
+                              label: str = "") -> dict:
+        """Upload a VTT caption file to a Zoom Clips video.
+
+        POST to fileapi.zoom.us/v2/clips/{clipId}/captions
+        Zoom only accepts WebVTT format. SRT files must be converted first.
+
+        Parameters
+        ----------
+        video_id : str
+            Clip ID from the upload response.
+        vtt_path : str
+            Path to the .vtt caption file.
+        language : str
+            Language code (e.g., 'en', 'fr', 'es').
+        label : str
+            Human-readable label (e.g., 'English', 'English (auto)').
+        """
+        path = Path(vtt_path)
+        if not path.exists():
+            logger.warning("Caption file not found: %s", vtt_path)
+            return {}
+
+        url = f"{ZOOM_FILE_API}/clips/{video_id}/captions"
+
+        with open(path, "rb") as f:
+            encoder = MultipartEncoder(fields={
+                "file": (path.name, f, "text/vtt"),
+                "language": language,
+                "label": label or language,
+            })
+            headers = {**self._headers(), "Content-Type": encoder.content_type}
+            resp = requests.post(url, headers=headers, data=encoder, timeout=60)
+
+        if resp.ok:
+            logger.info("Uploaded caption for clip %s (lang=%s)", video_id, language)
+            return resp.json() if resp.content else {"status": "ok"}
+        else:
+            logger.warning("Caption upload failed for clip %s: %d %s",
+                           video_id, resp.status_code, resp.text[:500])
+            return {}
+
+    def upload_caption_events(self, video_id: str, vtt_path: str, language: str = "en",
+                               label: str = "") -> dict:
+        """Upload a VTT caption file via the Zoom Events API.
+
+        Uses the Events file upload endpoint with the VTT content type.
+        The video_id returned from Events upload is used to associate the caption.
+
+        POST https://fileapi.zoom.us/v2/zoom_events/files
+        file_type can be used to signal it's a caption, but the actual association
+        may need to go through the metadata API.
+        """
+        path = Path(vtt_path)
+        if not path.exists():
+            logger.warning("Caption file not found: %s", vtt_path)
+            return {}
+
+        url = f"{ZOOM_FILE_API}/zoom_events/files"
+
+        with open(path, "rb") as f:
+            encoder = MultipartEncoder(fields={
+                "file": (path.name, f, "text/vtt"),
+            })
+            headers = {**self._headers(), "Content-Type": encoder.content_type}
+            resp = requests.post(url, headers=headers, data=encoder,
+                                 timeout=60, allow_redirects=True)
+
+        if resp.ok:
+            result = resp.json() if resp.content else {}
+            logger.info("Uploaded Events caption for video %s: file_id=%s",
+                         video_id, result.get("file_id", ""))
+            return result
+        else:
+            logger.warning("Events caption upload failed for %s: %d %s",
+                           video_id, resp.status_code, resp.text[:500])
+            return {}
+
+    def upload_caption(self, video_id: str, vtt_path: str, language: str = "en",
+                       label: str = "") -> dict:
+        """Upload a caption file to Zoom — routes to Clips or Events based on config.
+
+        Always expects a VTT file. If you have SRT, convert it first with caption_utils.
+        """
+        target = self.config.target_api
+        if target == "events":
+            return self.upload_caption_events(video_id, vtt_path, language, label)
+        else:
+            return self.upload_caption_clips(video_id, vtt_path, language, label)
+
     # ─── Thumbnail management ───
 
     def upload_thumbnail(self, video_id: str, thumbnail_path: str) -> dict:
@@ -701,6 +793,46 @@ class ZoomClient:
         else:
             logger.warning("Thumbnail upload failed for %s: %d %s", video_id, resp.status_code, resp.text[:500])
             return {}
+
+    def upload_thumbnail_events(self, video_id: str, thumbnail_path: str) -> dict:
+        """Upload a thumbnail image via the Zoom Events file upload API.
+
+        POST https://fileapi.zoom.us/v2/zoom_events/files
+        The Events API accepts image files alongside video/caption uploads.
+        """
+        path = Path(thumbnail_path)
+        if not path.exists():
+            logger.warning("Thumbnail file not found: %s", thumbnail_path)
+            return {}
+
+        content_type = "image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+        url = f"{ZOOM_FILE_API}/zoom_events/files"
+
+        with open(path, "rb") as f:
+            encoder = MultipartEncoder(fields={
+                "file": (path.name, f, content_type),
+            })
+            headers = {**self._headers(), "Content-Type": encoder.content_type}
+            resp = requests.post(url, headers=headers, data=encoder,
+                                 timeout=60, allow_redirects=True)
+
+        if resp.ok:
+            result = resp.json() if resp.content else {}
+            logger.info("Uploaded Events thumbnail for video %s: file_id=%s",
+                         video_id, result.get("file_id", ""))
+            return result
+        else:
+            logger.warning("Events thumbnail upload failed for %s: %d %s",
+                           video_id, resp.status_code, resp.text[:500])
+            return {}
+
+    def upload_thumbnail_auto(self, video_id: str, thumbnail_path: str) -> dict:
+        """Upload a thumbnail — routes to Clips or Events based on config."""
+        target = self.config.target_api
+        if target == "events":
+            return self.upload_thumbnail_events(video_id, thumbnail_path)
+        else:
+            return self.upload_thumbnail(video_id, thumbnail_path)
 
     # ─── Custom fields (Video Management API) ───
 

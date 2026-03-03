@@ -1724,6 +1724,292 @@ async def get_events_video_metadata(video_id: str, user: dict = Depends(_verify_
         return JSONResponse({"error": f"Failed to get metadata: {e}"}, status_code=500)
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  IFRS DRY RUN ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════
+#
+# Source manifest, caption format counter, migration report,
+# and restartable batch migration for specific entry IDs.
+
+@app.post("/api/manifest/generate")
+@limiter.limit("10/minute")
+async def generate_source_manifest(request: Request, user: dict = Depends(_verify_jwt)):
+    """Generate a frozen source manifest for a list of Kaltura entry IDs.
+
+    POST body: { "entry_ids": ["0_abc123", "0_def456", ...] }
+    Returns the manifest + CSV download link.
+    """
+    if _demo_mode or _pipeline is None:
+        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+
+    body = await request.json()
+    entry_ids = body.get("entry_ids", [])
+    if not entry_ids:
+        return JSONResponse({"error": "entry_ids required"}, status_code=400)
+
+    audit_log("manifest_generate", user=user["sub"], details={"entry_ids": entry_ids})
+
+    try:
+        manifest = _pipeline.kaltura.generate_source_manifest(entry_ids)
+        csv_content = _pipeline.kaltura.manifest_to_csv(manifest)
+        return {
+            "manifest": manifest,
+            "csv": csv_content,
+            "total": len(manifest),
+            "with_captions": sum(1 for m in manifest if m.get("caption_count", 0) > 0),
+            "with_srt": sum(1 for m in manifest if m.get("has_srt", False)),
+            "with_thumbnails": sum(1 for m in manifest if m.get("thumbnail_count", 0) > 0),
+        }
+    except Exception as e:
+        logger.error("Manifest generation failed: %s", e)
+        return JSONResponse({"error": f"Manifest generation failed: {e}"}, status_code=500)
+
+
+@app.get("/api/kaltura/caption-stats")
+async def get_caption_format_stats(
+    max_videos: int = Query(None, ge=1, le=50000),
+    user: dict = Depends(_verify_jwt),
+):
+    """Count SRT vs VTT caption files across the Kaltura account.
+
+    This scans all videos and their caption assets. Can be slow for large accounts.
+    Use max_videos to limit the scan scope.
+    """
+    if _demo_mode or _pipeline is None:
+        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+
+    try:
+        stats = _pipeline.kaltura.count_caption_formats(max_videos=max_videos)
+        return stats
+    except Exception as e:
+        logger.error("Caption stats failed: %s", e)
+        return JSONResponse({"error": f"Caption stats failed: {e}"}, status_code=500)
+
+
+@app.get("/api/kaltura/entry/{entry_id}/captions")
+async def get_entry_captions(entry_id: str, user: dict = Depends(_verify_jwt)):
+    """List caption assets for a specific Kaltura entry."""
+    if _demo_mode or _pipeline is None:
+        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+
+    try:
+        captions = _pipeline.kaltura.list_captions(entry_id)
+        return {
+            "entry_id": entry_id,
+            "captions": [
+                {
+                    "id": c.get("id", ""),
+                    "label": c.get("label", ""),
+                    "language": c.get("language", ""),
+                    "format": _pipeline.kaltura.caption_format_name(c.get("format", 0)),
+                    "format_code": c.get("format", 0),
+                    "is_default": bool(c.get("isDefault", False)),
+                    "status": c.get("status", 0),
+                }
+                for c in captions
+            ],
+            "total": len(captions),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/kaltura/entry/{entry_id}/thumbnails")
+async def get_entry_thumbnails(entry_id: str, user: dict = Depends(_verify_jwt)):
+    """List thumbnail assets for a specific Kaltura entry."""
+    if _demo_mode or _pipeline is None:
+        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+
+    try:
+        thumbnails = _pipeline.kaltura.list_thumbnails(entry_id)
+        return {
+            "entry_id": entry_id,
+            "thumbnails": [
+                {
+                    "id": t.get("id", ""),
+                    "width": t.get("width", 0),
+                    "height": t.get("height", 0),
+                    "file_ext": t.get("fileExt", ""),
+                    "is_default": bool(t.get("isDefault", False)),
+                    "tags": t.get("tags", ""),
+                }
+                for t in thumbnails
+            ],
+            "total": len(thumbnails),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/migration/batch")
+@limiter.limit("5/minute")
+async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
+    """Run a restartable batch migration for specific entry IDs.
+
+    POST body: { "entry_ids": ["0_abc123", ...], "resumable": true }
+
+    This is the main IFRS dry run endpoint. It:
+    1. Processes specific entry IDs (not auto-discovery)
+    2. Migrates video + captions (SRT→VTT) + default thumbnail
+    3. Checkpoints after each video for restartability
+    4. Returns a migration report with Kaltura ID → Zoom ID mapping
+    """
+    global _migration_running
+
+    body = await request.json()
+    entry_ids = body.get("entry_ids", [])
+    resumable = body.get("resumable", True)
+
+    if not entry_ids:
+        return JSONResponse({"error": "entry_ids required"}, status_code=400)
+
+    with _migration_lock:
+        if _migration_running:
+            return JSONResponse({"error": "Migration already running"}, status_code=409)
+        _migration_running = True
+        _migration_cancel.clear()
+
+    if _demo_mode or _pipeline is None:
+        with _migration_lock:
+            _migration_running = False
+        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+
+    audit_log("batch_migration_start", user=user["sub"], details={
+        "entry_ids": entry_ids, "resumable": resumable, "count": len(entry_ids),
+    })
+
+    def _run_batch():
+        global _migration_running
+        try:
+            if resumable:
+                results = _pipeline.run_migration_resumable(entry_ids)
+            else:
+                results = _pipeline.run_migration(video_ids=entry_ids)
+
+            # Generate migration report
+            report = _pipeline.generate_migration_report(results)
+
+            # Save report to disk
+            report_paths = _pipeline.save_migration_report(
+                report, _pipeline.config.pipeline.download_dir,
+            )
+
+            # Broadcast results
+            for r in results:
+                if r.status == "completed":
+                    _cost_tracker.record_migration_cost(r.video_id, int(r.file_size_mb * 1024 * 1024))
+                    _broadcast_sse({
+                        "type": "video_completed",
+                        "video_id": r.video_id,
+                        "title": r.title,
+                        "zoom_id": r.zoom_id,
+                        "size_mb": r.file_size_mb,
+                        "captions": r.captions_migrated,
+                        "thumbnails": r.thumbnails_migrated,
+                    })
+                    _audit_store.append(
+                        event="video_completed", video_id=r.video_id,
+                        data={
+                            "title": r.title, "zoom_id": r.zoom_id,
+                            "duration_s": r.duration_seconds, "size_mb": r.file_size_mb,
+                            "captions_migrated": r.captions_migrated,
+                            "thumbnails_migrated": r.thumbnails_migrated,
+                        },
+                    )
+                else:
+                    _broadcast_sse({
+                        "type": "video_failed",
+                        "video_id": r.video_id,
+                        "title": r.title,
+                        "error": r.error,
+                    })
+
+            completed = sum(1 for r in results if r.status == "completed")
+            _broadcast_sse({
+                "type": "batch_migration_completed",
+                "message": f"Batch migration complete: {completed}/{len(results)} succeeded",
+                "report_summary": report.get("summary", {}),
+            })
+            _audit_store.append(
+                event="batch_migration_complete",
+                data={
+                    "total": len(results), "completed": completed,
+                    "failed": len(results) - completed,
+                    "report_paths": report_paths,
+                },
+            )
+
+        except Exception as e:
+            _broadcast_sse({
+                "type": "migration_error",
+                "message": f"Batch migration error: {e}",
+            })
+        finally:
+            _migration_running = False
+
+    threading.Thread(target=_run_batch, daemon=True).start()
+    return {
+        "status": "started",
+        "entry_ids": entry_ids,
+        "count": len(entry_ids),
+        "resumable": resumable,
+    }
+
+
+@app.get("/api/migration/report")
+async def get_migration_report(user: dict = Depends(_verify_jwt)):
+    """Get the latest migration report (Kaltura ID → Zoom ID mapping).
+
+    Returns CSV and JSON data for the most recent migration run.
+    """
+    if _demo_mode or _pipeline is None:
+        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+
+    # Look for report files in the download directory
+    download_dir = Path(_pipeline.config.pipeline.download_dir)
+    csv_files = sorted(download_dir.glob("migration_report_*.csv"), reverse=True)
+    json_files = sorted(download_dir.glob("migration_report_*.json"), reverse=True)
+
+    if not csv_files and not json_files:
+        return JSONResponse({"error": "No migration reports found. Run a batch migration first."}, status_code=404)
+
+    result = {}
+    if json_files:
+        try:
+            report_data = json.loads(json_files[0].read_text(encoding="utf-8"))
+            result["report"] = report_data
+            result["json_file"] = str(json_files[0])
+        except Exception as e:
+            result["json_error"] = str(e)
+
+    if csv_files:
+        result["csv"] = csv_files[0].read_text(encoding="utf-8")
+        result["csv_file"] = str(csv_files[0])
+
+    return result
+
+
+@app.get("/api/migration/checkpoint")
+async def get_migration_checkpoint(user: dict = Depends(_verify_jwt)):
+    """Check if there's a resumable migration checkpoint.
+
+    Returns checkpoint data if a previous migration was interrupted.
+    """
+    if _demo_mode or _pipeline is None:
+        return {"has_checkpoint": False}
+
+    checkpoint = _pipeline._load_checkpoint()
+    if checkpoint:
+        return {
+            "has_checkpoint": True,
+            "progress": checkpoint.get("progress", ""),
+            "completed_ids": checkpoint.get("completed_ids", []),
+            "total_ids": len(checkpoint.get("video_ids", [])),
+            "last_updated": checkpoint.get("last_updated", ""),
+        }
+    return {"has_checkpoint": False}
+
+
 @app.get("/api/videos/{video_id}")
 async def get_video(video_id: str, user: dict = Depends(_verify_jwt)):
     if _demo_mode:
@@ -2822,11 +3108,17 @@ def _run_real_migration(batch_size: int, video_ids: Optional[List[str]] = None):
                     "title": r.title,
                     "zoom_id": r.zoom_id,
                     "size_mb": r.file_size_mb,
+                    "captions": r.captions_migrated,
+                    "thumbnails": r.thumbnails_migrated,
                 })
                 _audit_store.append(
                     event="video_completed", video_id=r.video_id,
-                    data={"title": r.title, "zoom_id": r.zoom_id,
-                          "duration_s": r.duration_seconds, "size_mb": r.file_size_mb},
+                    data={
+                        "title": r.title, "zoom_id": r.zoom_id,
+                        "duration_s": r.duration_seconds, "size_mb": r.file_size_mb,
+                        "captions_migrated": r.captions_migrated,
+                        "thumbnails_migrated": r.thumbnails_migrated,
+                    },
                 )
             else:
                 _broadcast_sse({
@@ -2842,13 +3134,18 @@ def _run_real_migration(batch_size: int, video_ids: Optional[List[str]] = None):
 
         completed = sum(1 for r in results if r.status == "completed")
         failed = len(results) - completed
+        total_captions = sum(r.captions_migrated for r in results if r.status == "completed")
+        total_thumbs = sum(r.thumbnails_migrated for r in results if r.status == "completed")
         _audit_store.append(
             event="migration_complete",
-            data={"processed": len(results), "completed": completed, "failed": failed},
+            data={
+                "processed": len(results), "completed": completed, "failed": failed,
+                "captions_migrated": total_captions, "thumbnails_migrated": total_thumbs,
+            },
         )
         _broadcast_sse({
             "type": "migration_completed",
-            "message": f"Migration batch complete: {len(results)} processed",
+            "message": f"Migration batch complete: {len(results)} processed ({total_captions} captions, {total_thumbs} thumbnails)",
         })
     except Exception as e:
         _broadcast_sse({
