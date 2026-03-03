@@ -21,6 +21,7 @@ from .aws_staging import MigrationStateTracker, MigrationStatus, S3Staging
 from .config import Config
 from .kaltura_client import KalturaClient
 from .zoom_client import ZoomClient
+from .transform_engine import apply_mappings
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class MigrationResult:
 
 
 class MigrationPipeline:
-    def __init__(self, config: Config, on_progress=None):
+    def __init__(self, config: Config, on_progress=None, source_adapter=None, field_mappings=None):
         self.config = config
         self.skip_s3 = config.skip_s3
         self.kaltura = KalturaClient(config.kaltura)
@@ -45,6 +46,11 @@ class MigrationPipeline:
         self.zoom = ZoomClient(config.zoom)
         self.tracker = MigrationStateTracker(config.aws, use_local=True)
         self._on_progress = on_progress
+
+        # Adapter-based source (if provided, uses adapter instead of self.kaltura)
+        self._source_adapter = source_adapter
+        # Configurable field mappings (if provided, uses transform engine instead of hardcoded)
+        self._field_mappings = field_mappings
 
         # Ensure download directory exists
         Path(config.pipeline.download_dir).mkdir(parents=True, exist_ok=True)
@@ -116,16 +122,29 @@ class MigrationPipeline:
         local_path = os.path.join(self.config.pipeline.download_dir, f"{safe_id}.mp4")
 
         try:
-            # Step 1: Fetch metadata
+            # Step 1: Fetch metadata (adapter or legacy Kaltura client)
             self.tracker.update_status(entry_id, MigrationStatus.DOWNLOADING)
-            metadata = self.kaltura.extract_full_metadata(entry_id)
-            title = metadata.get("title", entry_id)
+            if self._source_adapter:
+                asset = self._source_adapter.fetch_metadata(entry_id)
+                metadata = asset.raw_metadata if asset.raw_metadata else {
+                    "title": asset.title, "description": asset.description,
+                    "tags": asset.tags, "categories": asset.categories,
+                    "duration": asset.duration, "kaltura_id": asset.id,
+                }
+                title = asset.title or entry_id
+            else:
+                metadata = self.kaltura.extract_full_metadata(entry_id)
+                title = metadata.get("title", entry_id)
             self._notify(entry_id, "downloading", title)
             logger.info("[%s] Starting migration: %s", entry_id, title)
 
-            # Step 2: Download from Kaltura to local disk
-            download_url = self.kaltura.get_download_url(entry_id)
-            self.kaltura.download_video(download_url, local_path)
+            # Step 2: Download from source to local disk
+            if self._source_adapter:
+                dl_url = self._source_adapter.get_download_url(entry_id)
+                self._source_adapter.download_video(dl_url, local_path)
+            else:
+                download_url = self.kaltura.get_download_url(entry_id)
+                self.kaltura.download_video(download_url, local_path)
             file_size_mb = Path(local_path).stat().st_size / (1024 * 1024)
 
             # Step 3: Stage to S3 (backup/audit copy — skipped if SKIP_S3)
@@ -141,10 +160,16 @@ class MigrationPipeline:
             # Step 4: Upload to Zoom (from local file)
             self.tracker.update_status(entry_id, MigrationStatus.UPLOADING)
             self._notify(entry_id, "uploading", title)
-            zoom_description = self._build_zoom_description(metadata)
+            if self._field_mappings:
+                zoom_meta = apply_mappings(metadata, self._field_mappings)
+                zoom_title = zoom_meta.get("title", title) or title
+                zoom_description = zoom_meta.get("description", "")
+            else:
+                zoom_title = title
+                zoom_description = self._build_zoom_description(metadata)
             zoom_result = self.zoom.upload_video(
                 local_path,
-                title=title,
+                title=zoom_title,
                 description=zoom_description,
             )
             zoom_id = zoom_result.get("id", "")
@@ -216,11 +241,18 @@ class MigrationPipeline:
         batch_size = batch_size or self.config.pipeline.batch_size
 
         if video_ids is None:
-            # Discover videos from Kaltura
-            logger.info("Discovering videos from Kaltura (batch_size=%d)", batch_size)
-            videos = self.kaltura.list_videos(page=1, page_size=batch_size)
-            video_ids = [v["id"] for v in videos.get("objects", [])]
-            total_available = videos.get("totalCount", 0)
+            # Discover videos from source (adapter or legacy Kaltura)
+            if self._source_adapter:
+                platform = self._source_adapter.platform_name()
+                logger.info("Discovering videos from %s (batch_size=%d)", platform, batch_size)
+                result = self._source_adapter.list_assets(page=1, page_size=batch_size)
+                video_ids = [a.id for a in result.assets]
+                total_available = result.total_count
+            else:
+                logger.info("Discovering videos from Kaltura (batch_size=%d)", batch_size)
+                videos = self.kaltura.list_videos(page=1, page_size=batch_size)
+                video_ids = [v["id"] for v in videos.get("objects", [])]
+                total_available = videos.get("totalCount", 0)
             logger.info("Found %d videos total, processing %d", total_available, len(video_ids))
 
             # Register in state tracker
@@ -346,15 +378,21 @@ class MigrationPipeline:
         """
         results = {}
 
-        # Test Kaltura
+        # Test source (adapter or legacy Kaltura)
         try:
-            self.kaltura.authenticate()
-            videos = self.kaltura.list_videos(page=1, page_size=1)
-            results["kaltura"] = True
-            logger.info("Kaltura: OK (%d total videos)", videos.get("totalCount", 0))
+            if self._source_adapter:
+                self._source_adapter.authenticate()
+                listing = self._source_adapter.list_assets(page=1, page_size=1)
+                results["source"] = True
+                logger.info("%s: OK (%d total videos)", self._source_adapter.platform_name(), listing.total_count)
+            else:
+                self.kaltura.authenticate()
+                videos = self.kaltura.list_videos(page=1, page_size=1)
+                results["kaltura"] = True
+                logger.info("Kaltura: OK (%d total videos)", videos.get("totalCount", 0))
         except Exception as e:
-            results["kaltura"] = False
-            logger.error("Kaltura: FAILED - %s", e)
+            results["source" if self._source_adapter else "kaltura"] = False
+            logger.error("Source: FAILED - %s", e)
 
         # Test S3 (skipped if SKIP_S3)
         if self.skip_s3:

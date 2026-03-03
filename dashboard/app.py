@@ -48,6 +48,7 @@ from dotenv import dotenv_values, set_key
 
 from .audit_store import AuditStore
 from .cost_tracker import CostTracker
+from . import db as _db
 
 logger = logging.getLogger(__name__)
 
@@ -261,8 +262,71 @@ def _try_init_pipeline():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialise Postgres (if available) and create tables
+    _db.init()
+    if _db.is_available():
+        _db.create_tables()
+        _maybe_create_default_project()
+    # Legacy fallback — init pipeline from env vars
     _try_init_pipeline()
     yield
+
+
+def _maybe_create_default_project():
+    """On first startup with DB, create a 'default' project seeded from .env creds."""
+    try:
+        existing = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", ("default",))
+        if existing:
+            return  # already exists
+
+        row = _db.execute_returning(
+            """INSERT INTO projects (name, slug, description, source_platform, config_json)
+               VALUES (%s, %s, %s, %s, %s)
+               RETURNING id""",
+            ("Default Project", "default", "Auto-created from environment variables", "kaltura",
+             json.dumps({
+                 "batch_size": int(os.environ.get("BATCH_SIZE", "10")),
+                 "max_concurrency": int(os.environ.get("MAX_CONCURRENCY", "5")),
+                 "retry_attempts": int(os.environ.get("RETRY_ATTEMPTS", "3")),
+                 "retry_delay": int(os.environ.get("RETRY_DELAY", "5")),
+                 "skip_s3": os.environ.get("SKIP_S3", "").lower() in ("true", "1"),
+                 "zoom_target_api": os.environ.get("ZOOM_TARGET_API", "clips"),
+             })),
+        )
+        if not row:
+            return
+        project_id = str(row["id"])
+
+        # Seed credentials from env vars
+        _env_creds = {
+            "kaltura": {
+                "partner_id": ("KALTURA_PARTNER_ID", False),
+                "admin_secret": ("KALTURA_ADMIN_SECRET", True),
+                "user_id": ("KALTURA_USER_ID", False),
+                "service_url": ("KALTURA_SERVICE_URL", False),
+            },
+            "zoom": {
+                "client_id": ("ZOOM_CLIENT_ID", False),
+                "client_secret": ("ZOOM_CLIENT_SECRET", True),
+                "account_id": ("ZOOM_ACCOUNT_ID", False),
+            },
+            "aws": {
+                "s3_bucket": ("AWS_S3_BUCKET", False),
+                "region": ("AWS_REGION", False),
+                "state_table": ("AWS_STATE_TABLE", False),
+            },
+        }
+        for service, fields in _env_creds.items():
+            for key_name, (env_var, is_secret) in fields.items():
+                val = os.environ.get(env_var, "")
+                if val:
+                    _db.store_credential(project_id, service, key_name, val, is_secret)
+
+        # Create default field mappings
+        _db.create_default_mappings(project_id, "kaltura")
+        logger.info("Created default project from environment variables")
+    except Exception as e:
+        logger.warning("Could not create default project: %s", e)
 
 
 app = FastAPI(title="Video Migration Dashboard", lifespan=lifespan)
@@ -394,6 +458,959 @@ async def login(request: Request):
 async def verify_token(user: dict = Depends(_verify_jwt)):
     """Verify that a JWT token is still valid."""
     return {"valid": True, "username": user["sub"], "role": user.get("role", "admin")}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── Project Management (multi-project CRUD) ──
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ProjectCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    slug: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9\-]*$")
+    description: str = Field(default="", max_length=1000)
+    source_platform: str = Field(default="kaltura", max_length=50)
+    config_json: dict = Field(default_factory=dict)
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    status: Optional[str] = Field(default=None, pattern=r"^(active|paused|archived|completed)$")
+    config_json: Optional[dict] = None
+
+
+class CredentialUpdate(BaseModel):
+    service: str = Field(..., pattern=r"^(kaltura|zoom|aws)$")
+    credentials: dict = Field(...)
+
+
+class FieldMappingUpdate(BaseModel):
+    mappings: list = Field(...)
+
+
+class MigrationRunStart(BaseModel):
+    batch_size: int = Field(default=10, ge=1, le=500)
+    video_ids: Optional[List[str]] = None
+    gates_enabled: bool = Field(default=False)
+    filter_tags: Optional[List[str]] = None
+    filter_categories: Optional[List[str]] = None
+
+
+# ── Helper: get pipeline for a project ──
+
+_project_pipelines: dict[str, Any] = {}  # slug -> MigrationPipeline
+
+
+def _get_pipeline_for_project(slug: str):
+    """Get or create a MigrationPipeline for a project from DB credentials."""
+    if not _db.is_available():
+        return _pipeline  # fallback to legacy global pipeline
+
+    if slug in _project_pipelines:
+        return _project_pipelines[slug]
+
+    project = _db.fetch_one("SELECT id, source_platform, config_json FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        return None
+
+    creds = _db.get_all_credentials(str(project["id"]))
+    if not creds:
+        return None
+
+    try:
+        from migration.config import Config
+        from migration.pipeline import MigrationPipeline
+
+        config = Config.from_db(creds, project.get("config_json") or {})
+        missing = config.validate()
+        if missing:
+            logger.info("Project %s missing creds: %s", slug, missing)
+            return None
+
+        pipeline = MigrationPipeline(config, on_progress=_progress_callback)
+        _project_pipelines[slug] = pipeline
+        return pipeline
+    except Exception as e:
+        logger.warning("Could not init pipeline for project %s: %s", slug, e)
+        return None
+
+
+def _invalidate_project_pipeline(slug: str):
+    """Remove cached pipeline so it's re-created with updated creds."""
+    _project_pipelines.pop(slug, None)
+
+
+# ── Project CRUD ──
+
+@app.get("/api/projects")
+async def list_projects(user: dict = Depends(_verify_jwt)):
+    """List all projects."""
+    if not _db.is_available():
+        return {"projects": [{"name": "Default (env)", "slug": "default", "source_platform": "kaltura", "status": "active"}]}
+
+    rows = _db.fetch_all(
+        """SELECT id, name, slug, description, source_platform, status, config_json, created_at, updated_at
+           FROM projects ORDER BY created_at DESC"""
+    )
+    projects = []
+    for r in rows:
+        projects.append({
+            "id": str(r["id"]),
+            "name": r["name"],
+            "slug": r["slug"],
+            "description": r["description"],
+            "source_platform": r["source_platform"],
+            "status": r["status"],
+            "config_json": r["config_json"] or {},
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+        })
+    return {"projects": projects}
+
+
+@app.post("/api/projects")
+async def create_project(request: Request, user: dict = Depends(_verify_jwt)):
+    """Create a new project."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    body = await request.json()
+    data = ProjectCreate(**body)
+
+    # Check slug uniqueness
+    existing = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (data.slug,))
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Project slug '{data.slug}' already exists")
+
+    row = _db.execute_returning(
+        """INSERT INTO projects (name, slug, description, source_platform, config_json)
+           VALUES (%s, %s, %s, %s, %s)
+           RETURNING id, name, slug, description, source_platform, status, config_json, created_at""",
+        (data.name, data.slug, data.description, data.source_platform, json.dumps(data.config_json)),
+    )
+
+    # Create default field mappings
+    _db.create_default_mappings(str(row["id"]), data.source_platform)
+
+    audit_log("project_created", user=user["sub"], details={"slug": data.slug, "name": data.name})
+    return {
+        "project": {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "slug": row["slug"],
+            "description": row["description"],
+            "source_platform": row["source_platform"],
+            "status": row["status"],
+            "config_json": row["config_json"] or {},
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        }
+    }
+
+
+@app.get("/api/projects/{slug}")
+async def get_project(slug: str, user: dict = Depends(_verify_jwt)):
+    """Get project details."""
+    if not _db.is_available():
+        if slug == "default":
+            return {"project": {"name": "Default (env)", "slug": "default", "source_platform": "kaltura", "status": "active"}}
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    row = _db.fetch_one(
+        """SELECT id, name, slug, description, source_platform, status, config_json, created_at, updated_at
+           FROM projects WHERE slug = %s""",
+        (slug,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Get run stats
+    run_stats = _db.fetch_one(
+        """SELECT COUNT(*) as total_runs,
+                  SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_runs,
+                  SUM(COALESCE(completed_count, 0)) as total_migrated,
+                  SUM(COALESCE(failed_count, 0)) as total_failed
+           FROM migration_runs WHERE project_id = %s""",
+        (str(row["id"]),),
+    )
+
+    return {
+        "project": {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "slug": row["slug"],
+            "description": row["description"],
+            "source_platform": row["source_platform"],
+            "status": row["status"],
+            "config_json": row["config_json"] or {},
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        },
+        "stats": {
+            "total_runs": run_stats["total_runs"] if run_stats else 0,
+            "completed_runs": run_stats["completed_runs"] if run_stats else 0,
+            "total_migrated": run_stats["total_migrated"] if run_stats else 0,
+            "total_failed": run_stats["total_failed"] if run_stats else 0,
+        },
+    }
+
+
+@app.put("/api/projects/{slug}")
+async def update_project(slug: str, request: Request, user: dict = Depends(_verify_jwt)):
+    """Update a project."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    body = await request.json()
+    data = ProjectUpdate(**body)
+
+    sets = []
+    params = []
+    if data.name is not None:
+        sets.append("name = %s")
+        params.append(data.name)
+    if data.description is not None:
+        sets.append("description = %s")
+        params.append(data.description)
+    if data.status is not None:
+        sets.append("status = %s")
+        params.append(data.status)
+    if data.config_json is not None:
+        sets.append("config_json = %s")
+        params.append(json.dumps(data.config_json))
+
+    if not sets:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    sets.append("updated_at = NOW()")
+    params.append(slug)
+
+    _db.execute(f"UPDATE projects SET {', '.join(sets)} WHERE slug = %s", tuple(params))
+    _invalidate_project_pipeline(slug)
+    audit_log("project_updated", user=user["sub"], details={"slug": slug})
+    return {"status": "updated"}
+
+
+@app.delete("/api/projects/{slug}")
+async def archive_project(slug: str, user: dict = Depends(_verify_jwt)):
+    """Archive (soft-delete) a project."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    _db.execute("UPDATE projects SET status = 'archived', updated_at = NOW() WHERE slug = %s", (slug,))
+    _invalidate_project_pipeline(slug)
+    audit_log("project_archived", user=user["sub"], details={"slug": slug})
+    return {"status": "archived"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── Credentials (per-project, encrypted in Postgres) ──
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/projects/{slug}/credentials")
+async def get_project_credentials(slug: str, user: dict = Depends(_verify_jwt)):
+    """Get credentials for a project (secrets masked)."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    masked = _db.get_all_credentials_masked(str(project["id"]))
+    return {"credentials": masked}
+
+
+@app.put("/api/projects/{slug}/credentials")
+async def save_project_credentials(slug: str, request: Request, user: dict = Depends(_verify_jwt)):
+    """Save credentials for a project (encrypted)."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    body = await request.json()
+    data = CredentialUpdate(**body)
+
+    project = _db.fetch_one("SELECT id, source_platform FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_id = str(project["id"])
+
+    # Determine which fields are secrets
+    from migration.adapters import get_adapter
+    try:
+        adapter_cls = get_adapter(project["source_platform"])
+        cred_defs = {c["key"]: c["secret"] for c in adapter_cls.required_credentials()}
+    except ValueError:
+        cred_defs = {}
+
+    # Add zoom and aws credential definitions
+    zoom_secrets = {"client_id": False, "client_secret": True, "account_id": False}
+    aws_secrets = {"s3_bucket": False, "region": False, "state_table": False, "staging_prefix": False, "endpoint_url": False}
+
+    mask = "\u2022" * 8
+    saved_count = 0
+    for key_name, value in data.credentials.items():
+        if value == mask:
+            continue  # user didn't change this secret
+
+        if data.service == "kaltura":
+            is_secret = cred_defs.get(key_name, False)
+        elif data.service == "zoom":
+            is_secret = zoom_secrets.get(key_name, False)
+        else:
+            is_secret = aws_secrets.get(key_name, False)
+
+        _db.store_credential(project_id, data.service, key_name, value, is_secret)
+        saved_count += 1
+
+    _invalidate_project_pipeline(slug)
+    audit_log("credentials_updated", user=user["sub"], details={"slug": slug, "service": data.service, "keys": saved_count})
+    return {"status": "saved", "service": data.service, "keys_updated": saved_count}
+
+
+@app.post("/api/projects/{slug}/credentials/test")
+async def test_project_connections(slug: str, request: Request, user: dict = Depends(_verify_jwt)):
+    """Test service connections for a project."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    body = await request.json()
+    service = body.get("service", "all")
+
+    project = _db.fetch_one("SELECT id, source_platform FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    creds = _db.get_all_credentials(str(project["id"]))
+    results = {}
+
+    if service in ("all", "kaltura"):
+        try:
+            from migration.adapters import get_adapter
+            adapter_cls = get_adapter(project["source_platform"])
+            adapter = adapter_cls(creds.get(project["source_platform"], creds.get("kaltura", {})))
+            ok = adapter.authenticate()
+            results["kaltura"] = {"status": "ok" if ok else "failed", "message": "Connected" if ok else "Auth failed"}
+        except Exception as e:
+            results["kaltura"] = {"status": "error", "message": str(e)}
+
+    if service in ("all", "zoom"):
+        try:
+            from migration.zoom_client import ZoomClient
+            from migration.config import ZoomConfig
+            zm = creds.get("zoom", {})
+            zc = ZoomClient(ZoomConfig(
+                client_id=zm.get("client_id", ""),
+                client_secret=zm.get("client_secret", ""),
+                account_id=zm.get("account_id", ""),
+            ))
+            zc.authenticate()
+            results["zoom"] = {"status": "ok", "message": "Connected"}
+        except Exception as e:
+            results["zoom"] = {"status": "error", "message": str(e)}
+
+    if service in ("all", "aws"):
+        try:
+            import boto3
+            aws = creds.get("aws", {})
+            bucket = aws.get("s3_bucket", aws.get("bucket_name", ""))
+            if bucket:
+                s3 = boto3.client("s3", region_name=aws.get("region", "us-east-1"))
+                s3.head_bucket(Bucket=bucket)
+                results["aws"] = {"status": "ok", "message": f"Bucket '{bucket}' accessible"}
+            else:
+                results["aws"] = {"status": "skipped", "message": "No bucket configured"}
+        except Exception as e:
+            results["aws"] = {"status": "error", "message": str(e)}
+
+    return {"results": results}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── Field Mappings (per-project, configurable) ──
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/projects/{slug}/field-mappings")
+async def get_field_mappings(slug: str, user: dict = Depends(_verify_jwt)):
+    """Get field mappings for a project."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    rows = _db.fetch_all(
+        """SELECT id, source_field, dest_field, transform, template, sort_order, enabled, notes
+           FROM field_mappings WHERE project_id = %s ORDER BY sort_order""",
+        (str(project["id"]),),
+    )
+    mappings = [{
+        "id": str(r["id"]),
+        "source_field": r["source_field"],
+        "dest_field": r["dest_field"],
+        "transform": r["transform"],
+        "template": r["template"],
+        "sort_order": r["sort_order"],
+        "enabled": r["enabled"],
+        "notes": r["notes"],
+    } for r in rows]
+    return {"mappings": mappings}
+
+
+@app.put("/api/projects/{slug}/field-mappings")
+async def save_field_mappings(slug: str, request: Request, user: dict = Depends(_verify_jwt)):
+    """Save field mappings for a project (full replacement)."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    body = await request.json()
+    data = FieldMappingUpdate(**body)
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_id = str(project["id"])
+
+    # Delete existing and re-insert
+    _db.execute("DELETE FROM field_mappings WHERE project_id = %s", (project_id,))
+    for i, m in enumerate(data.mappings):
+        _db.execute(
+            """INSERT INTO field_mappings (project_id, source_field, dest_field, transform, template, sort_order, enabled, notes)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (project_id, m.get("source_field", ""), m.get("dest_field", ""),
+             m.get("transform", "direct"), m.get("template"),
+             m.get("sort_order", i), m.get("enabled", True), m.get("notes", "")),
+        )
+
+    _invalidate_project_pipeline(slug)
+    audit_log("field_mappings_updated", user=user["sub"], details={"slug": slug, "count": len(data.mappings)})
+    return {"status": "saved", "count": len(data.mappings)}
+
+
+@app.post("/api/projects/{slug}/field-mappings/preview")
+async def preview_field_mapping(slug: str, request: Request, user: dict = Depends(_verify_jwt)):
+    """Preview field mapping transform on a real video."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    body = await request.json()
+    video_id = body.get("video_id")
+    if not video_id:
+        raise HTTPException(status_code=400, detail="video_id required")
+
+    project = _db.fetch_one("SELECT id, source_platform FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_id = str(project["id"])
+
+    # Get field mappings
+    mapping_rows = _db.fetch_all(
+        "SELECT source_field, dest_field, transform, template, sort_order, enabled FROM field_mappings WHERE project_id = %s ORDER BY sort_order",
+        (project_id,),
+    )
+
+    # Get source metadata
+    creds = _db.get_all_credentials(project_id)
+    try:
+        from migration.adapters import get_adapter
+        adapter_cls = get_adapter(project["source_platform"])
+        adapter = adapter_cls(creds.get(project["source_platform"], creds.get("kaltura", {})))
+        adapter.authenticate()
+        asset = adapter.fetch_metadata(video_id)
+        source_meta = asset.raw_metadata
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not fetch metadata: {e}")
+
+    from migration.transform_engine import preview_transform
+    preview = preview_transform(source_meta, mapping_rows)
+    return preview
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── Migration Runs (per-project, with checkpoint gates) ──
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/projects/{slug}/migration/runs")
+async def list_migration_runs(slug: str, user: dict = Depends(_verify_jwt)):
+    """List migration runs for a project."""
+    if not _db.is_available():
+        return {"runs": []}
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    rows = _db.fetch_all(
+        """SELECT id, status, batch_size, total_videos, completed_count, failed_count,
+                  current_stage, started_at, completed_at, error, created_at
+           FROM migration_runs WHERE project_id = %s ORDER BY created_at DESC LIMIT 50""",
+        (str(project["id"]),),
+    )
+    runs = [{
+        "id": str(r["id"]),
+        "status": r["status"],
+        "batch_size": r["batch_size"],
+        "total_videos": r["total_videos"],
+        "completed_count": r["completed_count"],
+        "failed_count": r["failed_count"],
+        "current_stage": r["current_stage"],
+        "started_at": r["started_at"].isoformat() if r["started_at"] else None,
+        "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
+        "error": r["error"],
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+    } for r in rows]
+    return {"runs": runs}
+
+
+@app.post("/api/projects/{slug}/migration/start")
+async def start_project_migration(slug: str, request: Request, user: dict = Depends(_verify_jwt)):
+    """Start a migration run for a project."""
+    global _migration_running
+
+    body = await request.json()
+    data = MigrationRunStart(**body)
+
+    pipeline = _get_pipeline_for_project(slug)
+    if pipeline is None:
+        raise HTTPException(status_code=400, detail="Pipeline not configured — check project credentials")
+
+    with _migration_lock:
+        if _migration_running:
+            raise HTTPException(status_code=409, detail="A migration is already running")
+        _migration_running = True
+
+    # Create run record
+    run_row = None
+    if _db.is_available():
+        project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+        if project:
+            run_row = _db.execute_returning(
+                """INSERT INTO migration_runs (project_id, status, batch_size, started_at)
+                   VALUES (%s, 'running', %s, NOW()) RETURNING id""",
+                (str(project["id"]), data.batch_size),
+            )
+
+            # Create checkpoint gates if enabled
+            if data.gates_enabled and run_row:
+                for stage in ["post_discover", "post_metadata", "post_staging", "post_upload"]:
+                    _db.execute(
+                        """INSERT INTO checkpoint_gates (run_id, project_id, stage)
+                           VALUES (%s, %s, %s)""",
+                        (str(run_row["id"]), str(project["id"]), stage),
+                    )
+
+    run_id = str(run_row["id"]) if run_row else None
+    audit_log("migration_started", user=user["sub"], details={"slug": slug, "batch_size": data.batch_size, "run_id": run_id})
+
+    # Start migration in background thread
+    def _run():
+        global _migration_running
+        try:
+            results = pipeline.run_migration(
+                batch_size=data.batch_size,
+                video_ids=data.video_ids,
+            )
+            completed = sum(1 for r in results if r.status == "completed")
+            failed = sum(1 for r in results if r.status == "failed")
+
+            if _db.is_available() and run_id:
+                _db.execute(
+                    """UPDATE migration_runs SET status = 'completed', total_videos = %s,
+                       completed_count = %s, failed_count = %s, completed_at = NOW(), updated_at = NOW()
+                       WHERE id = %s""",
+                    (len(results), completed, failed, run_id),
+                )
+
+            for r in results:
+                if r.status == "completed":
+                    _cost_tracker.record_video(r.video_id, r.file_size_mb or 0)
+                    _broadcast_sse({"type": "video_completed", "video_id": r.video_id, "title": r.title, "zoom_id": r.zoom_id})
+                else:
+                    _broadcast_sse({"type": "video_failed", "video_id": r.video_id, "title": r.title, "error": r.error})
+
+            _broadcast_sse({"type": "migration_complete", "completed": completed, "failed": failed})
+        except Exception as e:
+            logger.error("Migration failed: %s", e, exc_info=True)
+            if _db.is_available() and run_id:
+                _db.execute(
+                    "UPDATE migration_runs SET status = 'failed', error = %s, updated_at = NOW() WHERE id = %s",
+                    (str(e)[:500], run_id),
+                )
+            _broadcast_sse({"type": "migration_failed", "error": str(e)})
+        finally:
+            _migration_running = False
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+    return {"status": "started", "run_id": run_id, "batch_size": data.batch_size}
+
+
+@app.post("/api/projects/{slug}/migration/runs/{run_id}/approve")
+async def approve_gate(slug: str, run_id: str, request: Request, user: dict = Depends(_verify_jwt)):
+    """Approve a checkpoint gate."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    body = await request.json()
+    stage = body.get("stage")
+    notes = body.get("notes", "")
+
+    if not stage:
+        raise HTTPException(status_code=400, detail="stage is required")
+
+    updated = _db.execute(
+        """UPDATE checkpoint_gates SET status = 'approved', approved_by = %s, approved_at = NOW(), notes = %s
+           WHERE run_id = %s AND stage = %s AND status = 'pending'""",
+        (user["sub"], notes, run_id, stage),
+    )
+    if updated == 0:
+        raise HTTPException(status_code=404, detail="Gate not found or already actioned")
+
+    audit_log("gate_approved", user=user["sub"], details={"run_id": run_id, "stage": stage})
+    return {"status": "approved", "stage": stage}
+
+
+@app.post("/api/projects/{slug}/migration/runs/{run_id}/reject")
+async def reject_gate(slug: str, run_id: str, request: Request, user: dict = Depends(_verify_jwt)):
+    """Reject a checkpoint gate — stops the migration."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    body = await request.json()
+    stage = body.get("stage")
+    notes = body.get("notes", "")
+
+    _db.execute(
+        """UPDATE checkpoint_gates SET status = 'rejected', approved_by = %s, approved_at = NOW(), notes = %s
+           WHERE run_id = %s AND stage = %s AND status = 'pending'""",
+        (user["sub"], notes, run_id, stage),
+    )
+    _db.execute(
+        "UPDATE migration_runs SET status = 'cancelled', error = %s, updated_at = NOW() WHERE id = %s",
+        (f"Rejected at stage: {stage}. {notes}", run_id),
+    )
+    audit_log("gate_rejected", user=user["sub"], details={"run_id": run_id, "stage": stage})
+    return {"status": "rejected", "stage": stage}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── Infrastructure Management (per-project CDK) ──
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/projects/{slug}/infra/status")
+async def get_infra_status(slug: str, user: dict = Depends(_verify_jwt)):
+    """Check infrastructure deployment status for a project."""
+    if not _db.is_available():
+        return {"deployed": False, "deployments": []}
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    rows = _db.fetch_all(
+        """SELECT id, action, status, stack_outputs, started_at, completed_at, error, created_at
+           FROM infra_deployments WHERE project_id = %s ORDER BY created_at DESC LIMIT 10""",
+        (str(project["id"]),),
+    )
+    deployments = [{
+        "id": str(r["id"]),
+        "action": r["action"],
+        "status": r["status"],
+        "stack_outputs": r["stack_outputs"] or {},
+        "started_at": r["started_at"].isoformat() if r["started_at"] else None,
+        "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
+        "error": r["error"],
+    } for r in rows]
+
+    # Check if currently deployed (last deploy succeeded, no destroy after)
+    latest_deploy = next((d for d in deployments if d["action"] == "deploy" and d["status"] == "completed"), None)
+    latest_destroy = next((d for d in deployments if d["action"] in ("destroy", "teardown") and d["status"] == "completed"), None)
+
+    deployed = False
+    if latest_deploy:
+        if latest_destroy:
+            deployed = latest_deploy["started_at"] > latest_destroy["started_at"]
+        else:
+            deployed = True
+
+    return {"deployed": deployed, "deployments": deployments}
+
+
+@app.post("/api/projects/{slug}/infra/deploy")
+async def deploy_infra(slug: str, user: dict = Depends(_verify_jwt)):
+    """Trigger CDK deploy for a project."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    row = _db.execute_returning(
+        """INSERT INTO infra_deployments (project_id, action, status, started_at)
+           VALUES (%s, 'deploy', 'pending', NOW()) RETURNING id""",
+        (str(project["id"]),),
+    )
+
+    audit_log("infra_deploy_requested", user=user["sub"], details={"slug": slug})
+    return {"deployment_id": str(row["id"]), "status": "pending", "message": f"CDK deploy queued for project '{slug}'. Run: cdk deploy --all -c project={slug}"}
+
+
+@app.post("/api/projects/{slug}/infra/teardown")
+async def teardown_infra(slug: str, request: Request, user: dict = Depends(_verify_jwt)):
+    """Full teardown: KMS key deletion + S3 purge + CDK destroy."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    body = await request.json()
+    if not body.get("confirm"):
+        raise HTTPException(status_code=400, detail="Must confirm teardown with {\"confirm\": true}")
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    row = _db.execute_returning(
+        """INSERT INTO infra_deployments (project_id, action, status, started_at)
+           VALUES (%s, 'teardown', 'pending', NOW()) RETURNING id""",
+        (str(project["id"]),),
+    )
+
+    audit_log("infra_teardown_requested", user=user["sub"], details={"slug": slug})
+    return {
+        "deployment_id": str(row["id"]),
+        "status": "pending",
+        "message": f"Teardown queued for project '{slug}'. KMS key will be scheduled for deletion. Run: cdk destroy --all -c project={slug}",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── Client Portal (read-only access tokens) ──
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/projects/{slug}/client-tokens")
+async def create_client_token(slug: str, request: Request, user: dict = Depends(_verify_jwt)):
+    """Create a read-only client access token."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    body = await request.json()
+    label = body.get("label", "Client Portal")
+    expires_days = body.get("expires_in_days")
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = bcrypt.hashpw(raw_token.encode(), bcrypt.gensalt()).decode()
+
+    expires_at = None
+    if expires_days:
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=int(expires_days))).isoformat()
+
+    _db.execute(
+        """INSERT INTO client_access_tokens (project_id, token_hash, label, expires_at)
+           VALUES (%s, %s, %s, %s)""",
+        (str(project["id"]), token_hash, label, expires_at),
+    )
+
+    audit_log("client_token_created", user=user["sub"], details={"slug": slug, "label": label})
+    return {"token": raw_token, "label": label, "expires_at": expires_at}
+
+
+@app.get("/api/projects/{slug}/client-tokens")
+async def list_client_tokens(slug: str, user: dict = Depends(_verify_jwt)):
+    """List client access tokens for a project."""
+    if not _db.is_available():
+        return {"tokens": []}
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    rows = _db.fetch_all(
+        """SELECT id, label, expires_at, last_used_at, revoked, created_at
+           FROM client_access_tokens WHERE project_id = %s ORDER BY created_at DESC""",
+        (str(project["id"]),),
+    )
+    tokens = [{
+        "id": str(r["id"]),
+        "label": r["label"],
+        "expires_at": r["expires_at"].isoformat() if r["expires_at"] else None,
+        "last_used_at": r["last_used_at"].isoformat() if r["last_used_at"] else None,
+        "revoked": r["revoked"],
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+    } for r in rows]
+    return {"tokens": tokens}
+
+
+@app.delete("/api/projects/{slug}/client-tokens/{token_id}")
+async def revoke_client_token(slug: str, token_id: str, user: dict = Depends(_verify_jwt)):
+    """Revoke a client access token."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    _db.execute("UPDATE client_access_tokens SET revoked = true WHERE id = %s", (token_id,))
+    audit_log("client_token_revoked", user=user["sub"], details={"slug": slug, "token_id": token_id})
+    return {"status": "revoked"}
+
+
+@app.get("/api/client/{token}/status")
+@limiter.limit("30/minute")
+async def client_progress_view(token: str, request: Request):
+    """Public read-only progress view for clients (no JWT required)."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Not available")
+
+    # Find matching token
+    token_rows = _db.fetch_all(
+        "SELECT id, project_id, token_hash, expires_at, revoked FROM client_access_tokens WHERE revoked = false"
+    )
+
+    matched = None
+    for row in token_rows:
+        if bcrypt.checkpw(token.encode(), row["token_hash"].encode()):
+            matched = row
+            break
+
+    if not matched:
+        raise HTTPException(status_code=401, detail="Invalid or revoked token")
+
+    if matched["expires_at"] and matched["expires_at"] < datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Token expired")
+
+    # Update last used
+    _db.execute("UPDATE client_access_tokens SET last_used_at = NOW() WHERE id = %s", (str(matched["id"]),))
+
+    # Get project info and latest run
+    project = _db.fetch_one("SELECT name, slug, status FROM projects WHERE id = %s", (str(matched["project_id"]),))
+    latest_run = _db.fetch_one(
+        """SELECT status, total_videos, completed_count, failed_count, current_stage, started_at, updated_at
+           FROM migration_runs WHERE project_id = %s ORDER BY created_at DESC LIMIT 1""",
+        (str(matched["project_id"]),),
+    )
+
+    total = latest_run["total_videos"] if latest_run else 0
+    completed = latest_run["completed_count"] if latest_run else 0
+    pct = round((completed / total * 100), 1) if total > 0 else 0
+
+    return {
+        "project_name": project["name"] if project else "Unknown",
+        "status": latest_run["status"] if latest_run else "no_runs",
+        "total_videos": total,
+        "completed": completed,
+        "failed": latest_run["failed_count"] if latest_run else 0,
+        "pending": total - completed - (latest_run["failed_count"] if latest_run else 0),
+        "percent_complete": pct,
+        "current_stage": latest_run["current_stage"] if latest_run else None,
+        "last_updated": latest_run["updated_at"].isoformat() if latest_run and latest_run["updated_at"] else None,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── Adapters metadata ──
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/adapters")
+async def list_available_adapters(user: dict = Depends(_verify_jwt)):
+    """List available source platform adapters."""
+    from migration.adapters import list_adapters
+    return {"adapters": list_adapters()}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── Cost Projection (per-project) ──
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/projects/{slug}/costs/projection")
+async def get_cost_projection(
+    slug: str,
+    total_videos: int = Query(0, ge=0),
+    avg_size_mb: float = Query(0, ge=0),
+    user: dict = Depends(_verify_jwt),
+):
+    """Estimate migration cost for a project."""
+    projection = _cost_tracker.project_cost(total_videos, avg_size_mb)
+    return {"projection": projection, "total_videos": total_videos, "avg_size_mb": avg_size_mb}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── Discovery with Filters ──
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/projects/{slug}/discover")
+async def discover_videos(
+    slug: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    search: str = Query("", max_length=200),
+    tags: str = Query("", max_length=500),
+    categories: str = Query("", max_length=500),
+    min_duration: int = Query(0, ge=0),
+    user: dict = Depends(_verify_jwt),
+):
+    """Browse source platform videos with filters."""
+    pipeline = _get_pipeline_for_project(slug)
+
+    if pipeline is None:
+        # Try loading adapter directly
+        if not _db.is_available():
+            raise HTTPException(status_code=400, detail="Pipeline not configured")
+
+        project = _db.fetch_one("SELECT id, source_platform FROM projects WHERE slug = %s", (slug,))
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        creds = _db.get_all_credentials(str(project["id"]))
+        from migration.adapters import get_adapter
+        adapter_cls = get_adapter(project["source_platform"])
+        adapter = adapter_cls(creds.get(project["source_platform"], creds.get("kaltura", {})))
+        adapter.authenticate()
+    else:
+        # Use the pipeline's existing Kaltura client through the adapter
+        from migration.adapters.kaltura_adapter import KalturaAdapter
+        creds = {
+            "partner_id": pipeline.kaltura.config.partner_id,
+            "admin_secret": pipeline.kaltura.config.admin_secret,
+            "user_id": pipeline.kaltura.config.user_id,
+            "service_url": pipeline.kaltura.config.service_url,
+        }
+        adapter = KalturaAdapter(creds)
+        adapter._client = pipeline.kaltura  # reuse authenticated client
+
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+    cat_list = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
+
+    result = adapter.list_assets(
+        page=page, page_size=page_size, search=search or None,
+        tags=tag_list, categories=cat_list,
+        min_duration=min_duration if min_duration > 0 else None,
+    )
+
+    videos = [{
+        "id": a.id, "title": a.title, "description": a.description[:200],
+        "tags": a.tags, "categories": a.categories,
+        "duration": a.duration, "size_bytes": a.size_bytes,
+        "thumbnail_url": a.thumbnail_url, "created_at": a.created_at,
+    } for a in result.assets]
+
+    return {
+        "videos": videos,
+        "total": result.total_count,
+        "page": result.page,
+        "page_size": result.page_size,
+        "filters_applied": {
+            "search": search or None,
+            "tags": tag_list,
+            "categories": cat_list,
+            "min_duration": min_duration if min_duration > 0 else None,
+        },
+    }
 
 
 # ── Dashboard status ──
@@ -775,6 +1792,49 @@ async def export_audit_trail(user: dict = Depends(_verify_jwt)):
         iter([csv_content]),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=audit-trail.csv"},
+    )
+
+
+@app.get("/api/audit/reconciliation/pdf")
+async def export_reconciliation_pdf(user: dict = Depends(_verify_jwt)):
+    """Download reconciliation report as PDF."""
+    from .report_generator import generate_reconciliation_pdf
+
+    summary = _audit_store.get_summary() if hasattr(_audit_store, "get_summary") else {}
+    videos = []
+    if _pipeline and hasattr(_pipeline, "tracker"):
+        try:
+            tracker_summary = _pipeline.tracker.get_summary()
+            summary = {
+                "total": sum(tracker_summary.values()),
+                "completed": tracker_summary.get("completed", 0),
+                "failed": tracker_summary.get("failed", 0),
+                "pending": tracker_summary.get("pending", 0),
+            }
+            all_states = _pipeline.tracker.get_all_states() if hasattr(_pipeline.tracker, "get_all_states") else {}
+            for vid, state in all_states.items():
+                videos.append({
+                    "id": vid,
+                    "title": state.get("metadata", {}).get("title", vid),
+                    "status": state.get("status", "unknown"),
+                    "zoom_id": state.get("metadata", {}).get("zoom_id", ""),
+                    "error": state.get("error", ""),
+                })
+        except Exception:
+            pass
+
+    pdf_bytes = generate_reconciliation_pdf(
+        project_name="Video Migration",
+        summary=summary,
+        videos=videos,
+    )
+    if not pdf_bytes:
+        raise HTTPException(status_code=500, detail="PDF generation failed (reportlab may not be installed)")
+
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=reconciliation-report.pdf"},
     )
 
 

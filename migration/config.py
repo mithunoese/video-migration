@@ -150,6 +150,52 @@ class Config:
         """Whether to skip S3 staging (direct Kaltura → Zoom)."""
         return os.getenv("SKIP_S3", "").strip().lower() in ("true", "1", "yes")
 
+    @classmethod
+    def from_db(cls, credentials: dict[str, dict[str, str]], config_json: dict | None = None):
+        """Build Config from database credential dicts.
+
+        Parameters
+        ----------
+        credentials : dict
+            Keyed by service, e.g. ``{"kaltura": {"partner_id": "...", ...}, "zoom": {...}, "aws": {...}}``.
+        config_json : dict, optional
+            Pipeline configuration overrides from the project's ``config_json`` column.
+        """
+        kal = credentials.get("kaltura", {})
+        aws = credentials.get("aws", {})
+        zm = credentials.get("zoom", {})
+        cfg = config_json or {}
+
+        return cls(
+            kaltura=KalturaConfig(
+                partner_id=kal.get("partner_id", ""),
+                admin_secret=kal.get("admin_secret", ""),
+                user_id=kal.get("user_id", ""),
+                service_url=kal.get("service_url", "https://www.kaltura.com"),
+            ),
+            aws=AWSConfig(
+                bucket_name=aws.get("bucket_name", aws.get("s3_bucket", "")),
+                region=aws.get("region", "us-east-1"),
+                staging_prefix=aws.get("staging_prefix", "migration-staging/"),
+                state_table=aws.get("state_table", "video-migration-state"),
+                endpoint_url=aws.get("endpoint_url", ""),
+            ),
+            zoom=ZoomConfig(
+                client_id=zm.get("client_id", ""),
+                client_secret=zm.get("client_secret", ""),
+                account_id=zm.get("account_id", ""),
+                target_api=zm.get("target_api", cfg.get("zoom_target_api", "clips")),
+            ),
+            pipeline=PipelineConfig(
+                batch_size=min(int(cfg.get("batch_size", 10)), 500),
+                max_concurrency=min(int(cfg.get("max_concurrency", 5)), 20),
+                retry_attempts=min(int(cfg.get("retry_attempts", 3)), 10),
+                retry_delay=int(cfg.get("retry_delay", 5)),
+                download_dir=cfg.get("download_dir", "/tmp/video-migration"),
+                log_level=cfg.get("log_level", "INFO"),
+            ),
+        )
+
     def validate(self) -> list[str]:
         """Return list of missing required config values."""
         missing = []

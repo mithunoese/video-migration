@@ -306,6 +306,64 @@ class ZoomClient:
             "video_ids": [video_id],
         })
 
+    # ─── Thumbnail management ───
+
+    def upload_thumbnail(self, video_id: str, thumbnail_path: str) -> dict:
+        """Upload a custom thumbnail for a Zoom Clips video.
+
+        POST to fileapi.zoom.us/v2/clips/{clipId}/thumbnail
+        Accepts JPEG/PNG, recommended 1280x720.
+        """
+        path = Path(thumbnail_path)
+        if not path.exists():
+            logger.warning("Thumbnail file not found: %s", thumbnail_path)
+            return {}
+
+        content_type = "image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+        url = f"{ZOOM_FILE_API}/clips/{video_id}/thumbnail"
+
+        with open(path, "rb") as f:
+            encoder = MultipartEncoder(fields={
+                "file": (path.name, f, content_type),
+            })
+            headers = {**self._headers(), "Content-Type": encoder.content_type}
+            resp = requests.post(url, headers=headers, data=encoder, timeout=60)
+
+        if resp.ok:
+            logger.info("Uploaded thumbnail for clip %s", video_id)
+            return resp.json() if resp.content else {}
+        else:
+            logger.warning("Thumbnail upload failed for %s: %d %s", video_id, resp.status_code, resp.text[:500])
+            return {}
+
+    # ─── Custom fields (Video Management API) ───
+
+    def create_custom_field(self, field_name: str, field_type: str = "text") -> dict:
+        """Create a custom metadata field in Zoom Video Management.
+
+        Parameters
+        ----------
+        field_name : str
+            Display name for the custom field.
+        field_type : str
+            Field type: "text", "number", "date", "dropdown".
+        """
+        return self._api_call("POST", "/videomanagement/custom_fields", json={
+            "field_name": field_name,
+            "field_type": field_type,
+        })
+
+    def set_custom_field_value(self, video_id: str, field_id: str, value: str) -> dict:
+        """Set a custom field value on a video."""
+        return self._api_call("PATCH", f"/videomanagement/videos/{video_id}/custom_fields/{field_id}", json={
+            "value": value,
+        })
+
+    def list_custom_fields(self) -> list[dict]:
+        """List all custom metadata fields."""
+        result = self._api_call("GET", "/videomanagement/custom_fields")
+        return result.get("custom_fields", [])
+
     # ─── Utility ───
 
     def verify_credentials(self) -> bool:

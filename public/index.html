@@ -128,6 +128,42 @@
     </div>
   </div>
 
+  <!-- New Project Modal -->
+  <div x-show="showNewProjectModal" x-cloak class="fixed inset-0 z-[90] flex items-center justify-center bg-black/40" @click.self="showNewProjectModal = false">
+    <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md" @click.stop>
+      <h3 class="text-lg font-bold text-gray-900 mb-4">New Project</h3>
+      <div class="space-y-4">
+        <div>
+          <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Project Name</label>
+          <input x-model="newProject.name" @input="newProject.slug = newProject.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')" type="text" placeholder="e.g. Acme Corp Migration" class="input-field mt-1.5">
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Slug</label>
+          <input x-model="newProject.slug" type="text" placeholder="acme-corp-migration" class="input-field mt-1.5">
+          <p class="text-[10px] text-gray-400 mt-1">URL-safe identifier, auto-generated from name</p>
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Source Platform</label>
+          <select x-model="newProject.source_platform" class="input-field mt-1.5">
+            <option value="kaltura">Kaltura</option>
+            <option value="brightcove">Brightcove</option>
+            <option value="panopto">Panopto</option>
+            <option value="on24">ON24</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Description <span class="text-gray-300 normal-case">(optional)</span></label>
+          <input x-model="newProject.description" type="text" placeholder="Client description" class="input-field mt-1.5">
+        </div>
+        <div x-show="newProjectError" class="text-sm text-red-600 bg-red-50 rounded-xl px-4 py-2" x-text="newProjectError"></div>
+        <div class="flex gap-3 pt-2">
+          <button @click="showNewProjectModal = false" class="flex-1 py-2.5 text-sm font-medium text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200 transition-colors">Cancel</button>
+          <button @click="createProject()" class="flex-1 py-2.5 btn-primary text-sm">Create Project</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Sidebar -->
   <div class="fixed left-0 top-0 h-full w-60 bg-white border-r border-gray-100 flex flex-col z-50">
     <div class="px-5 pt-6 pb-5">
@@ -140,6 +176,20 @@
           <h1 class="text-base font-heading font-bold text-dark leading-tight mt-0.5">VideoMigrate</h1>
         </div>
       </div>
+    </div>
+
+    <!-- Project Selector -->
+    <div class="px-3 mb-3" x-show="projects.length > 0">
+      <label class="text-[10px] font-semibold text-gray-400 uppercase tracking-widest px-1 mb-1 block">Project</label>
+      <div class="relative">
+        <select x-model="currentProjectSlug" @change="switchProject()" class="w-full text-xs pl-3 pr-8 py-2 rounded-lg border border-gray-200 bg-white focus:border-brand-400 focus:ring-1 focus:ring-brand-200 outline-none appearance-none font-medium text-gray-700 cursor-pointer">
+          <template x-for="p in projects" :key="p.slug">
+            <option :value="p.slug" x-text="p.name"></option>
+          </template>
+        </select>
+        <svg class="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </div>
+      <button @click="showNewProjectModal = true" class="w-full mt-1.5 text-[11px] text-brand-600 hover:text-brand-700 font-medium py-1 rounded-lg hover:bg-brand-50 transition-colors">+ New Project</button>
     </div>
 
     <nav class="flex-1 px-3 space-y-0.5">
@@ -549,7 +599,128 @@
       </div>
     </div>
 
-    <!-- Infrastructure tab removed — cloud check lives in Settings now -->
+    <!-- ═══ FIELD MAPPING ═══ -->
+    <div x-show="currentTab === 'field-mapping'" x-cloak class="fade-in">
+      <div class="mb-6 flex items-center justify-between">
+        <div>
+          <h2 class="section-title">Field Mapping</h2>
+          <p class="section-subtitle">Configure how source metadata maps to Zoom fields for this project</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button @click="previewFieldMapping()" :disabled="fieldMappingPreviewLoading" class="px-4 py-2 text-xs font-medium text-brand-600 bg-brand-50 hover:bg-brand-100 border border-brand-200 rounded-xl transition-colors">
+            <span x-show="!fieldMappingPreviewLoading">Preview Transform</span>
+            <span x-show="fieldMappingPreviewLoading">Loading...</span>
+          </button>
+          <button @click="saveFieldMappings()" :disabled="fieldMappingSaving" class="px-5 py-2 btn-primary text-xs">
+            <span x-show="!fieldMappingSaving">Save Mappings</span>
+            <span x-show="fieldMappingSaving">Saving...</span>
+          </button>
+        </div>
+      </div>
+
+      <div x-show="fieldMappingMessage" x-transition class="mb-4 text-sm font-medium text-green-700 bg-green-50 border border-green-200 px-4 py-2.5 rounded-xl" x-text="fieldMappingMessage"></div>
+
+      <!-- Mapping Table -->
+      <div class="card-static overflow-hidden mb-6">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="bg-gray-50 text-left">
+                <th class="px-4 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider w-8"></th>
+                <th class="px-4 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider">Source Field</th>
+                <th class="px-4 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider">Destination</th>
+                <th class="px-4 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider">Transform</th>
+                <th class="px-4 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider">Template</th>
+                <th class="px-4 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider w-20">Active</th>
+                <th class="px-4 py-3 w-10"></th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+              <template x-for="(m, idx) in fieldMappings" :key="idx">
+                <tr class="hover:bg-gray-50/50 transition-colors" :class="!m.enabled ? 'opacity-40' : ''">
+                  <td class="px-4 py-2.5 text-center">
+                    <span class="text-[10px] font-bold text-gray-300" x-text="idx + 1"></span>
+                  </td>
+                  <td class="px-4 py-2.5">
+                    <input x-model="m.source_field" type="text" class="w-full text-xs px-2 py-1.5 rounded-lg border border-gray-200 focus:border-brand-400 focus:ring-1 focus:ring-brand-200 outline-none" placeholder="e.g. name, tags">
+                  </td>
+                  <td class="px-4 py-2.5">
+                    <select x-model="m.dest_field" class="w-full text-xs px-2 py-1.5 rounded-lg border border-gray-200 focus:border-brand-400 outline-none">
+                      <option value="title">Title</option>
+                      <option value="description">Description</option>
+                      <option value="thumbnail">Thumbnail</option>
+                    </select>
+                  </td>
+                  <td class="px-4 py-2.5">
+                    <select x-model="m.transform" class="w-full text-xs px-2 py-1.5 rounded-lg border border-gray-200 focus:border-brand-400 outline-none">
+                      <option value="direct">Direct Copy</option>
+                      <option value="append">Append</option>
+                      <option value="format_duration">Format Duration</option>
+                      <option value="template">Template</option>
+                      <option value="skip">Skip</option>
+                    </select>
+                  </td>
+                  <td class="px-4 py-2.5">
+                    <input x-model="m.template" type="text" class="w-full text-xs px-2 py-1.5 rounded-lg border border-gray-200 focus:border-brand-400 focus:ring-1 focus:ring-brand-200 outline-none font-mono" placeholder="{value}" :disabled="m.transform === 'direct' || m.transform === 'skip'">
+                  </td>
+                  <td class="px-4 py-2.5 text-center">
+                    <button @click="m.enabled = !m.enabled" class="relative w-9 h-5 rounded-full transition-colors duration-200" :class="m.enabled ? 'bg-brand-500' : 'bg-gray-300'">
+                      <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200" :class="m.enabled ? 'translate-x-4' : ''"></span>
+                    </button>
+                  </td>
+                  <td class="px-4 py-2.5">
+                    <button @click="removeFieldMapping(idx)" class="text-gray-300 hover:text-red-500 transition-colors">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                    </button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <div class="px-4 py-3 bg-gray-50 border-t border-gray-100">
+          <button @click="addFieldMapping()" class="text-xs text-brand-600 hover:text-brand-700 font-semibold flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            Add Mapping Row
+          </button>
+        </div>
+      </div>
+
+      <!-- Transform Preview -->
+      <div x-show="fieldMappingPreview" class="card-static p-6">
+        <h3 class="text-sm font-bold text-gray-800 mb-4">Transform Preview</h3>
+        <div class="grid grid-cols-2 gap-6">
+          <div>
+            <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Source Metadata</p>
+            <div class="bg-gray-50 rounded-xl p-4 space-y-1.5 max-h-64 overflow-y-auto">
+              <template x-for="(val, key) in (fieldMappingPreview?.source || {})" :key="key">
+                <div class="text-xs flex gap-2">
+                  <span class="font-semibold text-gray-500 min-w-[100px]" x-text="key + ':'"></span>
+                  <span class="text-gray-700 truncate" x-text="val"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+          <div>
+            <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Transformed (Zoom)</p>
+            <div class="bg-green-50 rounded-xl p-4 space-y-1.5 max-h-64 overflow-y-auto">
+              <template x-for="(val, key) in (fieldMappingPreview?.transformed || {})" :key="key">
+                <div class="text-xs flex gap-2">
+                  <span class="font-semibold text-green-700 min-w-[100px]" x-text="key + ':'"></span>
+                  <span class="text-green-900 whitespace-pre-wrap" x-text="val"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div x-show="fieldMappings.length === 0" class="card-static p-12 text-center">
+        <svg class="w-10 h-10 text-gray-200 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+        <p class="text-sm text-gray-400">No field mappings configured for this project.</p>
+        <p class="text-xs text-gray-300 mt-1">Default mappings are created when you set up a new project.</p>
+      </div>
+    </div>
 
     <!-- ═══ SETTINGS ═══ -->
     <div x-show="currentTab === 'settings'" x-cloak class="fade-in">
@@ -734,6 +905,151 @@
             <svg x-show="infraSetupRunning" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
             <span x-text="infraSetupRunning ? 'Checking...' : (infraChecked ? 'Check Again' : 'Check Prerequisites')"></span>
           </button>
+        </div>
+      </details>
+
+      <!-- Project Credentials (DB-backed, per-project) -->
+      <details class="mt-5 card-static overflow-hidden" x-show="projects.length > 0">
+        <summary class="px-6 py-4 cursor-pointer flex justify-between items-center hover:bg-gray-50 transition-colors">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center">
+              <svg class="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+            </div>
+            <div>
+              <h3 class="text-sm font-bold text-gray-800">Project Credentials (Encrypted)</h3>
+              <p class="text-xs text-gray-400">Per-project credentials stored in database, encrypted at rest</p>
+            </div>
+          </div>
+        </summary>
+        <div class="px-6 py-5 border-t border-gray-100">
+          <div x-show="projectCredsMessage" x-transition class="mb-4 text-sm font-medium px-4 py-2.5 rounded-xl"
+               :class="projectCredsMessageType === 'success' ? 'text-green-700 bg-green-50 border border-green-200' : 'text-red-700 bg-red-50 border border-red-200'"
+               x-text="projectCredsMessage"></div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- Kaltura creds -->
+            <div>
+              <h4 class="text-xs font-bold text-gray-600 uppercase tracking-wide mb-3 flex items-center gap-2">
+                <span class="dot dot-brand"></span> Kaltura
+                <button @click="testProjectConnection('kaltura')" class="ml-auto text-[10px] text-brand-600 hover:text-brand-700 font-semibold">Test</button>
+              </h4>
+              <div class="space-y-2.5">
+                <div><label class="text-[10px] text-gray-400 font-semibold uppercase">Partner ID</label><input x-model="projectCreds.kaltura_partner_id" type="text" class="input-field mt-0.5 text-xs" placeholder="12345"></div>
+                <div><label class="text-[10px] text-gray-400 font-semibold uppercase">Admin Secret</label><input x-model="projectCreds.kaltura_admin_secret" type="password" class="input-field mt-0.5 text-xs" placeholder="••••••••"></div>
+                <div><label class="text-[10px] text-gray-400 font-semibold uppercase">User ID</label><input x-model="projectCreds.kaltura_user_id" type="text" class="input-field mt-0.5 text-xs" placeholder="admin@co.com"></div>
+              </div>
+            </div>
+            <!-- AWS creds -->
+            <div>
+              <h4 class="text-xs font-bold text-gray-600 uppercase tracking-wide mb-3 flex items-center gap-2">
+                <span class="dot dot-blue"></span> AWS S3
+                <button @click="testProjectConnection('s3')" class="ml-auto text-[10px] text-brand-600 hover:text-brand-700 font-semibold">Test</button>
+              </h4>
+              <div class="space-y-2.5">
+                <div><label class="text-[10px] text-gray-400 font-semibold uppercase">S3 Bucket</label><input x-model="projectCreds.aws_bucket_name" type="text" class="input-field mt-0.5 text-xs" placeholder="bucket-name"></div>
+                <div><label class="text-[10px] text-gray-400 font-semibold uppercase">Region</label><input x-model="projectCreds.aws_region" type="text" class="input-field mt-0.5 text-xs" placeholder="us-east-1"></div>
+              </div>
+            </div>
+            <!-- Zoom creds -->
+            <div>
+              <h4 class="text-xs font-bold text-gray-600 uppercase tracking-wide mb-3 flex items-center gap-2">
+                <span class="dot dot-green"></span> Zoom
+                <button @click="testProjectConnection('zoom')" class="ml-auto text-[10px] text-brand-600 hover:text-brand-700 font-semibold">Test</button>
+              </h4>
+              <div class="space-y-2.5">
+                <div><label class="text-[10px] text-gray-400 font-semibold uppercase">Client ID</label><input x-model="projectCreds.zoom_client_id" type="text" class="input-field mt-0.5 text-xs" placeholder="App ID"></div>
+                <div><label class="text-[10px] text-gray-400 font-semibold uppercase">Client Secret</label><input x-model="projectCreds.zoom_client_secret" type="password" class="input-field mt-0.5 text-xs" placeholder="••••••••"></div>
+                <div><label class="text-[10px] text-gray-400 font-semibold uppercase">Account ID</label><input x-model="projectCreds.zoom_account_id" type="text" class="input-field mt-0.5 text-xs" placeholder="Account ID"></div>
+              </div>
+            </div>
+          </div>
+          <div class="mt-5 flex justify-end">
+            <button @click="saveProjectCreds()" :disabled="projectCredsSaving" class="px-5 py-2 btn-primary text-xs">
+              <span x-show="!projectCredsSaving">Save Project Credentials</span>
+              <span x-show="projectCredsSaving">Saving...</span>
+            </button>
+          </div>
+        </div>
+      </details>
+
+      <!-- Client Portal Tokens -->
+      <details class="mt-5 card-static overflow-hidden" x-show="projects.length > 0">
+        <summary class="px-6 py-4 cursor-pointer flex justify-between items-center hover:bg-gray-50 transition-colors">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center">
+              <svg class="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+            </div>
+            <div>
+              <h3 class="text-sm font-bold text-gray-800">Client Portal</h3>
+              <p class="text-xs text-gray-400">Generate read-only access tokens for clients to view progress</p>
+            </div>
+          </div>
+          <span x-show="clientTokens.length > 0" class="text-xs font-medium text-amber-600 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200" x-text="clientTokens.length + ' token' + (clientTokens.length !== 1 ? 's' : '')"></span>
+        </summary>
+        <div class="px-6 py-5 border-t border-gray-100">
+          <div class="flex gap-3 mb-4">
+            <input x-model="newTokenLabel" type="text" placeholder="Token label (e.g. Client - Acme Corp)" class="input-field flex-1 text-xs">
+            <button @click="createClientToken()" :disabled="!newTokenLabel.trim()" class="px-4 py-2 btn-primary text-xs whitespace-nowrap">Generate Token</button>
+          </div>
+          <div x-show="clientTokens.length > 0" class="space-y-2">
+            <template x-for="t in clientTokens" :key="t.id">
+              <div class="flex items-center justify-between p-3 rounded-xl bg-gray-50 border border-gray-100">
+                <div>
+                  <p class="text-xs font-semibold text-gray-700" x-text="t.label"></p>
+                  <p class="text-[10px] text-gray-400" x-text="'Created: ' + new Date(t.created_at).toLocaleDateString() + (t.last_used_at ? ' · Last used: ' + timeAgo(t.last_used_at) : ' · Never used')"></p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span x-show="t.revoked" class="text-[10px] font-semibold text-red-500 bg-red-50 px-2 py-0.5 rounded-full">Revoked</span>
+                  <button x-show="!t.revoked" @click="revokeClientToken(t.id)" class="text-xs text-red-500 hover:text-red-700 font-medium">Revoke</button>
+                </div>
+              </div>
+            </template>
+          </div>
+          <div x-show="clientTokens.length === 0" class="text-xs text-gray-400 py-4 text-center">No tokens generated yet. Create one to give your client read-only progress access.</div>
+        </div>
+      </details>
+
+      <!-- Cost Projection -->
+      <details class="mt-5 card-static overflow-hidden" x-show="projects.length > 0 && costProjection">
+        <summary class="px-6 py-4 cursor-pointer flex justify-between items-center hover:bg-gray-50 transition-colors">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-green-50 flex items-center justify-center">
+              <svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <div>
+              <h3 class="text-sm font-bold text-gray-800">Cost Projection</h3>
+              <p class="text-xs text-gray-400">Estimated AWS costs for this project</p>
+            </div>
+          </div>
+          <span x-show="costProjection" class="text-xs font-bold text-green-600" x-text="'~$' + (costProjection?.estimated_total_cost || 0).toFixed(2)"></span>
+        </summary>
+        <div class="px-6 py-5 border-t border-gray-100" x-show="costProjection">
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="bg-gray-50 rounded-xl p-4 text-center">
+              <p class="text-2xl font-bold text-gray-800" x-text="costProjection?.total_videos || 0"></p>
+              <p class="text-[10px] text-gray-400 uppercase font-semibold mt-1">Total Videos</p>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-4 text-center">
+              <p class="text-2xl font-bold text-blue-600" x-text="(costProjection?.total_size_gb || 0).toFixed(1) + ' GB'"></p>
+              <p class="text-[10px] text-gray-400 uppercase font-semibold mt-1">Total Size</p>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-4 text-center">
+              <p class="text-2xl font-bold text-green-600" x-text="'$' + (costProjection?.estimated_total_cost || 0).toFixed(2)"></p>
+              <p class="text-[10px] text-gray-400 uppercase font-semibold mt-1">Est. Total Cost</p>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-4 text-center">
+              <p class="text-2xl font-bold text-amber-600" x-text="'$' + (costProjection?.cost_per_video || 0).toFixed(4)"></p>
+              <p class="text-[10px] text-gray-400 uppercase font-semibold mt-1">Per Video</p>
+            </div>
+          </div>
+          <div x-show="costProjection?.breakdown" class="mt-4 text-xs text-gray-500 bg-gray-50 rounded-xl p-4">
+            <p class="font-semibold text-gray-700 mb-2">Cost Breakdown</p>
+            <template x-for="(val, key) in (costProjection?.breakdown || {})" :key="key">
+              <div class="flex justify-between py-1">
+                <span x-text="key"></span>
+                <span class="font-semibold" x-text="'$' + val.toFixed(4)"></span>
+              </div>
+            </template>
+          </div>
         </div>
       </details>
 
@@ -1093,13 +1409,43 @@
           { id: 'dashboard', label: 'Dashboard', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>' },
           // Kaltura Library tab removed — merged into Migration 3-column view
           { id: 'migration', label: 'Migration', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>' },
-          // Field Mapping removed — not needed for core migration workflow
+          { id: 'field-mapping', label: 'Field Mapping', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>' },
           { id: 'ai', label: 'AI Assistant', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>' },
-          // Infrastructure tab merged into Settings
-          // Cost Tracker removed — not needed for core migration workflow
           { id: 'settings', label: 'Settings', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>' },
           { id: 'audit', label: 'Audit & Recon', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>' },
         ],
+        // Multi-project state
+        projects: [],
+        currentProjectSlug: '',
+        showNewProjectModal: false,
+        newProject: { name: '', slug: '', source_platform: 'kaltura', description: '' },
+        newProjectError: '',
+
+        // Project credentials (per-project)
+        projectCreds: {},
+        projectCredsSaving: false,
+        projectCredsMessage: '',
+        projectCredsMessageType: '',
+
+        // Field mapping state
+        fieldMappings: [],
+        fieldMappingSaving: false,
+        fieldMappingMessage: '',
+        fieldMappingPreview: null,
+        fieldMappingPreviewLoading: false,
+
+        // Checkpoint gates
+        activeGates: [],
+        gateLoading: false,
+
+        // Client portal tokens
+        clientTokens: [],
+        newTokenLabel: '',
+        showClientPortal: false,
+
+        // Cost projection
+        costProjection: null,
+
         status: {}, activities: [], videos: [], videoTotal: 0, videoPage: 1, videoTotalPages: 1,
         videoSearch: '', videoFilter: 'all', selectedVideo: null,
         migrationRunning: false, migrationEvents: [], eventSource: null, _pollTimer: null, _pollIndex: 0, pipelineVideos: {},
@@ -1163,6 +1509,7 @@
           }
           if (!this.authenticated) return; // Wait for login
 
+          await this.loadProjects();
           await this._loadDashboard();
         },
 
@@ -1181,6 +1528,7 @@
               this.authenticated = true;
               sessionStorage.setItem('vm_token', d.token);
               this.loginPass = '';
+              await this.loadProjects();
               await this._loadDashboard();
             } else {
               this.loginError = d.detail || 'Invalid credentials';
@@ -1208,10 +1556,189 @@
           this.$watch('currentTab', (tab) => {
             if (tab === 'dashboard') this.$nextTick(() => this.renderStatusChart());
             if (tab === 'migration') { this.loadMigKaltura(); this.loadZoomCompleted(); }
-            if (tab === 'settings') this.loadSettings();
+            if (tab === 'field-mapping') this.loadFieldMappings();
+            if (tab === 'settings') { this.loadSettings(); this.loadProjectCreds(); this.loadClientTokens(); this.loadCostProjection(); }
             if (tab === 'audit') { this.loadReconciliation(); this.loadAuditTrail(); }
           });
           this.$nextTick(() => this.renderStatusChart());
+        },
+
+        // ── Project Management ──
+        async loadProjects() {
+          try {
+            const r = await fetch('/api/projects', { headers: this._authHeaders() });
+            if (r.ok) {
+              const d = await r.json();
+              this.projects = d.projects || [];
+              if (this.projects.length > 0 && !this.currentProjectSlug) {
+                this.currentProjectSlug = this.projects[0].slug;
+              }
+            }
+          } catch(e) {}
+        },
+        async switchProject() {
+          await this.loadStatus();
+          if (this.currentTab === 'settings') { this.loadProjectCreds(); this.loadClientTokens(); this.loadCostProjection(); }
+          if (this.currentTab === 'field-mapping') this.loadFieldMappings();
+          if (this.currentTab === 'migration') { this.loadMigKaltura(); this.loadZoomCompleted(); }
+        },
+        async createProject() {
+          this.newProjectError = '';
+          if (!this.newProject.name.trim()) { this.newProjectError = 'Name is required'; return; }
+          try {
+            const r = await fetch('/api/projects', {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify(this.newProject)
+            });
+            const d = await r.json();
+            if (r.ok) {
+              await this.loadProjects();
+              this.currentProjectSlug = d.slug;
+              this.showNewProjectModal = false;
+              this.newProject = { name: '', slug: '', source_platform: 'kaltura', description: '' };
+              await this.switchProject();
+            } else {
+              this.newProjectError = d.detail || 'Failed to create project';
+            }
+          } catch(e) { this.newProjectError = 'Connection error'; }
+        },
+
+        // ── Project Credentials ──
+        async loadProjectCreds() {
+          if (!this.currentProjectSlug) return;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, { headers: this._authHeaders() });
+            if (r.ok) this.projectCreds = await r.json();
+          } catch(e) {}
+        },
+        async saveProjectCreds() {
+          if (!this.currentProjectSlug) return;
+          this.projectCredsSaving = true;
+          this.projectCredsMessage = '';
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
+              method: 'PUT', headers: this._authHeaders(),
+              body: JSON.stringify({ credentials: this.projectCreds })
+            });
+            if (r.ok) {
+              this.projectCredsMessage = 'Credentials saved (encrypted)';
+              this.projectCredsMessageType = 'success';
+              await this.loadProjectCreds();
+              await this.loadStatus();
+            } else {
+              const d = await r.json();
+              this.projectCredsMessage = d.detail || 'Save failed';
+              this.projectCredsMessageType = 'error';
+            }
+          } catch(e) { this.projectCredsMessage = 'Connection error'; this.projectCredsMessageType = 'error'; }
+          this.projectCredsSaving = false;
+          setTimeout(() => { this.projectCredsMessage = ''; }, 4000);
+        },
+        async testProjectConnection(svc) {
+          if (!this.currentProjectSlug) return;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials/test`, {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({ service: svc })
+            });
+            const d = await r.json();
+            const name = svc === 's3' ? 'AWS' : svc.charAt(0).toUpperCase() + svc.slice(1);
+            alert(d.status === 'ok' ? name + ' connection working!' : name + ' failed: ' + (d.message || 'Check credentials'));
+          } catch(e) { alert('Test failed'); }
+        },
+
+        // ── Field Mappings ──
+        async loadFieldMappings() {
+          if (!this.currentProjectSlug) return;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/field-mappings`, { headers: this._authHeaders() });
+            if (r.ok) {
+              const d = await r.json();
+              this.fieldMappings = d.mappings || [];
+            }
+          } catch(e) {}
+        },
+        async saveFieldMappings() {
+          if (!this.currentProjectSlug) return;
+          this.fieldMappingSaving = true;
+          this.fieldMappingMessage = '';
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/field-mappings`, {
+              method: 'PUT', headers: this._authHeaders(),
+              body: JSON.stringify({ mappings: this.fieldMappings })
+            });
+            if (r.ok) {
+              this.fieldMappingMessage = 'Mappings saved';
+              await this.loadFieldMappings();
+            } else {
+              this.fieldMappingMessage = 'Save failed';
+            }
+          } catch(e) { this.fieldMappingMessage = 'Connection error'; }
+          this.fieldMappingSaving = false;
+          setTimeout(() => { this.fieldMappingMessage = ''; }, 3000);
+        },
+        addFieldMapping() {
+          this.fieldMappings.push({ source_field: '', dest_field: 'description', transform: 'direct', template: '', enabled: true, sort_order: this.fieldMappings.length });
+        },
+        removeFieldMapping(idx) {
+          this.fieldMappings.splice(idx, 1);
+        },
+        async previewFieldMapping() {
+          if (!this.currentProjectSlug) return;
+          this.fieldMappingPreviewLoading = true;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/field-mappings/preview`, {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({ mappings: this.fieldMappings })
+            });
+            if (r.ok) this.fieldMappingPreview = await r.json();
+          } catch(e) {}
+          this.fieldMappingPreviewLoading = false;
+        },
+
+        // ── Client Portal Tokens ──
+        async loadClientTokens() {
+          if (!this.currentProjectSlug) return;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/client-tokens`, { headers: this._authHeaders() });
+            if (r.ok) {
+              const d = await r.json();
+              this.clientTokens = d.tokens || [];
+            }
+          } catch(e) {}
+        },
+        async createClientToken() {
+          if (!this.newTokenLabel.trim() || !this.currentProjectSlug) return;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/client-tokens`, {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({ label: this.newTokenLabel })
+            });
+            if (r.ok) {
+              const d = await r.json();
+              alert('Token created! Share this link with your client:\n\n' + window.location.origin + '/api/client/' + d.token + '/status\n\nSave this — the token cannot be shown again.');
+              this.newTokenLabel = '';
+              await this.loadClientTokens();
+            }
+          } catch(e) {}
+        },
+        async revokeClientToken(tokenId) {
+          if (!confirm('Revoke this token? The client will lose access.')) return;
+          try {
+            await fetch(`/api/projects/${this.currentProjectSlug}/client-tokens/${tokenId}`, {
+              method: 'DELETE', headers: this._authHeaders()
+            });
+            await this.loadClientTokens();
+          } catch(e) {}
+        },
+
+        // ── Cost Projection ──
+        async loadCostProjection() {
+          if (!this.currentProjectSlug) return;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/costs/projection`, { headers: this._authHeaders() });
+            if (r.ok) this.costProjection = await r.json();
+          } catch(e) {}
         },
 
         async loadStatus() { try { const r = await fetch('/api/status', { headers: this._authHeaders() }); if (r.ok) this.status = await r.json(); } catch(e) {} },
