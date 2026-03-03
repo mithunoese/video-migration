@@ -293,6 +293,37 @@ class ZoomClient:
 
         return self._api_call("PATCH", f"/clips/{video_id}", json=payload)
 
+    # ─── Clip listing ───
+
+    def list_clips(self, page_size: int = 50, next_page_token: str | None = None) -> dict:
+        """List clips in the account.
+
+        Returns dict with 'clips' (list) and optional 'next_page_token'.
+        Each clip has: id, title, description, status, created_at, duration,
+        thumbnail_link, scope, etc.
+        """
+        params: dict[str, Any] = {"page_size": min(page_size, 100)}
+        if next_page_token:
+            params["next_page_token"] = next_page_token
+        try:
+            result = self._api_call("GET", "/clips", params=params)
+            return {
+                "clips": result.get("clips", []),
+                "next_page_token": result.get("next_page_token", ""),
+                "total_records": result.get("total_records", 0),
+            }
+        except Exception as e:
+            logger.warning("Failed to list clips: %s", e)
+            return {"clips": [], "next_page_token": "", "total_records": 0}
+
+    def get_clip(self, clip_id: str) -> dict:
+        """Get details for a single clip."""
+        try:
+            return self._api_call("GET", f"/clips/{clip_id}")
+        except Exception as e:
+            logger.warning("Failed to get clip %s: %s", clip_id, e)
+            return {}
+
     # ─── Channel management (Video Management API) ───
 
     def list_channels(self) -> list[dict]:

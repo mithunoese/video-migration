@@ -1492,28 +1492,86 @@ async def list_videos(
     if _demo_mode:
         all_videos = []
     else:
-        # Load from state tracker + kaltura
-        state = _pipeline.tracker._load_local()
+        # Build video list from multiple sources (tracker + audit events)
+        seen_ids: set[str] = set()
         all_videos = []
-        for vid, info in state.items():
-            meta = info.get("metadata", {})
-            all_videos.append({
-                "id": vid,
-                "title": meta.get("title", vid),
-                "description": meta.get("description", ""),
-                "duration": meta.get("duration", 0),
-                "size_mb": meta.get("size_mb", 0),
-                "size_bytes": meta.get("size_bytes", 0),
-                "format": meta.get("format", "mp4"),
-                "codec": meta.get("codec", "h.264"),
-                "resolution": meta.get("resolution", ""),
-                "tags": meta.get("tags", ""),
-                "categories": meta.get("categories", ""),
-                "created_at": meta.get("created_at", ""),
-                "status": info.get("status", "pending"),
-                "zoom_id": meta.get("zoom_id"),
-                "error": info.get("error"),
-            })
+
+        # 1. Load from state tracker (if available)
+        try:
+            state = _pipeline.tracker._load_local() if _pipeline else {}
+            for vid, info in state.items():
+                meta = info.get("metadata", {})
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except Exception:
+                        meta = {}
+                seen_ids.add(vid)
+                all_videos.append({
+                    "id": vid,
+                    "title": meta.get("title", vid),
+                    "description": meta.get("description", ""),
+                    "duration": meta.get("duration", 0),
+                    "size_mb": meta.get("size_mb", 0),
+                    "size_bytes": meta.get("size_bytes", 0),
+                    "format": meta.get("format", "mp4"),
+                    "codec": meta.get("codec", "h.264"),
+                    "resolution": meta.get("resolution", ""),
+                    "tags": meta.get("tags", ""),
+                    "categories": meta.get("categories", ""),
+                    "created_at": meta.get("created_at", ""),
+                    "status": info.get("status", "pending"),
+                    "zoom_id": meta.get("zoom_id"),
+                    "error": info.get("error"),
+                })
+        except Exception:
+            pass
+
+        # 2. Also check audit events for completed/failed videos (survives Vercel cold starts)
+        for ev in _audit_store._read_all():
+            vid = ev.get("video_id")
+            if not vid or vid in seen_ids:
+                continue
+            event_type = ev.get("event", "")
+            data = ev.get("data", {}) or {}
+            if event_type == "video_completed":
+                seen_ids.add(vid)
+                all_videos.append({
+                    "id": vid,
+                    "title": data.get("title", vid),
+                    "description": "",
+                    "duration": data.get("duration_s", 0),
+                    "size_mb": data.get("size_mb", 0),
+                    "size_bytes": 0,
+                    "format": "mp4",
+                    "codec": "",
+                    "resolution": "",
+                    "tags": "",
+                    "categories": "",
+                    "created_at": ev.get("ts", ""),
+                    "status": "completed",
+                    "zoom_id": data.get("zoom_id"),
+                    "error": None,
+                })
+            elif event_type == "video_failed":
+                seen_ids.add(vid)
+                all_videos.append({
+                    "id": vid,
+                    "title": data.get("title", vid),
+                    "description": "",
+                    "duration": 0,
+                    "size_mb": 0,
+                    "size_bytes": 0,
+                    "format": "mp4",
+                    "codec": "",
+                    "resolution": "",
+                    "tags": "",
+                    "categories": "",
+                    "created_at": ev.get("ts", ""),
+                    "status": "failed",
+                    "zoom_id": None,
+                    "error": data.get("error", "Unknown error"),
+                })
 
     # Filter
     if status != VideoStatus.ALL:
@@ -1533,8 +1591,31 @@ async def list_videos(
         "total": total,
         "page": page,
         "page_size": page_size,
-        "total_pages": (total + page_size - 1) // page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
     }
+
+
+@app.get("/api/zoom/clips")
+async def list_zoom_clips(
+    page_size: int = Query(50, ge=1, le=100),
+    next_page_token: str = Query("", max_length=500),
+    user: dict = Depends(_verify_jwt),
+):
+    """List clips directly from Zoom API — shows what's actually in Zoom."""
+    if _demo_mode or _pipeline is None:
+        return {"clips": [], "total_records": 0, "next_page_token": ""}
+    try:
+        result = _pipeline.zoom.list_clips(
+            page_size=page_size,
+            next_page_token=next_page_token or None,
+        )
+        return result
+    except Exception as e:
+        logger.error("Failed to list Zoom clips: %s", e)
+        return JSONResponse(
+            {"error": "Failed to fetch clips from Zoom."},
+            status_code=500,
+        )
 
 
 @app.get("/api/videos/{video_id}")
