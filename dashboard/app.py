@@ -1713,7 +1713,14 @@ async def get_video_journey(video_id: str, user: dict = Depends(_verify_jwt)):
 
 @app.get("/api/audit/reconciliation")
 async def get_reconciliation(user: dict = Depends(_verify_jwt)):
-    """Cross-system reconciliation: where each video lives across Kaltura → S3 → Zoom."""
+    """Cross-system reconciliation: where each video lives across Kaltura → S3 → Zoom.
+
+    Builds reconciliation from multiple sources so it works even on
+    Vercel where the DynamoDB/local state tracker is ephemeral:
+      1. Kaltura API  → total source video count
+      2. Audit trail  → completed / failed / in-progress per video
+      3. State tracker → merge if it has data (local / DynamoDB)
+    """
     if _demo_mode:
         return {
             "source": {"system": "Kaltura", "count": 0, "videos": [], "total_size_gb": 0},
@@ -1725,17 +1732,73 @@ async def get_reconciliation(user: dict = Depends(_verify_jwt)):
             "demo_mode": True,
         }
 
-    all_videos = _pipeline.tracker.get_all_videos()
-    summary = _pipeline.tracker.get_summary()
+    # ── 1. Get Kaltura total from live API ──
+    kaltura_total = 0
+    kaltura_sample: list[dict] = []
+    try:
+        if _pipeline and hasattr(_pipeline, "kaltura"):
+            result = _pipeline.kaltura.list_videos(page=1, page_size=50)
+            kaltura_total = result.get("totalCount", 0)
+            for entry in result.get("objects", []):
+                kaltura_sample.append({
+                    "video_id": entry.get("id", ""),
+                    "title": entry.get("name", "Untitled"),
+                    "status": "pending",
+                    "size_mb": round(entry.get("dataSize", 0) / 1048576, 1),
+                    "duration": entry.get("duration", 0),
+                })
+    except Exception as e:
+        logger.warning("Reconciliation: failed to query Kaltura: %s", e)
 
-    source_videos = []
-    staging_videos = []
-    destination_videos = []
-    issue_videos = []
+    # ── 2. Build per-video status from audit events ──
+    video_states: dict[str, dict] = {}
+    all_audit_events = _audit_store._read_all()
+    for ev in all_audit_events:
+        vid = ev.get("video_id")
+        if not vid:
+            continue
+        event_type = ev.get("event", "")
+        data = ev.get("data", {}) or {}
+        ts = ev.get("ts", "")
 
-    now = datetime.now(timezone.utc)
+        if event_type == "video_completed":
+            video_states[vid] = {
+                "video_id": vid,
+                "title": data.get("title", vid),
+                "status": "completed",
+                "updated_at": ts,
+                "size_mb": data.get("size_mb", 0),
+                "zoom_id": data.get("zoom_id"),
+            }
+        elif event_type == "video_failed":
+            video_states[vid] = {
+                "video_id": vid,
+                "title": data.get("title", vid),
+                "status": "failed",
+                "updated_at": ts,
+                "error": data.get("error", "Unknown error"),
+                "size_mb": data.get("size_mb", 0),
+            }
+        elif event_type in ("migration_start", "video_downloading", "video_uploading"):
+            # Only set in-progress if not already completed/failed
+            if vid not in video_states:
+                video_states[vid] = {
+                    "video_id": vid,
+                    "title": data.get("title", vid),
+                    "status": "downloading",
+                    "updated_at": ts,
+                    "size_mb": data.get("size_mb", 0),
+                }
 
-    for vid, record in all_videos.items():
+    # ── 3. Merge state tracker data if available ──
+    tracker_data: dict = {}
+    try:
+        if _pipeline and hasattr(_pipeline, "tracker"):
+            tracker_data = _pipeline.tracker.get_all_videos()
+    except Exception as e:
+        logger.warning("Reconciliation: tracker unavailable: %s", e)
+
+    for vid, record in tracker_data.items():
         st = record.get("status", "unknown")
         meta = record.get("metadata", {})
         if isinstance(meta, str):
@@ -1743,45 +1806,88 @@ async def get_reconciliation(user: dict = Depends(_verify_jwt)):
                 meta = json.loads(meta)
             except Exception:
                 meta = {}
-        updated_at = record.get("updated_at", "")
-
-        entry = {
+        # Tracker data takes precedence over audit (it's more granular)
+        video_states[vid] = {
             "video_id": vid,
             "title": meta.get("title", vid),
             "status": st,
-            "updated_at": updated_at,
+            "updated_at": record.get("updated_at", ""),
             "size_mb": meta.get("size_mb", 0) or meta.get("duration", 0) * 0.1,
             "zoom_id": meta.get("zoom_id"),
+            "error": record.get("error"),
         }
 
+    # ── 4. Categorise into columns ──
+    source_videos = []
+    staging_videos = []
+    destination_videos = []
+    issue_videos = []
+    now = datetime.now(timezone.utc)
+
+    migrated_ids = set()
+    for vid, entry in video_states.items():
+        migrated_ids.add(vid)
+        st = entry.get("status", "unknown")
         if st == "pending":
             source_videos.append(entry)
         elif st in ("downloading", "staged", "uploading"):
             staging_videos.append(entry)
-            # Detect stuck videos (>1hr in transit)
             try:
-                updated = datetime.fromisoformat(updated_at)
+                updated = datetime.fromisoformat(entry.get("updated_at", ""))
                 if (now - updated).total_seconds() > 3600:
-                    stuck = {**entry, "issue": f"Stuck in '{st}' for >1 hour"}
-                    issue_videos.append(stuck)
+                    issue_videos.append({**entry, "issue": f"Stuck in '{st}' for >1 hour"})
             except Exception:
                 pass
         elif st == "completed":
             destination_videos.append(entry)
         elif st == "failed":
-            entry["error"] = record.get("error", "Unknown error")
             issue_videos.append(entry)
+
+    # Remaining Kaltura videos that haven't been migrated go to source
+    pending_from_kaltura = []
+    for kv in kaltura_sample:
+        if kv["video_id"] not in migrated_ids:
+            pending_from_kaltura.append(kv)
+
+    # Total pending = Kaltura total minus any migrated/completed/failed
+    pending_count = max(0, kaltura_total - len(destination_videos) - len(issue_videos) - len(staging_videos))
+
+    # Build summary counts
+    summary = {
+        "pending": pending_count,
+        "completed": len(destination_videos),
+        "failed": len([v for v in issue_videos if v.get("status") == "failed"]),
+        "in_progress": len(staging_videos),
+    }
 
     def _size_gb(videos: list) -> float:
         return round(sum(v.get("size_mb", 0) for v in videos) / 1024, 2)
 
+    # Combine pending_from_kaltura with any "pending" from tracker for the source column
+    all_source = pending_from_kaltura + source_videos
+
     return {
-        "source": {"system": "Kaltura", "count": len(source_videos), "videos": source_videos[:100], "total_size_gb": _size_gb(source_videos)},
-        "staging": {"system": "AWS S3", "count": len(staging_videos), "videos": staging_videos[:100], "total_size_gb": _size_gb(staging_videos)},
-        "destination": {"system": "Zoom", "count": len(destination_videos), "videos": destination_videos[:100], "total_size_gb": _size_gb(destination_videos)},
+        "source": {
+            "system": "Kaltura",
+            "count": pending_count,
+            "videos": all_source[:100],
+            "total_size_gb": _size_gb(all_source),
+        },
+        "staging": {
+            "system": "AWS S3" if not os.environ.get("SKIP_S3", "").lower() in ("true", "1", "yes") else "Direct Transfer",
+            "count": len(staging_videos),
+            "videos": staging_videos[:100],
+            "total_size_gb": _size_gb(staging_videos),
+        },
+        "destination": {
+            "system": "Zoom",
+            "count": len(destination_videos),
+            "videos": destination_videos[:100],
+            "total_size_gb": _size_gb(destination_videos),
+        },
         "issues": issue_videos[:100],
         "summary": summary,
-        "total": len(all_videos),
+        "total": kaltura_total or len(video_states),
         "demo_mode": False,
     }
 
