@@ -23,23 +23,103 @@ Python CLI (run.py)          FastAPI Dashboard (dashboard/app.py)
   └── test_mode.py
 ```
 
-**Pipeline flow:** Discover → Extract Metadata → Download → S3 Stage → Zoom Upload → Verify
+**Pipeline flow (8 steps):**
+```
+1. Discover          — List entries from Kaltura API
+2. Extract Metadata  — Fetch title, description, duration, file size, tags, categories
+3. Download          — Pull source flavor from Kaltura CDN
+4. S3 Stage          — Upload to AWS S3 staging bucket (skip for small files if configured)
+5. Upload to Zoom    — Decision tree routes to correct endpoint (see below)
+6. Migrate Captions  — Extract from Kaltura (SRT/DFXP/VTT), convert SRT→VTT, upload to Zoom
+7. Migrate Thumbnail — Download default + additional thumbnails, upload to Zoom
+8. Verify + Report   — Confirm upload, generate Kaltura ID → Zoom ID mapping, clean up
+```
+
+### Upload Decision Tree
+File size is checked from metadata **before** upload begins. The pipeline auto-routes:
+
+```
+                    ┌─────────────────────┐
+                    │  Check file size     │
+                    │  from Kaltura meta   │
+                    └─────────┬───────────┘
+                              │
+                    ┌─────────▼───────────┐
+                    │  target_api config?  │
+                    └─────────┬───────────┘
+                     ╱                 ╲
+              events                    clips/vm
+                ╱                            ╲
+   ┌────────────▼──────────┐    ┌─────────────▼─────────────┐
+   │  ≤ 2 GB?              │    │  ≤ 2 GB?                  │
+   └───┬──────────────┬────┘    └───┬───────────────────┬───┘
+      YES              NO          YES                   NO
+       │                │           │                     │
+       ▼                ▼           ▼                     ▼
+  POST /zoom_events  POST /zoom_events  POST /clips    POST /clips/files
+  /files             /files/multipart   /{clipId}      /multipart
+  (single stream)    /upload            (single)       /upload_events
+                     (3-step chunked)                  (3-step chunked)
+```
+
+- **Single upload**: Streaming POST, ≤ 2 GB, formats: .mp4 / .webm
+- **Multipart upload**: 3-step (initiate → upload parts → complete), > 2 GB, 200 MB chunks
+- Decision is automatic — `zoom_client.py` checks `Path(file).stat().st_size` before calling
+
+### Zoom Destination Targets
+| Config Value | Zoom Product | Portal | Where Videos Land |
+|---|---|---|---|
+| `events` | Zoom Events Advanced CMS | `events.zoom.us` → Video Management → Recordings & Videos |  Hub-scoped, marketer persona |
+| `clips` | Zoom Clips | Zoom app → Clips | User-scoped, lightweight |
+| `vm` | Zoom Video Management | Zoom web → Video Management | Company-wide, internal "YouTube" |
+
+- **IFRS** uses `events` — videos must land in Video Management section at `events.zoom.us`, NOT cloud recordings
+- **Zoom Events CMS** = Advanced CMS add-on: channels, playlists, published content for events replays
+- **Zoom Video Management** = embedded in Zoom client + web portal, internal content sharing
+
+## IFRS Dry Run Pipeline
+
+Dashboard tab ("Dry Run") with a 4-step workflow built for IFRS test batches:
+
+1. **Enter Entry IDs** — paste Kaltura entry IDs or load pre-defined IFRS test batches
+2. **Generate Source Manifest** — frozen point-in-time snapshot: metadata, captions, thumbnails, flavors per entry
+3. **Run Batch Migration** — restartable checkpoint-based pipeline (resumes from last completed video on failure)
+4. **View Report** — Kaltura ID → Zoom ID mapping CSV/JSON (critical for AEM embed replacement script)
+
+**Test Batch Categories** (from Fan/IFRS):
+| Batch | Criteria | Purpose |
+|---|---|---|
+| A | No captions | Baseline video-only |
+| B | 1 caption | Single SRT→VTT conversion |
+| C | 2+ captions | Multi-language / multi-format |
+| D | 2+ thumbnails | Custom thumbnail handling |
+| E | Extra long | Large file / multipart upload stress test |
+
+**Caption Pipeline**: Kaltura `caption_captionasset.list` → download → detect format (1=SRT, 2=DFXP, 3=WEBVTT) → convert SRT→VTT if needed → upload to Zoom
+**Thumbnail Pipeline**: Kaltura `thumbAsset.list` → download (prioritize `isDefault`) → upload to Zoom Events/Clips
+
+### Current Dependencies & Blockers
+- **Test data gap**: OE Kaltura account only has videos < 5 min. Max will upload longer videos + SRT files + extra thumbnails when back from vacation
+- **AWS credentials**: S3 staging bucket access — Max to follow up with Joe post-vacation
+- **Zoom sandbox licensing**: Extra license pending from Steve (Zoom AE). Needed for Zoom Events portal access at `events.zoom.us`
+- **Hub routing**: Videos must be associated with correct Hub ID on upload — fireplace test video didn't appear in expected hub location
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
 | `run.py` | CLI entry point. Commands: `verify`, `discover`, `migrate`, `retry`, `report`, `test` |
-| `dashboard/app.py` | FastAPI server (~900 lines). REST API, SSE streaming, JWT auth, rate limiting |
-| `migration/pipeline.py` | Core orchestrator. ThreadPoolExecutor, retry logic, state tracking |
+| `dashboard/app.py` | FastAPI server. REST API, SSE streaming, JWT auth, rate limiting, dry run endpoints |
+| `migration/pipeline.py` | Core orchestrator. 8-step migration (video + captions + thumbnails), checkpoint resumability, report generation |
 | `migration/config.py` | Config from env vars. `KalturaConfig`, `AWSConfig`, `ZoomConfig`, `PipelineConfig` |
-| `migration/kaltura_client.py` | Kaltura API: KS auth, list videos, metadata, download |
-| `migration/zoom_client.py` | Zoom API: OAuth 2.0 S2S, upload to Events/VM/Clips, multipart for >2GB |
+| `migration/kaltura_client.py` | Kaltura API: KS auth, list videos, metadata, download, captions, thumbnails, source manifest |
+| `migration/zoom_client.py` | Zoom API: OAuth 2.0 S2S, upload to Events/VM/Clips, multipart for >2GB, caption + thumbnail upload |
+| `migration/caption_utils.py` | SRT→VTT conversion, caption format detection |
 | `migration/aws_staging.py` | S3 staging + DynamoDB state tracking |
 | `migration/test_mode.py` | Self-contained test (CC video, no credentials needed) |
 | `dashboard/cost_tracker.py` | Per-video cost tracking, projections, CSV export |
 | `dashboard/demo_data.py` | 847 deterministic demo videos for demo mode |
-| `public/index.html` | Dashboard SPA: 7 tabs, login screen, Alpine.js |
+| `public/index.html` | Dashboard SPA: 8 tabs (incl. Dry Run), login screen, Alpine.js |
 | `public/architecture.html` | Architecture diagram page |
 | `vercel.json` | Vercel deployment config |
 | `create_pitch_deck.py` | Generates 14-slide pitch deck (OpenExchange branding) |
