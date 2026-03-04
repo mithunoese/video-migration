@@ -2357,19 +2357,27 @@
               if (proj) proj.source_platform = platform;
             }
 
-            const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
-              method: 'PUT', headers: this._authHeaders(),
-              body: JSON.stringify({ service: platform, credentials: creds })
-            });
-            if (r.ok) {
-              this.projectCredsMessage = 'Source credentials saved';
-              this.projectCredsMessageType = 'success';
-              await this.loadProjectCreds();
-              if (this.currentTab === 'migration') this.loadMigKaltura();
+            // Only save credentials if a platform is actually selected
+            if (platform) {
+              const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
+                method: 'PUT', headers: this._authHeaders(),
+                body: JSON.stringify({ service: platform, credentials: creds })
+              });
+              if (r.ok) {
+                this.projectCredsMessage = 'Source credentials saved';
+                this.projectCredsMessageType = 'success';
+                await this.loadProjectCreds();
+                if (this.currentTab === 'migration') this.loadMigKaltura();
+              } else {
+                const d = await r.json();
+                this.projectCredsMessage = d.detail || 'Save failed';
+                this.projectCredsMessageType = 'error';
+              }
             } else {
-              const d = await r.json();
-              this.projectCredsMessage = d.detail || 'Save failed';
-              this.projectCredsMessageType = 'error';
+              // Platform cleared — just confirm the platform update was saved
+              this.projectCredsMessage = 'Platform cleared';
+              this.projectCredsMessageType = 'success';
+              if (this.currentTab === 'migration') this.loadMigKaltura();
             }
           } catch(e) { this.projectCredsMessage = 'Connection error'; this.projectCredsMessageType = 'error'; }
           this.projectCredsSaving = false;
