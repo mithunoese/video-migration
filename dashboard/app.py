@@ -609,8 +609,8 @@ async def list_projects(user: dict = Depends(_verify_jwt)):
             "source_platform": r["source_platform"],
             "status": r["status"],
             "config_json": r["config_json"] or {},
-            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
         })
     return {"projects": projects}
 
@@ -649,7 +649,7 @@ async def create_project(request: Request, user: dict = Depends(_verify_jwt)):
             "source_platform": row["source_platform"],
             "status": row["status"],
             "config_json": row["config_json"] or {},
-            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "created_at": row["created_at"],
         }
     }
 
@@ -689,8 +689,8 @@ async def get_project(slug: str, user: dict = Depends(_verify_jwt)):
             "source_platform": row["source_platform"],
             "status": row["status"],
             "config_json": row["config_json"] or {},
-            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
         },
         "stats": {
             "total_runs": run_stats["total_runs"] if run_stats else 0,
@@ -1004,10 +1004,10 @@ async def list_migration_runs(slug: str, user: dict = Depends(_verify_jwt)):
         "completed_count": r["completed_count"],
         "failed_count": r["failed_count"],
         "current_stage": r["current_stage"],
-        "started_at": r["started_at"].isoformat() if r["started_at"] else None,
-        "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
+        "started_at": r["started_at"],
+        "completed_at": r["completed_at"],
         "error": r["error"],
-        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        "created_at": r["created_at"],
     } for r in rows]
     return {"runs": runs}
 
@@ -1168,8 +1168,8 @@ async def get_infra_status(slug: str, user: dict = Depends(_verify_jwt)):
         "action": r["action"],
         "status": r["status"],
         "stack_outputs": r["stack_outputs"] or {},
-        "started_at": r["started_at"].isoformat() if r["started_at"] else None,
-        "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
+        "started_at": r["started_at"],
+        "completed_at": r["completed_at"],
         "error": r["error"],
     } for r in rows]
 
@@ -1288,10 +1288,10 @@ async def list_client_tokens(slug: str, user: dict = Depends(_verify_jwt)):
     tokens = [{
         "id": str(r["id"]),
         "label": r["label"],
-        "expires_at": r["expires_at"].isoformat() if r["expires_at"] else None,
-        "last_used_at": r["last_used_at"].isoformat() if r["last_used_at"] else None,
+        "expires_at": r["expires_at"],
+        "last_used_at": r["last_used_at"],
         "revoked": r["revoked"],
-        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        "created_at": r["created_at"],
     } for r in rows]
     return {"tokens": tokens}
 
@@ -1355,7 +1355,7 @@ async def client_progress_view(token: str, request: Request):
         "pending": total - completed - (latest_run["failed_count"] if latest_run else 0),
         "percent_complete": pct,
         "current_stage": latest_run["current_stage"] if latest_run else None,
-        "last_updated": latest_run["updated_at"].isoformat() if latest_run and latest_run["updated_at"] else None,
+        "last_updated": latest_run["updated_at"] if latest_run and latest_run["updated_at"] else None,
     }
 
 
