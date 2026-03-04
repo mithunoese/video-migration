@@ -850,6 +850,26 @@
           </div>
         </template>
       </div>
+
+      <!-- Credential Settings (collapsed by default) -->
+      <details class="mt-5 card-static overflow-hidden">
+        <summary class="px-5 py-4 cursor-pointer flex items-center justify-between hover:bg-gray-50 transition-colors select-none">
+          <div class="flex items-center gap-2.5">
+            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            <span class="text-sm font-semibold text-gray-700">Credential Settings</span>
+          </div>
+          <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        </summary>
+        <div class="px-5 py-4 border-t border-gray-100">
+          <p class="text-xs text-gray-400 mb-4">Fine-tune how the migration runs. Defaults work well for most organizations.</p>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="How many videos to process per migration run.">Videos per Run</label><input type="number" x-model="settings.batch_size" min="1" max="100" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="How many videos can transfer simultaneously.">Simultaneous Transfers</label><input type="number" x-model="settings.max_concurrency" min="1" max="20" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="How many times to automatically retry a video if it fails.">Auto-Retry Count</label><input type="number" x-model="settings.retry_attempts" min="1" max="10" class="input-field mt-1.5"></div>
+          </div>
+          <button @click="saveSettings()" :disabled="settingsSaving" class="mt-4 btn-primary text-xs px-4 py-2" x-text="settingsSaving ? 'Saving…' : 'Save'"></button>
+        </div>
+      </details>
     </div>
 
     <!-- ═══ AI ASSISTANT ═══ -->
@@ -1182,15 +1202,6 @@
           </div>
         </div>
 
-        <div class="card-static p-6">
-          <h3 class="text-sm font-bold text-gray-800 mb-1">Migration Settings</h3>
-          <p class="text-xs text-gray-400 mb-5 leading-relaxed">Fine-tune how the migration runs. Defaults work well for most organizations.</p>
-          <div class="space-y-4">
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="How many videos to process per migration run. Lower numbers are safer; higher numbers are faster.">Videos per Run</label><input type="number" x-model="settings.batch_size" min="1" max="100" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="How many videos can transfer simultaneously. Higher values are faster but use more bandwidth.">Simultaneous Transfers</label><input type="number" x-model="settings.max_concurrency" min="1" max="20" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="How many times to automatically retry a video if it fails. 3 is a good default.">Auto-Retry Count</label><input type="number" x-model="settings.retry_attempts" min="1" max="10" class="input-field mt-1.5"></div>
-          </div>
-        </div>
       </div>
 
       <!-- Save Bar -->
@@ -1621,7 +1632,7 @@
       <div class="flex gap-1 mb-6 bg-gray-100 rounded-xl p-1 w-fit">
         <button @click="auditSubTab='reconciliation'; loadReconciliation()" :class="auditSubTab==='reconciliation' ? 'bg-white shadow-sm text-brand-700 font-semibold' : 'text-gray-500 hover:text-gray-700'" class="px-4 py-2 rounded-lg text-sm transition-all">Pipeline Reconciliation</button>
         <button @click="auditSubTab='trail'; loadAuditTrail()" :class="auditSubTab==='trail' ? 'bg-white shadow-sm text-brand-700 font-semibold' : 'text-gray-500 hover:text-gray-700'" class="px-4 py-2 rounded-lg text-sm transition-all">Audit Trail</button>
-        <button @click="auditSubTab='journey'" :class="auditSubTab==='journey' ? 'bg-white shadow-sm text-brand-700 font-semibold' : 'text-gray-500 hover:text-gray-700'" class="px-4 py-2 rounded-lg text-sm transition-all">Video Journey</button>
+        <button @click="auditSubTab='journey'; if(!reconData) loadReconciliation()" :class="auditSubTab==='journey' ? 'bg-white shadow-sm text-brand-700 font-semibold' : 'text-gray-500 hover:text-gray-700'" class="px-4 py-2 rounded-lg text-sm transition-all">Video Journey</button>
       </div>
 
       <!-- ─── SUB-TAB: Pipeline Reconciliation ─── -->
@@ -1857,12 +1868,45 @@
       </div>
 
       <!-- ─── SUB-TAB: Video Journey ─── -->
-      <div x-show="auditSubTab === 'journey'">
-        <!-- Video ID input -->
-        <div class="flex items-center gap-3 mb-6">
-          <input type="text" x-model="journeyVideoId" @keyup.enter="loadVideoJourney(journeyVideoId)" class="input-field w-72 text-sm" placeholder="Enter video ID (e.g. 1_abc123)">
-          <button @click="loadVideoJourney(journeyVideoId)" :disabled="!journeyVideoId" class="btn-primary px-4 py-2.5 text-sm disabled:opacity-40">Load Journey</button>
+      <div x-show="auditSubTab === 'journey'" class="flex gap-5">
+        <!-- Left: video list -->
+        <div class="w-64 flex-shrink-0">
+          <div class="card-static overflow-hidden">
+            <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+              <span class="text-xs font-bold text-gray-600 uppercase tracking-wide">All Videos</span>
+              <span class="text-[10px] text-gray-400" x-text="(reconData?.destination?.videos || []).length + ' migrated'"></span>
+            </div>
+            <div class="overflow-y-auto" style="max-height: 600px;">
+              <!-- From reconciliation data (completed) -->
+              <template x-for="v in (reconData?.destination?.videos || [])" :key="v.video_id + '-jlist'">
+                <div @click="loadVideoJourney(v.video_id)"
+                     class="px-3 py-2.5 border-b border-gray-50 cursor-pointer hover:bg-brand-50/40 transition-colors"
+                     :class="journeyVideoId === v.video_id ? 'bg-brand-50 border-l-2 border-l-brand-500' : ''">
+                  <p class="text-xs font-medium text-gray-700 truncate" x-text="v.title || v.video_id"></p>
+                  <p class="text-[10px] text-green-500 font-semibold">completed</p>
+                </div>
+              </template>
+              <!-- Failed / issues -->
+              <template x-for="v in (reconData?.issues || [])" :key="v.video_id + '-jissue'">
+                <div @click="loadVideoJourney(v.video_id)"
+                     class="px-3 py-2.5 border-b border-gray-50 cursor-pointer hover:bg-red-50/40 transition-colors"
+                     :class="journeyVideoId === v.video_id ? 'bg-red-50 border-l-2 border-l-red-400' : ''">
+                  <p class="text-xs font-medium text-gray-700 truncate" x-text="v.title || v.video_id"></p>
+                  <p class="text-[10px] text-red-400 font-semibold">failed</p>
+                </div>
+              </template>
+              <div x-show="!reconData?.destination?.videos?.length && !reconData?.issues?.length" class="px-4 py-8 text-center text-xs text-gray-300">No migrated videos yet</div>
+            </div>
+          </div>
+          <!-- Manual lookup fallback -->
+          <div class="mt-3 flex gap-2">
+            <input type="text" x-model="journeyVideoId" @keyup.enter="loadVideoJourney(journeyVideoId)" class="input-field flex-1 text-xs" placeholder="Or enter video ID…">
+            <button @click="loadVideoJourney(journeyVideoId)" :disabled="!journeyVideoId" class="btn-primary px-3 py-2 text-xs disabled:opacity-40">Go</button>
+          </div>
         </div>
+
+        <!-- Right: journey detail -->
+        <div class="flex-1 min-w-0">
 
         <div x-show="journeyLoading" class="text-center py-16 text-gray-400 text-sm">Loading video journey...</div>
 
@@ -1958,9 +2002,10 @@
           <div class="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gray-100 flex items-center justify-center">
             <svg class="w-8 h-8 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
           </div>
-          <p class="text-sm text-gray-400">Enter a video ID above or click any video ID in the Trail or Reconciliation views.</p>
+          <p class="text-sm text-gray-400">Select a video from the list or enter an ID to view its full journey timeline.</p>
         </div>
-      </div>
+        </div> <!-- /right detail -->
+      </div> <!-- /flex row -->
     </div>
 
   </main>
@@ -2067,9 +2112,8 @@
         infraChecked: false,
         infraNeedsCreds: false,
 
-        // Settings persistence
+        // Settings persistence (Kaltura credentials are per-project now — see Source card)
         settings: {
-          kaltura_partner_id: '', kaltura_admin_secret: '', kaltura_user_id: '',
           aws_access_key_id: '', aws_secret_access_key: '',
           aws_s3_bucket: '', aws_region: 'us-east-1', aws_state_table: 'video-migration-state', aws_endpoint_url: '',
           zoom_client_id: '', zoom_client_secret: '', zoom_account_id: '',
@@ -2707,6 +2751,7 @@
           try {
             const p = new URLSearchParams({ page, page_size: 30 });
             if (this.auditTrailFilter) p.set('event_type', this.auditTrailFilter);
+            if (this.currentProjectSlug) p.set('project_slug', this.currentProjectSlug);
             const r = await fetch(`/api/audit/trail?${p}`, { headers: this._authHeaders() });
             if (r.ok) {
               const d = await r.json();
@@ -2721,7 +2766,9 @@
         async loadReconciliation() {
           this.reconLoading = true;
           try {
-            const r = await fetch('/api/audit/reconciliation', { headers: this._authHeaders() });
+            const p = new URLSearchParams();
+            if (this.currentProjectSlug) p.set('project_slug', this.currentProjectSlug);
+            const r = await fetch(`/api/audit/reconciliation?${p}`, { headers: this._authHeaders() });
             if (r.ok) this.reconData = await r.json();
           } catch(e) {}
           this.reconLoading = false;

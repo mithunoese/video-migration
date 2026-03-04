@@ -237,9 +237,7 @@ _events_lock = threading.Lock()
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 _SETTINGS_FIELDS = {
-    "kaltura_partner_id":   {"env": "KALTURA_PARTNER_ID",   "secret": False},
-    "kaltura_admin_secret":  {"env": "KALTURA_ADMIN_SECRET",  "secret": True},
-    "kaltura_user_id":       {"env": "KALTURA_USER_ID",       "secret": False},
+    # Kaltura credentials are now per-project (stored in DB via /api/projects/{slug}/credentials)
     "aws_access_key_id":     {"env": "AWS_ACCESS_KEY_ID",     "secret": False},
     "aws_secret_access_key": {"env": "AWS_SECRET_ACCESS_KEY", "secret": True},
     "aws_s3_bucket":         {"env": "AWS_S3_BUCKET",         "secret": False},
@@ -2505,7 +2503,10 @@ async def get_video_journey(video_id: str, user: dict = Depends(_verify_jwt)):
 
 
 @app.get("/api/audit/reconciliation")
-async def get_reconciliation(user: dict = Depends(_verify_jwt)):
+async def get_reconciliation(
+    project_slug: Optional[str] = Query(None, max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     """Cross-system reconciliation: where each video lives across Kaltura → S3 → Zoom.
 
     Builds reconciliation from multiple sources so it works even on
@@ -2525,12 +2526,19 @@ async def get_reconciliation(user: dict = Depends(_verify_jwt)):
             "demo_mode": True,
         }
 
+    # Resolve pipeline for this project (scoped Kaltura/Zoom queries)
+    active_pipeline = _pipeline
+    if project_slug and _db.is_available():
+        proj_pipeline = _get_pipeline_for_project(project_slug)
+        if proj_pipeline:
+            active_pipeline = proj_pipeline
+
     # ── 1. Get Kaltura total from live API ──
     kaltura_total = 0
     kaltura_sample: list[dict] = []
     try:
-        if _pipeline and hasattr(_pipeline, "kaltura"):
-            result = _pipeline.kaltura.list_videos(page=1, page_size=50)
+        if active_pipeline and hasattr(active_pipeline, "kaltura"):
+            result = active_pipeline.kaltura.list_videos(page=1, page_size=50)
             kaltura_total = result.get("totalCount", 0)
             for entry in result.get("objects", []):
                 kaltura_sample.append({
@@ -2547,15 +2555,34 @@ async def get_reconciliation(user: dict = Depends(_verify_jwt)):
     zoom_live_total = 0
     zoom_live_clips: list[dict] = []
     try:
-        if _pipeline and hasattr(_pipeline, "zoom"):
-            zr = _pipeline.zoom.list_clips(page_size=50)
+        if active_pipeline and hasattr(active_pipeline, "zoom"):
+            zr = active_pipeline.zoom.list_clips(page_size=50)
             zoom_live_total = zr.get("total_records", 0)
             zoom_live_clips = zr.get("clips", [])
     except Exception as e:
         logger.warning("Reconciliation: failed to query Zoom clips: %s", e)
 
-    # ── 2. Build per-video status from audit events ──
+    # ── 2. Build per-video status — from DB filtered by project if available ──
     video_states: dict[str, dict] = {}
+
+    # Prefer DB-backed migrations (project-scoped)
+    if _db.is_available():
+        project_id_filter = None
+        if project_slug:
+            proj_row = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (project_slug,))
+            if proj_row:
+                project_id_filter = str(proj_row["id"])
+        db_migs = _db.get_all_video_migrations(project_id=project_id_filter)
+        for vid, rec in db_migs.items():
+            video_states[vid] = {
+                "video_id": vid,
+                "title": rec.get("title", vid),
+                "status": rec.get("status", "completed"),
+                "updated_at": str(rec.get("migrated_at", "")),
+                "size_mb": rec.get("file_size_mb", 0),
+                "zoom_id": rec.get("zoom_id"),
+            }
+
     all_audit_events = _audit_store._read_all()
     for ev in all_audit_events:
         vid = ev.get("video_id")
@@ -2597,8 +2624,8 @@ async def get_reconciliation(user: dict = Depends(_verify_jwt)):
     # ── 3. Merge state tracker data if available ──
     tracker_data: dict = {}
     try:
-        if _pipeline and hasattr(_pipeline, "tracker"):
-            tracker_data = _pipeline.tracker.get_all_videos()
+        if active_pipeline and hasattr(active_pipeline, "tracker"):
+            tracker_data = active_pipeline.tracker.get_all_videos()
     except Exception as e:
         logger.warning("Reconciliation: tracker unavailable: %s", e)
 
