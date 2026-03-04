@@ -577,7 +577,7 @@
                     <svg class="w-4 h-4 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                     <div class="flex-1 min-w-0">
                       <p class="text-xs font-medium text-gray-600 truncate" x-text="c.title || c.clip_name || c.name || 'Untitled'"></p>
-                      <p class="text-[10px] text-gray-400" x-text="'Clip ID: ' + (c.id || c.clip_id || '')"></p>
+                      <a :href="zoomVideoUrl(c.id || c.clip_id || c.video_id)" target="_blank" class="text-[10px] text-green-600 hover:text-green-800 hover:underline font-medium" x-text="'View in Zoom ↗'"></a>
                     </div>
                   </div>
                 </template>
