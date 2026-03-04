@@ -179,9 +179,9 @@
     </div>
 
     <!-- Project Selector -->
-    <div class="px-3 mb-3" x-show="projects.length > 0">
+    <div class="px-3 mb-3" x-show="status.db_available">
       <label class="text-[10px] font-semibold text-gray-400 uppercase tracking-widest px-1 mb-1 block">Project</label>
-      <div class="relative">
+      <div class="relative" x-show="projects.length > 0">
         <select x-model="currentProjectSlug" @change="switchProject()" class="w-full text-xs pl-3 pr-8 py-2 rounded-lg border border-gray-200 bg-white focus:border-brand-400 focus:ring-1 focus:ring-brand-200 outline-none appearance-none font-medium text-gray-700 cursor-pointer">
           <template x-for="p in projects" :key="p.slug">
             <option :value="p.slug" x-text="p.name"></option>
@@ -189,7 +189,7 @@
         </select>
         <svg class="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
       </div>
-      <button @click="status.db_available ? showNewProjectModal = true : null" :class="status.db_available ? 'text-brand-600 hover:text-brand-700 hover:bg-brand-50' : 'text-gray-400 cursor-not-allowed'" :title="status.db_available ? 'Create a new project' : 'Database not configured — set POSTGRES_URL to enable multi-project mode'" class="w-full mt-1.5 text-[11px] font-medium py-1 rounded-lg transition-colors">+ New Project</button>
+      <button @click="showNewProjectModal = true" class="w-full mt-1.5 text-[11px] font-medium py-1 rounded-lg transition-colors text-brand-600 hover:text-brand-700 hover:bg-brand-50" title="Create a new project">+ New Project</button>
     </div>
 
     <nav class="flex-1 px-3 space-y-0.5">
