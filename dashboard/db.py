@@ -138,41 +138,53 @@ def _row_to_dict(cols: list[str], row: tuple) -> dict:
 
 def fetch_one(sql: str, params: tuple = ()) -> dict | None:
     with get_conn() as conn:
-        with conn.cursor() as cur:
+        cur = conn.cursor()
+        try:
             cur.execute(sql, params)
             row = cur.fetchone()
             if row is None:
                 return None
             cols = [desc[0] for desc in cur.description]
             return _row_to_dict(cols, row)
+        finally:
+            cur.close()
 
 
 def fetch_all(sql: str, params: tuple = ()) -> list[dict]:
     with get_conn() as conn:
-        with conn.cursor() as cur:
+        cur = conn.cursor()
+        try:
             cur.execute(sql, params)
             cols = [desc[0] for desc in cur.description]
             return [_row_to_dict(cols, row) for row in cur.fetchall()]
+        finally:
+            cur.close()
 
 
 def execute(sql: str, params: tuple = ()) -> int:
     """Execute a statement and return rowcount."""
     with get_conn() as conn:
-        with conn.cursor() as cur:
+        cur = conn.cursor()
+        try:
             cur.execute(sql, params)
             return cur.rowcount
+        finally:
+            cur.close()
 
 
 def execute_returning(sql: str, params: tuple = ()) -> dict | None:
     """Execute an INSERT/UPDATE … RETURNING and return the first row."""
     with get_conn() as conn:
-        with conn.cursor() as cur:
+        cur = conn.cursor()
+        try:
             cur.execute(sql, params)
             row = cur.fetchone()
             if row is None:
                 return None
             cols = [desc[0] for desc in cur.description]
             return _row_to_dict(cols, row)
+        finally:
+            cur.close()
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +390,8 @@ def create_tables():
 
     try:
         with get_conn() as conn:
-            with conn.cursor() as cur:
+            cur = conn.cursor()
+            try:
                 # Execute each statement individually (pooler-safe)
                 for stmt in _SCHEMA_SQL.split(";"):
                     stmt = stmt.strip()
@@ -387,6 +400,8 @@ def create_tables():
                             cur.execute(stmt)
                         except Exception as stmt_err:
                             logger.debug("Table creation statement skipped: %s", stmt_err)
+            finally:
+                cur.close()
         logger.info("Database tables verified/created")
     except Exception as e:
         logger.warning("Failed to create tables (tables may already exist): %s", e)
