@@ -636,22 +636,14 @@
         </div>
       </div>
 
-      <!-- Technical Log (collapsed) -->
-      <details class="card-static overflow-hidden mt-4">
-        <summary class="px-5 py-3.5 cursor-pointer flex justify-between items-center hover:bg-gray-50 transition-colors">
-          <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Technical Log</span>
-          <button @click.prevent="migrationEvents = []" class="text-xs text-gray-400 hover:text-gray-600 font-medium">Clear</button>
-        </summary>
-        <div class="p-4 font-mono text-xs text-gray-500 max-h-48 overflow-y-auto bg-gray-50/70" id="logPanel">
-          <template x-for="(evt, i) in migrationEvents" :key="i">
-            <div class="py-0.5">
-              <span class="text-gray-300" x-text="new Date().toLocaleTimeString()"></span>
-              <span class="ml-2" :class="evt.type?.includes('fail') ? 'text-red-600' : evt.type?.includes('complete') ? 'text-green-600' : 'text-gray-500'" x-text="evt.message || `[${evt.type}] ${evt.title || evt.video_id || ''}`"></span>
-            </div>
-          </template>
-          <div x-show="migrationEvents.length === 0" class="text-gray-300 italic">Waiting for events...</div>
-        </div>
-      </details>
+      <!-- Live migration events feed (compact, no extra panel) -->
+      <div x-show="migrationRunning && migrationEvents.length > 0" x-transition class="mt-4 card-static p-3 font-mono text-xs text-gray-500 max-h-28 overflow-y-auto bg-gray-50/70">
+        <template x-for="(evt, i) in migrationEvents.slice(-20)" :key="i">
+          <div class="py-0.5">
+            <span class="ml-2" :class="evt.type?.includes('fail') ? 'text-red-600' : evt.type?.includes('complete') ? 'text-green-600' : 'text-gray-400'" x-text="evt.message || `[${evt.type}] ${evt.title || evt.video_id || ''}`"></span>
+          </div>
+        </template>
+      </div>
     </div>
 
     <!-- ═══ AI ASSISTANT ═══ -->
@@ -830,18 +822,44 @@
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <!-- ── Per-project source credentials (full width) ── -->
+        <div class="card-static p-6 lg:col-span-2 border-l-4 border-brand-500">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-bold text-gray-800 flex items-center gap-2.5">
+              <span class="dot" :class="(status.connections || {}).kaltura ? 'dot-green' : 'dot-yellow'"></span>
+              Source Credentials
+              <span class="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-brand-100 text-brand-700 border border-brand-200" x-text="(projects.find(p=>p.slug===currentProjectSlug)||{name:currentProjectSlug||'No project'}).name"></span>
+            </h3>
+            <button @click="testProjectConnection('kaltura')" class="text-xs text-brand-600 hover:text-brand-700 font-semibold px-3 py-1 rounded-lg hover:bg-brand-50 transition-colors">Test Connection</button>
+          </div>
+          <p class="text-xs text-gray-400 mb-5 leading-relaxed">These credentials are scoped to the current project. Switch projects in the sidebar to configure a different source account (e.g. IFRS Kaltura vs INDEED Kaltura). AWS and Zoom are shared globally.</p>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Partner ID</label><input type="text" x-model="projectCreds.kaltura.partner_id" placeholder="12345" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Admin Secret</label><input type="password" x-model="projectCreds.kaltura.admin_secret" placeholder="*************" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">User ID</label><input type="text" x-model="projectCreds.kaltura.user_id" placeholder="admin@company.com" class="input-field mt-1.5"></div>
+          </div>
+          <div class="mt-4 flex items-center gap-3">
+            <button @click="saveProjectCreds()" :disabled="projectCredsSaving" class="btn-primary text-xs px-4 py-2" x-text="projectCredsSaving ? 'Saving…' : 'Save Source Credentials'"></button>
+            <div x-show="projectCredsMessage" x-transition class="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg"
+                 :class="projectCredsMessageType==='success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'">
+              <span x-text="projectCredsMessage"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Global settings below (AWS, Zoom, Migration) ── -->
         <div class="card-static p-6">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-sm font-bold text-gray-800 flex items-center gap-2.5">
-              <span class="dot" :class="(status.connections || {}).kaltura ? 'dot-green' : 'dot-yellow'"></span> Kaltura
+              <span class="dot" :class="(status.connections || {}).kaltura ? 'dot-green' : 'dot-yellow'"></span> Kaltura <span class="text-[10px] text-gray-400 font-normal">(global fallback)</span>
             </h3>
-            <button @click="testConnection('kaltura')" class="text-xs text-brand-600 hover:text-brand-700 font-semibold px-3 py-1 rounded-lg hover:bg-brand-50 transition-colors">Test Connection</button>
+            <button @click="testConnection('kaltura')" class="text-xs text-brand-600 hover:text-brand-700 font-semibold px-3 py-1 rounded-lg hover:bg-brand-50 transition-colors">Test</button>
           </div>
-          <p class="text-xs text-gray-400 mb-5 leading-relaxed">Your current video platform. Find credentials in Kaltura Admin &gt; Settings &gt; Integration.</p>
+          <p class="text-xs text-gray-400 mb-5 leading-relaxed">Fallback credentials used when no project-specific credentials are set. Find in Kaltura Admin &gt; Settings &gt; Integration.</p>
           <div class="space-y-4">
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Your organization's Kaltura account number. Find it in Kaltura admin under Settings > Integration Settings.">Partner ID</label><input type="text" x-model="settings.kaltura_partner_id" placeholder="12345" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="The API key from Kaltura. Keep this private — it grants access to your video library.">Admin Secret</label><input type="password" x-model="settings.kaltura_admin_secret" placeholder="*************" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="The email address of your Kaltura admin account.">User ID</label><input type="text" x-model="settings.kaltura_user_id" placeholder="admin@company.com" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Partner ID</label><input type="text" x-model="settings.kaltura_partner_id" placeholder="12345" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Admin Secret</label><input type="password" x-model="settings.kaltura_admin_secret" placeholder="*************" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">User ID</label><input type="text" x-model="settings.kaltura_user_id" placeholder="admin@company.com" class="input-field mt-1.5"></div>
           </div>
         </div>
 
@@ -1532,7 +1550,7 @@
 
       <!-- ─── SUB-TAB: Audit Trail ─── -->
       <div x-show="auditSubTab === 'trail'">
-        <div class="flex items-center gap-3 mb-4">
+        <div class="flex items-center gap-3 mb-4 flex-wrap">
           <select x-model="auditTrailFilter" @change="loadAuditTrail(1)" class="input-field w-52 text-sm">
             <option value="">All Events</option>
             <option value="login_success">Login Success</option>
@@ -1546,6 +1564,10 @@
           </select>
           <span class="text-xs text-gray-400" x-text="auditTrailTotal + ' events total'"></span>
           <button @click="loadAuditTrail(auditTrailPage)" class="text-xs text-brand-500 hover:text-brand-700 transition-colors">Refresh</button>
+          <a href="/api/audit/export" target="_blank" class="ml-auto text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100 transition-colors flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            Export CSV
+          </a>
         </div>
 
         <div x-show="auditTrailLoading" class="text-center py-16 text-gray-400 text-sm">Loading audit trail...</div>
@@ -1750,7 +1772,7 @@
         newProjectError: '',
 
         // Project credentials (per-project)
-        projectCreds: {},
+        projectCreds: { kaltura: { partner_id: '', admin_secret: '', user_id: '' } },
         projectCredsSaving: false,
         projectCredsMessage: '',
         projectCredsMessageType: '',
@@ -1963,7 +1985,13 @@
           if (!this.currentProjectSlug) return;
           try {
             const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, { headers: this._authHeaders() });
-            if (r.ok) this.projectCreds = await r.json();
+            if (r.ok) {
+              const d = await r.json();
+              const c = d.credentials || {};
+              this.projectCreds = {
+                kaltura: { partner_id: '', admin_secret: '', user_id: '', ...(c.kaltura || {}) },
+              };
+            }
           } catch(e) {}
         },
         async saveProjectCreds() {
@@ -1973,13 +2001,13 @@
           try {
             const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
               method: 'PUT', headers: this._authHeaders(),
-              body: JSON.stringify({ credentials: this.projectCreds })
+              body: JSON.stringify({ service: 'kaltura', credentials: this.projectCreds.kaltura || {} })
             });
             if (r.ok) {
-              this.projectCredsMessage = 'Credentials saved (encrypted)';
+              this.projectCredsMessage = 'Source credentials saved';
               this.projectCredsMessageType = 'success';
               await this.loadProjectCreds();
-              await this.loadStatus();
+              if (this.currentTab === 'migration') this.loadMigKaltura();
             } else {
               const d = await r.json();
               this.projectCredsMessage = d.detail || 'Save failed';
@@ -2137,6 +2165,7 @@
             const ps = Math.min(this.migKalturaPageSize, 100);
             const params = new URLSearchParams({ page: this.migKalturaPage, page_size: ps });
             if (this.migKalturaSearch) params.set('search', this.migKalturaSearch);
+            if (this.currentProjectSlug) params.set('project_slug', this.currentProjectSlug);
             const r = await fetch('/api/kaltura/videos?' + params, { headers: this._authHeaders() });
             if (r.ok) {
               const d = await r.json();

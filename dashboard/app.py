@@ -1572,11 +1572,41 @@ async def list_videos(
     if _demo_mode:
         all_videos = []
     else:
-        # Build video list from multiple sources (tracker + audit events)
+        # Build video list from multiple sources (DB first, then tracker + audit events)
         seen_ids: set[str] = set()
         all_videos = []
 
-        # 1. Load from state tracker (if available)
+        # 0. Primary source: Supabase video_migrations table (survives cold starts)
+        if _db.is_available():
+            try:
+                db_migrations = _db.get_all_video_migrations()
+                for vid, rec in db_migrations.items():
+                    seen_ids.add(vid)
+                    langs = [l for l in (rec.get("languages") or "").split(",") if l]
+                    all_videos.append({
+                        "id": vid,
+                        "title": rec.get("title", vid),
+                        "description": "",
+                        "duration": 0,
+                        "size_mb": rec.get("file_size_mb", 0),
+                        "size_bytes": 0,
+                        "format": "mp4",
+                        "codec": "",
+                        "resolution": "",
+                        "tags": "",
+                        "categories": "",
+                        "created_at": str(rec.get("migrated_at", "")),
+                        "status": rec.get("status", "completed"),
+                        "zoom_id": rec.get("zoom_id"),
+                        "caption_count": rec.get("caption_count", 0),
+                        "thumbnail_count": rec.get("thumbnail_count", 0),
+                        "languages": langs,
+                        "error": None,
+                    })
+            except Exception:
+                pass
+
+        # 1. Load from state tracker (if available, for in-progress videos not yet in DB)
         try:
             state = _pipeline.tracker._load_local() if _pipeline else {}
             for vid, info in state.items():
@@ -2133,18 +2163,26 @@ async def browse_kaltura_videos(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
     search: Optional[str] = Query(None, max_length=200),
+    project_slug: Optional[str] = Query(None, max_length=100),
     user: dict = Depends(_verify_jwt),
 ):
     """Browse live Kaltura library with migration status overlay."""
-    if _demo_mode or _pipeline is None:
+    # Use project-specific pipeline if slug provided, fall back to global
+    pipeline = None
+    if project_slug and _db.is_available():
+        pipeline = _get_pipeline_for_project(project_slug)
+    if pipeline is None:
+        pipeline = _pipeline
+
+    if _demo_mode or pipeline is None:
         return JSONResponse(
-            {"error": "Connect your Kaltura account in Settings before browsing videos."},
+            {"error": "Connect your source account in Settings before browsing videos."},
             status_code=400,
         )
 
     try:
         # Query live Kaltura API
-        kaltura_result = _pipeline.kaltura.list_videos(
+        kaltura_result = pipeline.kaltura.list_videos(
             page=page, page_size=page_size, search=search
         )
         entries = kaltura_result.get("objects", [])
@@ -2158,7 +2196,7 @@ async def browse_kaltura_videos(
                 db_state = _db.get_video_migrations_bulk(entry_ids)
             except Exception:
                 pass
-        tracker_state = _pipeline.tracker.get_all_videos() if hasattr(_pipeline.tracker, "get_all_videos") else {}
+        tracker_state = pipeline.tracker.get_all_videos() if hasattr(pipeline.tracker, "get_all_videos") else {}
 
         videos = []
         for entry in entries:
