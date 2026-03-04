@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .aws_staging import MigrationStateTracker, MigrationStatus, S3Staging
-from .caption_utils import convert_srt_to_vtt, detect_caption_format, convert_srt_file_to_vtt
+from .caption_utils import convert_srt_file_to_vtt
 from .config import Config
 from .kaltura_client import KalturaClient
 from .zoom_client import ZoomClient
@@ -78,8 +78,9 @@ class MigrationPipeline:
         """
         Build a Zoom description from Kaltura metadata.
 
-        Appends tags and categories since Zoom doesn't have
-        separate fields for these.
+        Categories and provenance are appended to the description.
+        Tags are extracted separately via _extract_tags() for use as
+        proper Zoom API tag fields.
         """
         parts = []
 
@@ -87,13 +88,9 @@ class MigrationPipeline:
         if desc:
             parts.append(desc)
 
-        tags = metadata.get("tags", "")
-        if tags:
-            parts.append(f"\nTags: {tags}")
-
         categories = metadata.get("categories", "")
         if categories:
-            parts.append(f"Categories: {categories}")
+            parts.append(f"\nCategories: {categories}")
 
         duration = metadata.get("duration", 0)
         if duration:
@@ -103,6 +100,15 @@ class MigrationPipeline:
         parts.append(f"\n[Migrated from Kaltura ID: {metadata.get('kaltura_id', 'unknown')}]")
 
         return "\n".join(parts)
+
+    @staticmethod
+    def _extract_tags(metadata: dict) -> list[str]:
+        """Extract tags from Kaltura metadata as a list for the Zoom API."""
+        raw = metadata.get("tags", "")
+        if not raw:
+            return []
+        # Kaltura stores tags as comma-separated string
+        return [t.strip() for t in raw.split(",") if t.strip()][:20]
 
     def migrate_single_video(self, entry_id: str) -> MigrationResult:
         """
@@ -180,15 +186,37 @@ class MigrationPipeline:
                 zoom_meta = apply_mappings(metadata, self._field_mappings)
                 zoom_title = zoom_meta.get("title", title) or title
                 zoom_description = zoom_meta.get("description", "")
+                zoom_tags = zoom_meta.get("tags", self._extract_tags(metadata))
             else:
                 zoom_title = title
                 zoom_description = self._build_zoom_description(metadata)
+                zoom_tags = self._extract_tags(metadata)
+
+            # Build upload kwargs — hub_id routes Events uploads to the correct hub
+            upload_kwargs: dict = {}
+            hub_id = self.config.zoom.hub_id
+            if hub_id:
+                upload_kwargs["hub_id"] = hub_id
+            if zoom_tags:
+                upload_kwargs["tags"] = zoom_tags
+
             zoom_result = self.zoom.upload_video(
                 local_path,
                 title=zoom_title,
                 description=zoom_description,
+                **upload_kwargs,
             )
             zoom_id = zoom_result.get("id", "") or zoom_result.get("video_id", "")
+
+            # Auto-assign to VOD channel if configured
+            vod_channel_id = self.config.zoom.vod_channel_id
+            if zoom_id and hub_id and vod_channel_id:
+                try:
+                    self.zoom.add_to_vod_channel(hub_id, vod_channel_id, [zoom_id])
+                    logger.info("[%s] Added to VOD channel %s", entry_id, vod_channel_id)
+                except Exception as vc_err:
+                    logger.warning("[%s] VOD channel assignment failed (non-fatal): %s",
+                                   entry_id, vc_err)
 
             # Step 5: Migrate captions (SRT → VTT conversion + upload)
             self._notify(entry_id, "captions", title)

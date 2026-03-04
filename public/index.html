@@ -526,7 +526,7 @@
                 <svg class="w-4 h-4 text-red-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 <div class="flex-1 min-w-0">
                   <p class="text-xs font-medium text-red-700 truncate" x-text="v.title"></p>
-                  <p class="text-[10px] text-red-500 truncate" x-text="v.error || 'Unknown error'"></p>
+                  <p class="text-[10px] text-red-500 truncate" x-text="friendlyError(v.error) || 'Unknown error'"></p>
                 </div>
               </div>
             </template>
@@ -546,7 +546,7 @@
                 <svg class="w-4 h-4 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 <div class="flex-1 min-w-0">
                   <p class="text-xs font-medium text-gray-600 truncate" x-text="v.title"></p>
-                  <p class="text-[10px] text-red-400 truncate" x-text="v.error || 'Failed'"></p>
+                  <p class="text-[10px] text-red-400 truncate" x-text="friendlyError(v.error) || 'Failed'"></p>
                 </div>
               </div>
             </template>
@@ -874,7 +874,7 @@
               </button>
               <div x-show="zoomHubs.length > 0">
                 <label class="text-[10px] text-gray-500 font-semibold uppercase">Hub</label>
-                <select x-model="selectedHubId" @change="loadVodChannels()" class="input-field mt-1 text-xs">
+                <select x-model="selectedHubId" @change="loadVodChannels(); settings.zoom_hub_id = selectedHubId" class="input-field mt-1 text-xs">
                   <option value="">— Select Hub —</option>
                   <template x-for="h in zoomHubs" :key="h.hub_id">
                     <option :value="h.hub_id" x-text="h.name || h.hub_id"></option>
@@ -883,7 +883,7 @@
               </div>
               <div x-show="selectedHubId && zoomVodChannels.length > 0">
                 <label class="text-[10px] text-gray-500 font-semibold uppercase">VOD Channel</label>
-                <select x-model="selectedVodChannelId" class="input-field mt-1 text-xs">
+                <select x-model="selectedVodChannelId" @change="settings.zoom_vod_channel_id = selectedVodChannelId" class="input-field mt-1 text-xs">
                   <option value="">— Select Channel —</option>
                   <template x-for="ch in zoomVodChannels" :key="ch.channel_id">
                     <option :value="ch.channel_id" x-text="ch.name || ch.channel_id"></option>
@@ -1765,6 +1765,7 @@
           aws_s3_bucket: '', aws_region: 'us-east-1', aws_state_table: 'video-migration-state', aws_endpoint_url: '',
           zoom_client_id: '', zoom_client_secret: '', zoom_account_id: '',
           zoom_target_api: 'clips',
+          zoom_hub_id: '', zoom_vod_channel_id: '',
           skip_s3: '',
           batch_size: '10', max_concurrency: '5', retry_attempts: '3',
         },
@@ -2242,6 +2243,13 @@
               const d = await r.json();
               for (const [key, val] of Object.entries(d)) {
                 if (key in this.settings) this.settings[key] = val || '';
+              }
+              // Restore hub/channel selection from persisted settings
+              if (this.settings.zoom_hub_id) {
+                this.selectedHubId = this.settings.zoom_hub_id;
+              }
+              if (this.settings.zoom_vod_channel_id) {
+                this.selectedVodChannelId = this.settings.zoom_vod_channel_id;
               }
             }
           } catch(e) { /* settings load failed silently */ }

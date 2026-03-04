@@ -303,21 +303,28 @@ class ZoomClient:
 
         url = f"{ZOOM_FILE_API}/zoom_events/files"
 
-        with open(path, "rb") as f:
-            encoder = MultipartEncoder(fields={
-                "file": (path.name, f, "video/mp4"),
-            })
+        fields: dict = {
+            "file": (path.name, open(path, "rb"), "video/mp4"),
+        }
+        if hub_id:
+            fields["hub_id"] = hub_id
+
+        try:
+            encoder = MultipartEncoder(fields=fields)
             headers = {**self._headers(), "Content-Type": encoder.content_type}
 
             logger.info(
-                "Uploading %.1f MB to Zoom Events (%s): %s",
-                file_size / (1024 * 1024), url, title,
+                "Uploading %.1f MB to Zoom Events (%s): %s (hub=%s)",
+                file_size / (1024 * 1024), url, title, hub_id or "none",
             )
             # Must follow redirects and retain Authorization header
             resp = requests.post(
                 url, headers=headers, data=encoder,
                 timeout=600, allow_redirects=True,
             )
+        finally:
+            # Ensure the file handle opened in fields dict is closed
+            fields["file"][1].close()
 
         if not resp.ok:
             logger.error(

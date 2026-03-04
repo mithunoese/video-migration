@@ -77,6 +77,10 @@ class ZoomConfig:
     # REST API base URL (for metadata, channels, etc. — NOT for uploads).
     # File uploads always go to https://fileapi.zoom.us/v2 via ZoomClient.
     base_url: str = "https://api.zoom.us/v2"
+    # Hub ID for Zoom Events uploads — routes videos to the correct hub
+    hub_id: str = ""
+    # VOD channel ID — auto-assigns videos to this channel after upload
+    vod_channel_id: str = ""
 
     @classmethod
     def from_env(cls):
@@ -85,6 +89,8 @@ class ZoomConfig:
             client_secret=os.getenv("ZOOM_CLIENT_SECRET", ""),
             account_id=os.getenv("ZOOM_ACCOUNT_ID", ""),
             target_api=os.getenv("ZOOM_TARGET_API", "clips"),
+            hub_id=os.getenv("ZOOM_HUB_ID", ""),
+            vod_channel_id=os.getenv("ZOOM_VOD_CHANNEL_ID", ""),
         )
 
 

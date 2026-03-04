@@ -67,8 +67,49 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 # Default password hash for "admin" — MUST be changed in production via ADMIN_PASSWORD_HASH env var
 _default_admin_hash = bcrypt.hashpw("admin".encode(), bcrypt.gensalt()).decode()
 ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", _default_admin_hash)
+_USING_DEFAULT_PASSWORD = not os.environ.get("ADMIN_PASSWORD_HASH")
+if _USING_DEFAULT_PASSWORD:
+    logger.warning(
+        "⚠️  ADMIN_PASSWORD_HASH not set — using default password 'admin'. "
+        "Set ADMIN_PASSWORD_HASH in your environment for production!"
+    )
 
 security_scheme = HTTPBearer(auto_error=False)
+
+
+def _safe_error(e: Exception, context: str = "Operation") -> str:
+    """Return a sanitized error message safe for API responses.
+
+    Strips internal paths, hostnames, and stack details.
+    The full error is logged server-side.
+    """
+    logger.error("%s failed: %s", context, e, exc_info=True)
+    err_type = type(e).__name__
+    # Map common exception types to user-friendly messages
+    _ERR_MAP = {
+        "ConnectionError": "Could not connect to external service",
+        "Timeout": "Request timed out",
+        "ReadTimeout": "Request timed out",
+        "ConnectTimeout": "Connection timed out",
+        "HTTPError": "External API returned an error",
+        "AuthenticationError": "Authentication failed — check credentials",
+        "PermissionError": "Permission denied",
+        "FileNotFoundError": "Required file not found",
+        "ValueError": "Invalid input provided",
+    }
+    for key, msg in _ERR_MAP.items():
+        if key in err_type:
+            return f"{context} failed: {msg}"
+    return f"{context} failed. Check server logs for details."
+
+
+# Regex for valid Kaltura entry IDs and Zoom video IDs
+_VALID_ENTRY_ID = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def _validate_entry_id(entry_id: str) -> bool:
+    """Validate an entry/video ID contains only safe characters."""
+    return bool(_VALID_ENTRY_ID.match(entry_id))
 
 
 def _check_password(password: str, hashed: str) -> bool:
@@ -209,6 +250,8 @@ _SETTINGS_FIELDS = {
     "zoom_client_secret":    {"env": "ZOOM_CLIENT_SECRET",    "secret": True},
     "zoom_account_id":       {"env": "ZOOM_ACCOUNT_ID",       "secret": False},
     "zoom_target_api":       {"env": "ZOOM_TARGET_API",       "secret": False},
+    "zoom_hub_id":           {"env": "ZOOM_HUB_ID",          "secret": False},
+    "zoom_vod_channel_id":   {"env": "ZOOM_VOD_CHANNEL_ID",  "secret": False},
     "skip_s3":               {"env": "SKIP_S3",              "secret": False},
     "batch_size":            {"env": "BATCH_SIZE",            "secret": False},
     "max_concurrency":       {"env": "MAX_CONCURRENCY",       "secret": False},
@@ -293,6 +336,8 @@ def _maybe_create_default_project():
                  "retry_delay": int(os.environ.get("RETRY_DELAY", "5")),
                  "skip_s3": os.environ.get("SKIP_S3", "").lower() in ("true", "1"),
                  "zoom_target_api": os.environ.get("ZOOM_TARGET_API", "clips"),
+                 "zoom_hub_id": os.environ.get("ZOOM_HUB_ID", ""),
+                 "zoom_vod_channel_id": os.environ.get("ZOOM_VOD_CHANNEL_ID", ""),
              })),
         )
         if not row:
@@ -1630,7 +1675,7 @@ async def list_zoom_hubs(user: dict = Depends(_verify_jwt)):
         return {"hubs": hubs}
     except Exception as e:
         logger.error("Failed to list Zoom hubs: %s", e)
-        return JSONResponse({"error": f"Failed to list hubs: {e}"}, status_code=500)
+        return JSONResponse({"error": _safe_error(e, "List hubs")}, status_code=500)
 
 
 @app.get("/api/zoom/hubs/{hub_id}/videos")
@@ -1651,7 +1696,7 @@ async def list_hub_videos(
         return result
     except Exception as e:
         logger.error("Failed to list hub videos: %s", e)
-        return JSONResponse({"error": f"Failed to list hub videos: {e}"}, status_code=500)
+        return JSONResponse({"error": _safe_error(e, "List hub videos")}, status_code=500)
 
 
 @app.get("/api/zoom/hubs/{hub_id}/vod_channels")
@@ -1664,7 +1709,7 @@ async def list_vod_channels(hub_id: str, user: dict = Depends(_verify_jwt)):
         return {"vod_channels": channels}
     except Exception as e:
         logger.error("Failed to list VOD channels: %s", e)
-        return JSONResponse({"error": f"Failed to list VOD channels: {e}"}, status_code=500)
+        return JSONResponse({"error": _safe_error(e, "List VOD channels")}, status_code=500)
 
 
 class CreateVodChannelRequest(BaseModel):
@@ -1687,7 +1732,7 @@ async def create_vod_channel(hub_id: str, req: CreateVodChannelRequest, user: di
         return result
     except Exception as e:
         logger.error("Failed to create VOD channel: %s", e)
-        return JSONResponse({"error": f"Failed to create VOD channel: {e}"}, status_code=500)
+        return JSONResponse({"error": _safe_error(e, "Create VOD channel")}, status_code=500)
 
 
 class AddToVodChannelRequest(BaseModel):
@@ -1708,7 +1753,7 @@ async def add_videos_to_vod_channel(
         return result
     except Exception as e:
         logger.error("Failed to add videos to VOD channel: %s", e)
-        return JSONResponse({"error": f"Failed to add to VOD channel: {e}"}, status_code=500)
+        return JSONResponse({"error": _safe_error(e, "Add to VOD channel")}, status_code=500)
 
 
 @app.get("/api/zoom/events/video/{video_id}/metadata")
@@ -1721,7 +1766,7 @@ async def get_events_video_metadata(video_id: str, user: dict = Depends(_verify_
         return result
     except Exception as e:
         logger.error("Failed to get Events video metadata: %s", e)
-        return JSONResponse({"error": f"Failed to get metadata: {e}"}, status_code=500)
+        return JSONResponse({"error": _safe_error(e, "Get metadata")}, status_code=500)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1762,7 +1807,7 @@ async def generate_source_manifest(request: Request, user: dict = Depends(_verif
         }
     except Exception as e:
         logger.error("Manifest generation failed: %s", e)
-        return JSONResponse({"error": f"Manifest generation failed: {e}"}, status_code=500)
+        return JSONResponse({"error": _safe_error(e, "Manifest generation")}, status_code=500)
 
 
 @app.get("/api/kaltura/caption-stats")
@@ -1783,12 +1828,14 @@ async def get_caption_format_stats(
         return stats
     except Exception as e:
         logger.error("Caption stats failed: %s", e)
-        return JSONResponse({"error": f"Caption stats failed: {e}"}, status_code=500)
+        return JSONResponse({"error": _safe_error(e, "Caption stats")}, status_code=500)
 
 
 @app.get("/api/kaltura/entry/{entry_id}/captions")
 async def get_entry_captions(entry_id: str, user: dict = Depends(_verify_jwt)):
     """List caption assets for a specific Kaltura entry."""
+    if not _validate_entry_id(entry_id):
+        return JSONResponse({"error": "Invalid entry ID format"}, status_code=400)
     if _demo_mode or _pipeline is None:
         return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
 
@@ -1817,6 +1864,8 @@ async def get_entry_captions(entry_id: str, user: dict = Depends(_verify_jwt)):
 @app.get("/api/kaltura/entry/{entry_id}/thumbnails")
 async def get_entry_thumbnails(entry_id: str, user: dict = Depends(_verify_jwt)):
     """List thumbnail assets for a specific Kaltura entry."""
+    if not _validate_entry_id(entry_id):
+        return JSONResponse({"error": "Invalid entry ID format"}, status_code=400)
     if _demo_mode or _pipeline is None:
         return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
 
@@ -1942,7 +1991,7 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
         except Exception as e:
             _broadcast_sse({
                 "type": "migration_error",
-                "message": f"Batch migration error: {e}",
+                "message": _safe_error(e, "Batch migration"),
             })
         finally:
             _migration_running = False
@@ -1978,13 +2027,14 @@ async def get_migration_report(user: dict = Depends(_verify_jwt)):
         try:
             report_data = json.loads(json_files[0].read_text(encoding="utf-8"))
             result["report"] = report_data
-            result["json_file"] = str(json_files[0])
+            result["json_file"] = json_files[0].name  # filename only, no server path
         except Exception as e:
-            result["json_error"] = str(e)
+            logger.error("Failed to read migration report JSON: %s", e)
+            result["json_error"] = "Could not parse report file"
 
     if csv_files:
         result["csv"] = csv_files[0].read_text(encoding="utf-8")
-        result["csv_file"] = str(csv_files[0])
+        result["csv_file"] = csv_files[0].name  # filename only, no server path
 
     return result
 
@@ -2012,6 +2062,8 @@ async def get_migration_checkpoint(user: dict = Depends(_verify_jwt)):
 
 @app.get("/api/videos/{video_id}")
 async def get_video(video_id: str, user: dict = Depends(_verify_jwt)):
+    if not _validate_entry_id(video_id):
+        return JSONResponse({"error": "Invalid video ID format"}, status_code=400)
     if _demo_mode:
         return JSONResponse({"error": "No videos — connect your services in Settings first"}, status_code=404)
 
@@ -3150,7 +3202,7 @@ def _run_real_migration(batch_size: int, video_ids: Optional[List[str]] = None):
     except Exception as e:
         _broadcast_sse({
             "type": "migration_error",
-            "message": f"Migration error: {e}",
+            "message": _safe_error(e, "Migration"),
         })
     finally:
         _migration_running = False
