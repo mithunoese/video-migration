@@ -235,7 +235,7 @@ add_icon_card(slide, Inches(4.9), Inches(2.0), Inches(3.8), Inches(4.8),
 add_icon_card(slide, Inches(9.0), Inches(2.0), Inches(3.8), Inches(4.8),
               "\u2713", "Deployed and Running",
               "Live on Vercel \u2014 right now\n\n"
-              "\u2022 video-migration.vercel.app\n"
+              "\u2022 video-migration-tau.vercel.app\n"
               "\u2022 Demo mode with 847 test videos\n"
               "\u2022 Architecture diagram page\n"
               "\u2022 CLI + Dashboard + API\n"
@@ -544,7 +544,7 @@ add_text_box(slide, Inches(7.3), Inches(2.15), Inches(5.2), Inches(0.4),
              "\U0001F310  Live Deployment", font_size=20, color=TEAL, bold=True)
 
 deploy_items = [
-    "\u2022 Dashboard: video-migration.vercel.app",
+    "\u2022 Dashboard: video-migration-tau.vercel.app",
     "\u2022 Architecture: .../architecture.html",
     "\u2022 FastAPI serverless via @vercel/python",
     "\u2022 Demo mode: 847 deterministic test videos",
@@ -734,7 +734,7 @@ for i, (num, title, desc) in enumerate(actions):
 
 # Links
 add_text_box(slide, Inches(0.8), Inches(6.3), Inches(10), Inches(0.8),
-             "Dashboard: video-migration.vercel.app\n"
+             "Dashboard: video-migration-tau.vercel.app\n"
              "Security Protocols: Companion deck (11 slides)  |  Test: python run.py test",
              font_size=13, color=MID_GRAY)
 

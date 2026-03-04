@@ -142,8 +142,8 @@ python3 run_dashboard.py
 ```
 
 ### Dashboard (deployed)
-- Live at: https://video-migration.vercel.app/
-- Architecture: https://video-migration.vercel.app/architecture.html
+- Live at: https://video-migration-tau.vercel.app/
+- Architecture: https://video-migration-tau.vercel.app/architecture.html
 
 ### Generate Presentations
 ```bash
