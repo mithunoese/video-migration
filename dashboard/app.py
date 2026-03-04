@@ -589,6 +589,19 @@ def _invalidate_project_pipeline(slug: str):
 
 # ── Project CRUD ──
 
+@app.get("/api/projects/debug-err")
+async def debug_projects_err(user: dict = Depends(_verify_jwt)):
+    """Temporary debug: expose raw exception from fetch_all."""
+    import traceback
+    try:
+        rows = _db.fetch_all(
+            "SELECT id, name, slug, config_json, created_at FROM projects ORDER BY created_at DESC"
+        )
+        return {"ok": True, "count": len(rows), "sample": rows[:1]}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "trace": traceback.format_exc()}
+
+
 @app.get("/api/projects")
 async def list_projects(user: dict = Depends(_verify_jwt)):
     """List all projects."""
