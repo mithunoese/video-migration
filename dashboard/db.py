@@ -108,15 +108,27 @@ def get_conn():
 # ---------------------------------------------------------------------------
 
 def _serialise_value(val: Any) -> Any:
-    """Ensure DB values are JSON-serialisable (UUID → str, etc.)."""
+    """Ensure DB values are JSON-serialisable (UUID → str, JSONB → dict, etc.)."""
     import uuid as _uuid
+    import json as _json
     from datetime import datetime as _dt, date as _date
     if isinstance(val, _uuid.UUID):
         return str(val)
     if isinstance(val, (_dt, _date)):
         return val.isoformat()
     if isinstance(val, memoryview):
-        return bytes(val)
+        # pg8000 returns JSONB as memoryview — decode to dict/list
+        raw = bytes(val).decode("utf-8")
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return raw
+    if isinstance(val, bytes):
+        raw = val.decode("utf-8")
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return raw
     return val
 
 
