@@ -169,13 +169,16 @@ class MigrationPipeline:
                 self.kaltura.download_video(download_url, local_path)
             file_size_mb = Path(local_path).stat().st_size / (1024 * 1024)
 
-            # Step 3: Stage to S3 (backup/audit copy — skipped if SKIP_S3)
-            if self.s3:
+            # Step 3: Stage to S3 (backup/audit copy — skipped if SKIP_S3 or below threshold)
+            s3_threshold = self.config.s3_size_threshold_mb
+            skip_s3_for_size = (s3_threshold > 0 and file_size_mb < s3_threshold)
+            if self.s3 and not skip_s3_for_size:
                 s3_key = f"{self.config.aws.staging_prefix}{safe_id}.mp4"
                 self.s3.upload_file(local_path, s3_key)
                 self.tracker.update_status(entry_id, MigrationStatus.STAGED, metadata=metadata)
             else:
-                logger.info("[%s] S3 staging skipped (direct mode)", entry_id)
+                reason = "SKIP_S3" if self.skip_s3 else f"below threshold ({file_size_mb:.0f}MB < {s3_threshold:.0f}MB)"
+                logger.info("[%s] S3 staging skipped (%s)", entry_id, reason)
                 self.tracker.update_status(entry_id, MigrationStatus.STAGED, metadata=metadata)
             self._notify(entry_id, "staging", title)
 

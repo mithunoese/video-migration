@@ -1483,6 +1483,7 @@ async def get_status(user: dict = Depends(_verify_jwt)):
             },
             "skip_s3": skip_s3,
             "demo_mode": True,
+            "db_available": _db.is_available(),
             "costs": {"total_spent": 0, "projected_monthly": 0, "cost_per_video": 0},
         }
 
@@ -1516,6 +1517,7 @@ async def get_status(user: dict = Depends(_verify_jwt)):
         "connections": connections,
         "skip_s3": skip_s3,
         "demo_mode": False,
+        "db_available": _db.is_available(),
         "costs": {
             "total_spent": cost_data["total_spent"],
             "projected_monthly": cost_data.get("total_spent", 0),

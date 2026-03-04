@@ -156,6 +156,19 @@ class Config:
         """Whether to skip S3 staging (direct Kaltura → Zoom)."""
         return os.getenv("SKIP_S3", "").strip().lower() in ("true", "1", "yes")
 
+    @property
+    def s3_size_threshold_mb(self) -> float:
+        """File size threshold in MB for S3 staging.
+
+        Files smaller than this skip S3 staging and upload directly to Zoom.
+        Files larger use S3 as an intermediate staging area.
+        Set to 0 to always stage (default behavior when S3 is enabled).
+        """
+        try:
+            return float(os.getenv("S3_SIZE_THRESHOLD_MB", "0"))
+        except ValueError:
+            return 0
+
     @classmethod
     def from_db(cls, credentials: dict[str, dict[str, str]], config_json: dict | None = None):
         """Build Config from database credential dicts.
