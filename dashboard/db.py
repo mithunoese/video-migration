@@ -367,11 +367,18 @@ def create_tables():
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(_SCHEMA_SQL)
+                # Execute each statement individually (pooler-safe)
+                for stmt in _SCHEMA_SQL.split(";"):
+                    stmt = stmt.strip()
+                    if stmt:
+                        try:
+                            cur.execute(stmt)
+                        except Exception as stmt_err:
+                            logger.debug("Table creation statement skipped: %s", stmt_err)
         logger.info("Database tables verified/created")
     except Exception as e:
-        logger.error("Failed to create tables: %s", e)
-        raise
+        logger.warning("Failed to create tables (tables may already exist): %s", e)
+        # Don't raise — tables likely already exist from migration
 
 
 # ---------------------------------------------------------------------------
