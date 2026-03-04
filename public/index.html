@@ -1632,7 +1632,7 @@
       <div class="flex gap-1 mb-6 bg-gray-100 rounded-xl p-1 w-fit">
         <button @click="auditSubTab='reconciliation'; loadReconciliation()" :class="auditSubTab==='reconciliation' ? 'bg-white shadow-sm text-brand-700 font-semibold' : 'text-gray-500 hover:text-gray-700'" class="px-4 py-2 rounded-lg text-sm transition-all">Pipeline Reconciliation</button>
         <button @click="auditSubTab='trail'; loadAuditTrail()" :class="auditSubTab==='trail' ? 'bg-white shadow-sm text-brand-700 font-semibold' : 'text-gray-500 hover:text-gray-700'" class="px-4 py-2 rounded-lg text-sm transition-all">Audit Trail</button>
-        <button @click="auditSubTab='journey'; if(!reconData) loadReconciliation()" :class="auditSubTab==='journey' ? 'bg-white shadow-sm text-brand-700 font-semibold' : 'text-gray-500 hover:text-gray-700'" class="px-4 py-2 rounded-lg text-sm transition-all">Video Journey</button>
+        <button @click="auditSubTab='journey'; loadJourneyVideos()" :class="auditSubTab==='journey' ? 'bg-white shadow-sm text-brand-700 font-semibold' : 'text-gray-500 hover:text-gray-700'" class="px-4 py-2 rounded-lg text-sm transition-all">Video Journey</button>
       </div>
 
       <!-- ─── SUB-TAB: Pipeline Reconciliation ─── -->
@@ -1869,33 +1869,40 @@
 
       <!-- ─── SUB-TAB: Video Journey ─── -->
       <div x-show="auditSubTab === 'journey'" class="flex gap-5">
-        <!-- Left: video list -->
+        <!-- Left: video list (loaded directly from DB, all statuses) -->
         <div class="w-64 flex-shrink-0">
           <div class="card-static overflow-hidden">
             <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
               <span class="text-xs font-bold text-gray-600 uppercase tracking-wide">All Videos</span>
-              <span class="text-[10px] text-gray-400" x-text="(reconData?.destination?.videos || []).length + ' migrated'"></span>
+              <div class="flex items-center gap-2">
+                <span class="text-[10px] text-gray-400" x-text="journeyVideos.length + ' total'"></span>
+                <button @click="loadJourneyVideos()" class="text-gray-300 hover:text-gray-500">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                </button>
+              </div>
             </div>
-            <div class="overflow-y-auto" style="max-height: 600px;">
-              <!-- From reconciliation data (completed) -->
-              <template x-for="v in (reconData?.destination?.videos || [])" :key="v.video_id + '-jlist'">
-                <div @click="loadVideoJourney(v.video_id)"
-                     class="px-3 py-2.5 border-b border-gray-50 cursor-pointer hover:bg-brand-50/40 transition-colors"
-                     :class="journeyVideoId === v.video_id ? 'bg-brand-50 border-l-2 border-l-brand-500' : ''">
-                  <p class="text-xs font-medium text-gray-700 truncate" x-text="v.title || v.video_id"></p>
-                  <p class="text-[10px] text-green-500 font-semibold">completed</p>
+            <!-- Search filter -->
+            <div class="px-3 py-2 border-b border-gray-50">
+              <input type="text" x-model="journeySearch" placeholder="Filter videos…" class="w-full text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 focus:border-brand-400 outline-none">
+            </div>
+            <div class="overflow-y-auto" style="max-height: 540px;">
+              <template x-if="journeyVideosLoading">
+                <div class="px-4 py-8 text-center text-xs text-gray-300">Loading…</div>
+              </template>
+              <template x-for="v in journeyVideos.filter(v => !journeySearch || (v.title||v.id||'').toLowerCase().includes(journeySearch.toLowerCase()))" :key="v.id + '-jlist'">
+                <div @click="loadVideoJourney(v.id)"
+                     class="px-3 py-2.5 border-b border-gray-50 cursor-pointer hover:bg-brand-50/30 transition-colors"
+                     :class="journeyVideoId === v.id ? 'bg-brand-50 border-l-2 border-l-brand-500' : ''">
+                  <p class="text-xs font-medium text-gray-700 truncate" x-text="v.title || v.id"></p>
+                  <div class="flex items-center gap-1.5 mt-0.5">
+                    <span class="text-[10px] font-semibold"
+                      :class="v.status==='completed' ? 'text-green-500' : v.status==='failed' ? 'text-red-400' : v.status==='uploading'||v.status==='downloading' ? 'text-amber-500' : 'text-gray-400'"
+                      x-text="v.status || 'pending'"></span>
+                    <span x-show="v.zoom_id" class="text-[10px] text-brand-400 font-mono truncate" x-text="'→ ' + (v.zoom_id||'').slice(0,10)"></span>
+                  </div>
                 </div>
               </template>
-              <!-- Failed / issues -->
-              <template x-for="v in (reconData?.issues || [])" :key="v.video_id + '-jissue'">
-                <div @click="loadVideoJourney(v.video_id)"
-                     class="px-3 py-2.5 border-b border-gray-50 cursor-pointer hover:bg-red-50/40 transition-colors"
-                     :class="journeyVideoId === v.video_id ? 'bg-red-50 border-l-2 border-l-red-400' : ''">
-                  <p class="text-xs font-medium text-gray-700 truncate" x-text="v.title || v.video_id"></p>
-                  <p class="text-[10px] text-red-400 font-semibold">failed</p>
-                </div>
-              </template>
-              <div x-show="!reconData?.destination?.videos?.length && !reconData?.issues?.length" class="px-4 py-8 text-center text-xs text-gray-300">No migrated videos yet</div>
+              <div x-show="!journeyVideosLoading && journeyVideos.length === 0" class="px-4 py-8 text-center text-xs text-gray-300">No videos yet — migrate some first</div>
             </div>
           </div>
           <!-- Manual lookup fallback -->
@@ -2137,6 +2144,9 @@
         reconData: null,
         reconLoading: false,
         journeyVideoId: null,
+        journeyVideos: [],
+        journeyVideosLoading: false,
+        journeySearch: '',
         journeyData: null,
         journeyLoading: false,
 
@@ -2206,7 +2216,7 @@
             if (tab === 'field-mapping') this.loadFieldMappings();
             if (tab === 'settings') { this.loadSettings(); this.loadProjectCreds(); this.loadClientTokens(); this.loadCostProjection(); }
             if (tab === 'dryrun') { this.checkDryRunCheckpoint(); }
-            if (tab === 'audit') { this.loadReconciliation(); this.loadAuditTrail(); }
+            if (tab === 'audit') { this.loadReconciliation(); this.loadAuditTrail(); this.loadJourneyVideos(); }
           });
           this.$nextTick(() => this.renderStatusChart());
         },
@@ -2746,6 +2756,36 @@
         },
 
         // ── Audit & Reconciliation methods ──
+        async loadJourneyVideos() {
+          this.journeyVideosLoading = true;
+          try {
+            const p = new URLSearchParams({ page: 1, page_size: 500 });
+            if (this.currentProjectSlug) p.set('project_slug', this.currentProjectSlug);
+            const r = await fetch('/api/videos?' + p, { headers: this._authHeaders() });
+            if (r.ok) {
+              const d = await r.json();
+              // Merge DB records with any in-progress from pipeline
+              const dbVids = (d.videos || []).map(v => ({
+                id: v.kaltura_id || v.id,
+                title: v.title,
+                status: v.status || 'completed',
+                zoom_id: v.zoom_id,
+              }));
+              // Add any live in-progress from pipelineVideos not already in DB
+              const dbIds = new Set(dbVids.map(v => v.id));
+              const liveVids = Object.values(this.pipelineVideos || {})
+                .filter(v => !dbIds.has(v.id))
+                .map(v => ({
+                  id: v.id,
+                  title: v.title || v.id,
+                  status: v.stage === 'done' ? 'completed' : v.stage === 'error' ? 'failed' : 'in_progress',
+                  zoom_id: v.zoom_id || null,
+                }));
+              this.journeyVideos = [...liveVids, ...dbVids];
+            }
+          } catch(e) {}
+          this.journeyVideosLoading = false;
+        },
         async loadAuditTrail(page = 1) {
           this.auditTrailLoading = true;
           try {
