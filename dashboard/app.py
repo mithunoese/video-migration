@@ -513,7 +513,7 @@ class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     slug: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9\-]*$")
     description: str = Field(default="", max_length=1000)
-    source_platform: str = Field(default="kaltura", max_length=50)
+    source_platform: str = Field(default="", max_length=50)
     config_json: dict = Field(default_factory=dict)
 
 
@@ -521,7 +521,7 @@ class ProjectUpdate(BaseModel):
     name: Optional[str] = Field(default=None, max_length=100)
     description: Optional[str] = Field(default=None, max_length=1000)
     status: Optional[str] = Field(default=None, pattern=r"^(active|paused|archived|completed)$")
-    source_platform: Optional[str] = Field(default=None, pattern=r"^(kaltura|on24|brightcove|panopto)$")
+    source_platform: Optional[str] = Field(default=None, pattern=r"^(kaltura|on24|brightcove|panopto)?$")
     config_json: Optional[dict] = None
 
 
@@ -1431,7 +1431,7 @@ async def discover_videos(
     pipeline = _get_pipeline_for_project(slug)
 
     if pipeline is None:
-        # Try loading adapter directly
+        # Try loading adapter directly from DB credentials
         if not _db.is_available():
             raise HTTPException(status_code=400, detail="Pipeline not configured")
 
@@ -1439,11 +1439,35 @@ async def discover_videos(
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
 
+        platform = project.get("source_platform") or ""
+        if not platform:
+            return JSONResponse(
+                {"error": "no_credentials", "message": "No source platform configured. Select one in Settings."},
+                status_code=400,
+            )
+
         creds = _db.get_all_credentials(str(project["id"]))
+        platform_creds = creds.get(platform, {})
+        if not platform_creds:
+            return JSONResponse(
+                {"error": "no_credentials", "message": "No source credentials for this project. Add them in Settings."},
+                status_code=400,
+            )
+
         from migration.adapters import get_adapter
-        adapter_cls = get_adapter(project["source_platform"])
-        adapter = adapter_cls(creds.get(project["source_platform"], creds.get("kaltura", {})))
-        adapter.authenticate()
+        try:
+            adapter_cls = get_adapter(platform)
+        except ValueError:
+            return JSONResponse(
+                {"error": "no_credentials", "message": f"Unsupported platform: {platform}"},
+                status_code=400,
+            )
+        adapter = adapter_cls(platform_creds)
+        if not adapter.authenticate():
+            return JSONResponse(
+                {"error": "no_credentials", "message": "Authentication failed. Check credentials in Settings."},
+                status_code=400,
+            )
     else:
         # Use the pipeline's existing Kaltura client through the adapter
         from migration.adapters.kaltura_adapter import KalturaAdapter
@@ -1465,16 +1489,54 @@ async def discover_videos(
         min_duration=min_duration if min_duration > 0 else None,
     )
 
-    videos = [{
-        "id": a.id, "title": a.title, "description": a.description[:200],
-        "tags": a.tags, "categories": a.categories,
-        "duration": a.duration, "size_bytes": a.size_bytes,
-        "thumbnail_url": a.thumbnail_url, "created_at": a.created_at,
-    } for a in result.assets]
+    # Cross-reference with DB for migration status overlay (same as /api/kaltura/videos)
+    asset_ids = [a.id for a in result.assets]
+    db_state: dict = {}
+    if _db.is_available():
+        try:
+            db_state = _db.get_video_migrations_bulk(asset_ids)
+        except Exception:
+            pass
+
+    import math
+    total_pages = max(1, math.ceil(result.total_count / result.page_size))
+
+    videos = []
+    for a in result.assets:
+        db_rec = db_state.get(a.id)
+        if db_rec:
+            mig_status = db_rec.get("status", "completed")
+            zoom_id = db_rec.get("zoom_id")
+            caption_count = db_rec.get("caption_count", 0)
+            thumbnail_count = db_rec.get("thumbnail_count", 0)
+            languages = [l for l in (db_rec.get("languages") or "").split(",") if l]
+        else:
+            mig_status = "not_started"
+            zoom_id = None
+            caption_count = 0
+            thumbnail_count = 0
+            languages = []
+        videos.append({
+            "id": a.id,
+            "name": a.title,
+            "description": (a.description or "")[:200],
+            "tags": a.tags,
+            "categories": a.categories,
+            "duration": a.duration,
+            "data_size": a.size_bytes,
+            "thumbnail_url": a.thumbnail_url,
+            "created_at": a.created_at,
+            "migration_status": mig_status,
+            "zoom_id": zoom_id,
+            "caption_count": caption_count,
+            "thumbnail_count": thumbnail_count,
+            "languages": languages,
+        })
 
     return {
         "videos": videos,
         "total": result.total_count,
+        "total_pages": total_pages,
         "page": result.page,
         "page_size": result.page_size,
         "filters_applied": {

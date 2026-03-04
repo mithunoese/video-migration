@@ -30,6 +30,8 @@ class VideoAsset:
     updated_at: int = 0
     thumbnail_url: str = ""
     download_url: str = ""
+    caption_count: int = 0
+    thumbnail_count: int = 0
     custom_metadata: dict = field(default_factory=dict)
     raw_metadata: dict = field(default_factory=dict)
 
