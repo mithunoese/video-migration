@@ -527,7 +527,7 @@ class ProjectUpdate(BaseModel):
 
 
 class CredentialUpdate(BaseModel):
-    service: str = Field(..., pattern=r"^(kaltura|zoom|aws)$")
+    service: str = Field(..., pattern=r"^(kaltura|zoom|aws|on24|brightcove|panopto)$")
     credentials: dict = Field(...)
 
 
@@ -1520,18 +1520,38 @@ async def get_status(user: dict = Depends(_verify_jwt)):
             "costs": {"total_spent": 0, "projected_monthly": 0, "cost_per_video": 0},
         }
 
-    # Real mode
-    summary = _pipeline.tracker.get_summary()
-    videos = _pipeline.tracker._load_local()
-    total = sum(summary.values())
-
+    # Real mode — prefer DB for persistent counts
+    summary: dict = {}
     total_mb = 0
     migrated_mb = 0
-    for vid, info in videos.items():
-        size = info.get("metadata", {}).get("size_mb", 0)
-        total_mb += size
-        if info.get("status") == "completed":
-            migrated_mb += size
+    if _db.is_available():
+        try:
+            db_migrations = _db.get_all_video_migrations()
+            for vid, rec in db_migrations.items():
+                st = rec.get("status", "completed")
+                summary[st] = summary.get(st, 0) + 1
+                size = rec.get("file_size_mb", 0) or 0
+                total_mb += size
+                if st == "completed":
+                    migrated_mb += size
+        except Exception:
+            pass
+
+    # Merge in-progress tracker state (for active migrations)
+    try:
+        tracker_summary = _pipeline.tracker.get_summary() if _pipeline else {}
+        tracker_videos = _pipeline.tracker._load_local() if _pipeline else {}
+        for st, cnt in tracker_summary.items():
+            if st not in ("completed", "failed"):  # don't double-count finished ones
+                summary[st] = summary.get(st, 0) + cnt
+        for vid, info in tracker_videos.items():
+            size = info.get("metadata", {}).get("size_mb", 0) if isinstance(info.get("metadata"), dict) else 0
+            if info.get("status") not in ("completed", "failed"):
+                total_mb += size
+    except Exception:
+        pass
+
+    total = sum(summary.values())
 
     cost_data = _cost_tracker.get_breakdown()
 
@@ -1567,6 +1587,7 @@ async def list_videos(
     page_size: int = Query(50, ge=1, le=200),
     status: VideoStatus = Query(VideoStatus.ALL),
     search: str = Query("", max_length=200),
+    project_slug: Optional[str] = Query(None, max_length=100),
     user: dict = Depends(_verify_jwt),
 ):
     if _demo_mode:
@@ -1579,7 +1600,13 @@ async def list_videos(
         # 0. Primary source: Supabase video_migrations table (survives cold starts)
         if _db.is_available():
             try:
-                db_migrations = _db.get_all_video_migrations()
+                # Resolve project_id for filtering
+                _project_id_filter = None
+                if project_slug:
+                    _proj = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (project_slug,))
+                    if _proj:
+                        _project_id_filter = str(_proj["id"])
+                db_migrations = _db.get_all_video_migrations(project_id=_project_id_filter)
                 for vid, rec in db_migrations.items():
                     seen_ids.add(vid)
                     langs = [l for l in (rec.get("languages") or "").split(",") if l]
@@ -2167,12 +2194,18 @@ async def browse_kaltura_videos(
     user: dict = Depends(_verify_jwt),
 ):
     """Browse live Kaltura library with migration status overlay."""
-    # Use project-specific pipeline if slug provided, fall back to global
+    # Resolve pipeline — project-specific first, global fallback only for default/no project
     pipeline = None
     if project_slug and _db.is_available():
         pipeline = _get_pipeline_for_project(project_slug)
+        if pipeline is None:
+            # Project exists but has no source credentials configured yet
+            return JSONResponse(
+                {"error": "no_credentials", "message": "No source credentials for this project. Add them in Settings → Source Credentials."},
+                status_code=400,
+            )
     if pipeline is None:
-        pipeline = _pipeline
+        pipeline = _pipeline  # fallback only when no project_slug given
 
     if _demo_mode or pipeline is None:
         return JSONResponse(

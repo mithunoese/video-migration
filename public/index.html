@@ -130,33 +130,49 @@
 
   <!-- New Project Modal -->
   <div x-show="showNewProjectModal" x-cloak class="fixed inset-0 z-[90] flex items-center justify-center bg-black/40" @click.self="showNewProjectModal = false">
-    <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md" @click.stop>
-      <h3 class="text-lg font-bold text-gray-900 mb-4">New Project</h3>
+    <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg" @click.stop>
+      <h3 class="text-lg font-bold text-gray-900 mb-1">New Project</h3>
+      <p class="text-xs text-gray-400 mb-5">Each project connects to its own source account — credentials are isolated.</p>
       <div class="space-y-4">
-        <div>
-          <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Project Name</label>
-          <input x-model="newProject.name" @input="newProject.slug = newProject.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')" type="text" placeholder="e.g. Acme Corp Migration" class="input-field mt-1.5">
-        </div>
-        <div>
-          <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Slug</label>
-          <input x-model="newProject.slug" type="text" placeholder="acme-corp-migration" class="input-field mt-1.5">
-          <p class="text-[10px] text-gray-400 mt-1">URL-safe identifier, auto-generated from name</p>
-        </div>
-        <div>
-          <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Source Platform</label>
-          <select x-model="newProject.source_platform" class="input-field mt-1.5">
-            <option value="kaltura">Kaltura</option>
-            <option value="brightcove">Brightcove</option>
-            <option value="panopto">Panopto</option>
-            <option value="on24">ON24</option>
-          </select>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Project Name</label>
+            <input x-model="newProject.name" @input="newProject.slug = newProject.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')" type="text" placeholder="e.g. INDEED Migration" class="input-field mt-1.5">
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Source Platform</label>
+            <select x-model="newProject.source_platform" class="input-field mt-1.5">
+              <option value="kaltura">Kaltura</option>
+              <option value="brightcove">Brightcove</option>
+              <option value="panopto">Panopto</option>
+              <option value="on24">ON24</option>
+            </select>
+          </div>
         </div>
         <div>
           <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Description <span class="text-gray-300 normal-case">(optional)</span></label>
-          <input x-model="newProject.description" type="text" placeholder="Client description" class="input-field mt-1.5">
+          <input x-model="newProject.description" type="text" placeholder="Client or project description" class="input-field mt-1.5">
         </div>
+
+        <!-- Source credentials — shown inline so project is ready to use immediately -->
+        <div class="border border-brand-100 rounded-xl p-4 bg-brand-50/30">
+          <p class="text-[11px] font-bold text-brand-700 uppercase tracking-wide mb-3 flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+            <span x-text="(newProject.source_platform||'kaltura').charAt(0).toUpperCase()+(newProject.source_platform||'kaltura').slice(1)"></span> Credentials
+            <span class="text-[10px] font-normal text-brand-400 normal-case">(can be added later in Settings)</span>
+          </p>
+          <!-- Kaltura fields -->
+          <div x-show="newProject.source_platform === 'kaltura'" class="grid grid-cols-1 gap-2.5">
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Partner ID</label><input type="text" x-model="newProject.creds.partner_id" placeholder="12345" class="input-field mt-1"></div>
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Admin Secret</label><input type="password" x-model="newProject.creds.admin_secret" placeholder="*************" class="input-field mt-1"></div>
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">User ID</label><input type="text" x-model="newProject.creds.user_id" placeholder="admin@company.com" class="input-field mt-1"></div>
+          </div>
+          <!-- Other platforms placeholder -->
+          <div x-show="newProject.source_platform !== 'kaltura'" class="text-xs text-gray-400 py-2">Add credentials after creating the project in Settings.</div>
+        </div>
+
         <div x-show="newProjectError" class="text-sm text-red-600 bg-red-50 rounded-xl px-4 py-2" x-text="newProjectError"></div>
-        <div class="flex gap-3 pt-2">
+        <div class="flex gap-3 pt-1">
           <button @click="showNewProjectModal = false" class="flex-1 py-2.5 text-sm font-medium text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200 transition-colors">Cancel</button>
           <button @click="createProject()" class="flex-1 py-2.5 btn-primary text-sm">Create Project</button>
         </div>
@@ -437,7 +453,16 @@
                 <span x-show="v.migration_status === 'failed'" class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-50 text-red-600 font-medium flex-shrink-0">Failed</span>
               </div>
             </template>
-            <div x-show="!migKalturaLoading && migKalturaVideos.length === 0" class="text-xs text-gray-300 text-center py-12">No videos found</div>
+            <!-- No credentials configured for this project -->
+            <div x-show="!migKalturaLoading && migKalturaNoCredentials" class="px-4 py-10 text-center">
+              <div class="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center mx-auto mb-3">
+                <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+              </div>
+              <p class="text-xs font-semibold text-gray-700 mb-1">No source credentials</p>
+              <p class="text-[11px] text-gray-400 mb-3">Add Kaltura credentials for this project in Settings.</p>
+              <button @click="currentTab='settings'" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100 transition-colors">Go to Settings</button>
+            </div>
+            <div x-show="!migKalturaLoading && !migKalturaNoCredentials && migKalturaVideos.length === 0" class="text-xs text-gray-300 text-center py-12">No videos found</div>
           </div>
 
           <!-- Pagination + Migrate button -->
@@ -822,22 +847,44 @@
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <!-- ── Per-project source credentials (full width) ── -->
-        <div class="card-static p-6 lg:col-span-2 border-l-4 border-brand-500">
+        <!-- ── Per-project source credentials (full width, platform-aware) ── -->
+        <div class="card-static p-6 lg:col-span-2 border-l-4 border-brand-500" x-data="{ get proj() { return (window._app||{projects:[]}).projects?.find?.(p=>p.slug===(window._app||{}).currentProjectSlug) || (Alpine.raw ? Alpine.raw(Alpine.store ? {} : {}) : {}) } }">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-sm font-bold text-gray-800 flex items-center gap-2.5">
               <span class="dot" :class="(status.connections || {}).kaltura ? 'dot-green' : 'dot-yellow'"></span>
               Source Credentials
               <span class="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-brand-100 text-brand-700 border border-brand-200" x-text="(projects.find(p=>p.slug===currentProjectSlug)||{name:currentProjectSlug||'No project'}).name"></span>
+              <span class="text-[10px] text-gray-400 font-normal capitalize" x-text="(projects.find(p=>p.slug===currentProjectSlug)||{source_platform:''}).source_platform"></span>
             </h3>
             <button @click="testProjectConnection('kaltura')" class="text-xs text-brand-600 hover:text-brand-700 font-semibold px-3 py-1 rounded-lg hover:bg-brand-50 transition-colors">Test Connection</button>
           </div>
-          <p class="text-xs text-gray-400 mb-5 leading-relaxed">These credentials are scoped to the current project. Switch projects in the sidebar to configure a different source account (e.g. IFRS Kaltura vs INDEED Kaltura). AWS and Zoom are shared globally.</p>
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <p class="text-xs text-gray-400 mb-5 leading-relaxed">Scoped to this project — each project connects to its own source account. AWS and Zoom are shared globally across all projects.</p>
+
+          <!-- Kaltura fields -->
+          <div x-show="(projects.find(p=>p.slug===currentProjectSlug)||{source_platform:'kaltura'}).source_platform === 'kaltura'" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Partner ID</label><input type="text" x-model="projectCreds.kaltura.partner_id" placeholder="12345" class="input-field mt-1.5"></div>
             <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Admin Secret</label><input type="password" x-model="projectCreds.kaltura.admin_secret" placeholder="*************" class="input-field mt-1.5"></div>
             <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">User ID</label><input type="text" x-model="projectCreds.kaltura.user_id" placeholder="admin@company.com" class="input-field mt-1.5"></div>
           </div>
+          <!-- ON24 fields -->
+          <div x-show="(projects.find(p=>p.slug===currentProjectSlug)||{}).source_platform === 'on24'" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Client ID</label><input type="text" x-model="projectCreds.on24.client_id" placeholder="ON24 Client ID" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Client Token</label><input type="password" x-model="projectCreds.on24.client_token" placeholder="*************" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Account ID</label><input type="text" x-model="projectCreds.on24.account_id" placeholder="Account ID" class="input-field mt-1.5"></div>
+          </div>
+          <!-- Brightcove fields -->
+          <div x-show="(projects.find(p=>p.slug===currentProjectSlug)||{}).source_platform === 'brightcove'" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Account ID</label><input type="text" x-model="projectCreds.brightcove.account_id" placeholder="Brightcove Account ID" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Client ID</label><input type="text" x-model="projectCreds.brightcove.client_id" placeholder="Client ID" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Client Secret</label><input type="password" x-model="projectCreds.brightcove.client_secret" placeholder="*************" class="input-field mt-1.5"></div>
+          </div>
+          <!-- Panopto fields -->
+          <div x-show="(projects.find(p=>p.slug===currentProjectSlug)||{}).source_platform === 'panopto'" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Server URL</label><input type="text" x-model="projectCreds.panopto.server_url" placeholder="https://company.hosted.panopto.com" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Client ID</label><input type="text" x-model="projectCreds.panopto.client_id" placeholder="Client ID" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Client Secret</label><input type="password" x-model="projectCreds.panopto.client_secret" placeholder="*************" class="input-field mt-1.5"></div>
+          </div>
+
           <div class="mt-4 flex items-center gap-3">
             <button @click="saveProjectCreds()" :disabled="projectCredsSaving" class="btn-primary text-xs px-4 py-2" x-text="projectCredsSaving ? 'Saving…' : 'Save Source Credentials'"></button>
             <div x-show="projectCredsMessage" x-transition class="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg"
@@ -1768,11 +1815,17 @@
         projects: [],
         currentProjectSlug: '',
         showNewProjectModal: false,
-        newProject: { name: '', slug: '', source_platform: 'kaltura', description: '' },
+        newProject: { name: '', slug: '', source_platform: 'kaltura', description: '', creds: { partner_id: '', admin_secret: '', user_id: '', api_key: '', client_id: '', client_secret: '' } },
         newProjectError: '',
 
         // Project credentials (per-project)
-        projectCreds: { kaltura: { partner_id: '', admin_secret: '', user_id: '' } },
+        projectCreds: {
+          kaltura: { partner_id: '', admin_secret: '', user_id: '' },
+          on24: { client_id: '', client_token: '', account_id: '' },
+          brightcove: { account_id: '', client_id: '', client_secret: '' },
+          panopto: { server_url: '', client_id: '', client_secret: '' },
+        },
+        migKalturaNoCredentials: false,
         projectCredsSaving: false,
         projectCredsMessage: '',
         projectCredsMessageType: '',
@@ -1972,7 +2025,20 @@
               await this.loadProjects();
               this.currentProjectSlug = d.project.slug;
               this.showNewProjectModal = false;
-              this.newProject = { name: '', slug: '', source_platform: 'kaltura', description: '' };
+              const savedCreds = { ...this.newProject.creds };
+              const savedPlatform = this.newProject.source_platform;
+              this.newProject = { name: '', slug: '', source_platform: 'kaltura', description: '', creds: { partner_id: '', admin_secret: '', user_id: '', api_key: '', client_id: '', client_secret: '' } };
+              // Auto-save credentials if any were entered
+              const hasAnyCred = Object.values(savedCreds).some(v => v && v.trim());
+              if (hasAnyCred) {
+                const credFields = savedPlatform === 'kaltura'
+                  ? { partner_id: savedCreds.partner_id, admin_secret: savedCreds.admin_secret, user_id: savedCreds.user_id }
+                  : { api_key: savedCreds.api_key, client_id: savedCreds.client_id, client_secret: savedCreds.client_secret };
+                await fetch(`/api/projects/${d.project.slug}/credentials`, {
+                  method: 'PUT', headers: this._authHeaders(),
+                  body: JSON.stringify({ service: savedPlatform === 'kaltura' ? 'kaltura' : savedPlatform, credentials: credFields })
+                });
+              }
               await this.switchProject();
             } else {
               this.newProjectError = d.detail || 'Failed to create project';
@@ -1990,6 +2056,9 @@
               const c = d.credentials || {};
               this.projectCreds = {
                 kaltura: { partner_id: '', admin_secret: '', user_id: '', ...(c.kaltura || {}) },
+                on24: { client_id: '', client_token: '', account_id: '', ...(c.on24 || {}) },
+                brightcove: { account_id: '', client_id: '', client_secret: '', ...(c.brightcove || {}) },
+                panopto: { server_url: '', client_id: '', client_secret: '', ...(c.panopto || {}) },
               };
             }
           } catch(e) {}
@@ -1999,9 +2068,18 @@
           this.projectCredsSaving = true;
           this.projectCredsMessage = '';
           try {
+            const proj = this.projects.find(p => p.slug === this.currentProjectSlug) || {};
+            const platform = proj.source_platform || 'kaltura';
+            const credsByPlatform = {
+              kaltura: this.projectCreds.kaltura,
+              on24: this.projectCreds.on24,
+              brightcove: this.projectCreds.brightcove,
+              panopto: this.projectCreds.panopto,
+            };
+            const creds = credsByPlatform[platform] || this.projectCreds.kaltura;
             const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
               method: 'PUT', headers: this._authHeaders(),
-              body: JSON.stringify({ service: 'kaltura', credentials: this.projectCreds.kaltura || {} })
+              body: JSON.stringify({ service: platform === 'kaltura' ? 'kaltura' : platform, credentials: creds })
             });
             if (r.ok) {
               this.projectCredsMessage = 'Source credentials saved';
@@ -2161,6 +2239,7 @@
         // ── Migration Pipeline 3-Column Methods ──
         async loadMigKaltura() {
           this.migKalturaLoading = true;
+          this.migKalturaNoCredentials = false;
           try {
             const ps = Math.min(this.migKalturaPageSize, 100);
             const params = new URLSearchParams({ page: this.migKalturaPage, page_size: ps });
@@ -2172,9 +2251,12 @@
               this.migKalturaVideos = d.videos || [];
               this.migKalturaTotal = d.total || 0;
               this.migKalturaTotalPages = d.total_pages || 1;
-              // Clamp page
-              if (this.migKalturaPage > this.migKalturaTotalPages) {
-                this.migKalturaPage = this.migKalturaTotalPages;
+              if (this.migKalturaPage > this.migKalturaTotalPages) this.migKalturaPage = this.migKalturaTotalPages;
+            } else {
+              const d = await r.json().catch(() => ({}));
+              if (d.error === 'no_credentials') {
+                this.migKalturaNoCredentials = true;
+                this.migKalturaVideos = [];
               }
             }
           } catch(e) {}
@@ -2203,8 +2285,9 @@
         },
         async loadZoomCompleted() {
           try {
-            // Load migration history (tracker + audit events)
-            const params = new URLSearchParams({ page: this.zoomCompletedPage, page_size: 30, status: 'completed' });
+            // Load migration history scoped to current project
+            const baseParams = this.currentProjectSlug ? { project_slug: this.currentProjectSlug } : {};
+            const params = new URLSearchParams({ ...baseParams, page: this.zoomCompletedPage, page_size: 30, status: 'completed' });
             const r = await fetch('/api/videos?' + params, { headers: this._authHeaders() });
             if (r.ok) {
               const d = await r.json();
@@ -2213,7 +2296,7 @@
               this.zoomCompletedTotalPages = d.total_pages || 1;
             }
             // Also load failed
-            const f = await fetch('/api/videos?' + new URLSearchParams({ page: 1, page_size: 50, status: 'failed' }), { headers: this._authHeaders() });
+            const f = await fetch('/api/videos?' + new URLSearchParams({ ...baseParams, page: 1, page_size: 50, status: 'failed' }), { headers: this._authHeaders() });
             if (f.ok) {
               const fd = await f.json();
               this.zoomFailedVideos = fd.videos || [];
