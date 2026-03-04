@@ -1075,6 +1075,24 @@ async def start_project_migration(slug: str, request: Request, user: dict = Depe
             for r in results:
                 if r.status == "completed":
                     _cost_tracker.record_video(r.video_id, r.file_size_mb or 0)
+                    # Persist to Supabase so status survives cold starts
+                    if _db.is_available():
+                        try:
+                            langs = ",".join(
+                                c.get("language", "") for c in (r.caption_details or [])
+                                if c.get("language")
+                            )
+                            _db.save_video_migration(
+                                kaltura_id=r.video_id,
+                                zoom_id=r.zoom_id or "",
+                                title=r.title or "",
+                                caption_count=r.captions_migrated or 0,
+                                thumbnail_count=r.thumbnails_migrated or 0,
+                                languages=langs,
+                                file_size_mb=r.file_size_mb or 0,
+                            )
+                        except Exception as _dbe:
+                            logger.warning("Failed to persist migration to DB: %s", _dbe)
                     _broadcast_sse({"type": "video_completed", "video_id": r.video_id, "title": r.title, "zoom_id": r.zoom_id})
                 else:
                     _broadcast_sse({"type": "video_failed", "video_id": r.video_id, "title": r.title, "error": r.error})
@@ -1946,10 +1964,27 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
                 report, _pipeline.config.pipeline.download_dir,
             )
 
-            # Broadcast results
+            # Broadcast results + persist to DB
             for r in results:
                 if r.status == "completed":
                     _cost_tracker.record_migration_cost(r.video_id, int(r.file_size_mb * 1024 * 1024))
+                    if _db.is_available():
+                        try:
+                            langs = ",".join(
+                                c.get("language", "") for c in (r.caption_details or [])
+                                if c.get("language")
+                            )
+                            _db.save_video_migration(
+                                kaltura_id=r.video_id,
+                                zoom_id=r.zoom_id or "",
+                                title=r.title or "",
+                                caption_count=r.captions_migrated or 0,
+                                thumbnail_count=r.thumbnails_migrated or 0,
+                                languages=langs,
+                                file_size_mb=r.file_size_mb or 0,
+                            )
+                        except Exception as _dbe:
+                            logger.warning("Failed to persist dry-run migration to DB: %s", _dbe)
                     _broadcast_sse({
                         "type": "video_completed",
                         "video_id": r.video_id,
@@ -2100,15 +2135,39 @@ async def browse_kaltura_videos(
         entries = kaltura_result.get("objects", [])
         total = kaltura_result.get("totalCount", 0)
 
-        # Cross-reference with state tracker for migration status
-        state = _pipeline.tracker.get_all_videos() if hasattr(_pipeline.tracker, "get_all_videos") else {}
+        # Cross-reference: DB first (persistent), then in-memory tracker as fallback
+        entry_ids = [e.get("id", "") for e in entries]
+        db_state: dict = {}
+        if _db.is_available():
+            try:
+                db_state = _db.get_video_migrations_bulk(entry_ids)
+            except Exception:
+                pass
+        tracker_state = _pipeline.tracker.get_all_videos() if hasattr(_pipeline.tracker, "get_all_videos") else {}
 
         videos = []
         for entry in entries:
             vid = entry.get("id", "")
-            tracked = state.get(vid, {})
-            tracked_status = tracked.get("status", None)
-            tracked_meta = tracked.get("metadata", {}) if isinstance(tracked.get("metadata"), dict) else {}
+            db_rec = db_state.get(vid)
+            tr = tracker_state.get(vid, {})
+            tr_meta = tr.get("metadata", {}) if isinstance(tr.get("metadata"), dict) else {}
+
+            # DB is source of truth for completed migrations; tracker for in-progress
+            if db_rec:
+                mig_status = db_rec.get("status", "completed")
+                zoom_id = db_rec.get("zoom_id")
+                caption_count = db_rec.get("caption_count", 0)
+                thumbnail_count = db_rec.get("thumbnail_count", 0)
+                languages = [l for l in (db_rec.get("languages") or "").split(",") if l]
+                err = None
+            else:
+                tr_status = tr.get("status")
+                mig_status = tr_status or "not_started"
+                zoom_id = tr_meta.get("zoom_id")
+                caption_count = 0
+                thumbnail_count = 0
+                languages = []
+                err = tr.get("error")
 
             videos.append({
                 "id": vid,
@@ -2122,9 +2181,12 @@ async def browse_kaltura_videos(
                 "categories": entry.get("categories", ""),
                 "plays": entry.get("plays", 0),
                 "views": entry.get("views", 0),
-                "migration_status": tracked_status or "not_started",
-                "zoom_id": tracked_meta.get("zoom_id"),
-                "error": tracked.get("error"),
+                "migration_status": mig_status,
+                "zoom_id": zoom_id,
+                "caption_count": caption_count,
+                "thumbnail_count": thumbnail_count,
+                "languages": languages,
+                "error": err,
             })
 
         import math

@@ -117,7 +117,9 @@ class MigrationStateTracker:
     def __init__(self, config: AWSConfig, use_local: bool = False):
         self.config = config
         self.use_local = use_local
-        _state_dir = os.environ.get("STATE_DIR", str(Path.home() / ".video-migration"))
+        # On Vercel only /tmp is writable; home dir is read-only
+        _default_state_dir = "/tmp/.video-migration" if os.environ.get("VERCEL") else str(Path.home() / ".video-migration")
+        _state_dir = os.environ.get("STATE_DIR", _default_state_dir)
         Path(_state_dir).mkdir(parents=True, exist_ok=True)
         self._local_path = Path(_state_dir) / "migration-state.json"
 

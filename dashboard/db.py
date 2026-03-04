@@ -369,6 +369,21 @@ CREATE TABLE IF NOT EXISTS client_access_tokens (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS video_migrations (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id      UUID REFERENCES projects(id) ON DELETE CASCADE,
+    kaltura_id      VARCHAR(100) NOT NULL,
+    zoom_id         VARCHAR(200),
+    title           TEXT DEFAULT '',
+    status          VARCHAR(20) NOT NULL DEFAULT 'completed',
+    caption_count   INTEGER DEFAULT 0,
+    thumbnail_count INTEGER DEFAULT 0,
+    languages       TEXT DEFAULT '',
+    file_size_mb    FLOAT DEFAULT 0,
+    migrated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(kaltura_id)
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 CREATE INDEX IF NOT EXISTS idx_credentials_project ON credentials(project_id);
@@ -379,6 +394,8 @@ CREATE INDEX IF NOT EXISTS idx_migration_runs_status ON migration_runs(status);
 CREATE INDEX IF NOT EXISTS idx_checkpoint_gates_run ON checkpoint_gates(run_id);
 CREATE INDEX IF NOT EXISTS idx_infra_deployments_project ON infra_deployments(project_id);
 CREATE INDEX IF NOT EXISTS idx_client_tokens_hash ON client_access_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_video_migrations_kaltura ON video_migrations(kaltura_id);
+CREATE INDEX IF NOT EXISTS idx_video_migrations_project ON video_migrations(project_id);
 """
 
 
@@ -421,6 +438,63 @@ DEFAULT_KALTURA_MAPPINGS = [
     {"source_field": "kaltura_id", "dest_field": "description", "transform": "append", "template": "[Migrated from Kaltura ID: {value}]", "sort_order": 5, "notes": "Source reference"},
     {"source_field": "thumbnail_url", "dest_field": "thumbnail", "transform": "direct", "sort_order": 6, "notes": "Thumbnail URL"},
 ]
+
+
+# ---------------------------------------------------------------------------
+# Video migration persistence (survives Vercel cold starts)
+# ---------------------------------------------------------------------------
+
+def save_video_migration(
+    kaltura_id: str,
+    zoom_id: str,
+    title: str = "",
+    project_id: str | None = None,
+    caption_count: int = 0,
+    thumbnail_count: int = 0,
+    languages: str = "",
+    file_size_mb: float = 0,
+    status: str = "completed",
+) -> None:
+    """Upsert a video migration record.  Called after each successful migration."""
+    execute(
+        """INSERT INTO video_migrations
+               (kaltura_id, zoom_id, title, project_id, caption_count, thumbnail_count, languages, file_size_mb, status, migrated_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+           ON CONFLICT (kaltura_id) DO UPDATE SET
+               zoom_id = EXCLUDED.zoom_id,
+               title = EXCLUDED.title,
+               caption_count = EXCLUDED.caption_count,
+               thumbnail_count = EXCLUDED.thumbnail_count,
+               languages = EXCLUDED.languages,
+               file_size_mb = EXCLUDED.file_size_mb,
+               status = EXCLUDED.status,
+               migrated_at = NOW()""",
+        (kaltura_id, zoom_id, title, project_id, caption_count, thumbnail_count, languages, file_size_mb, status),
+    )
+
+
+def get_video_migrations_bulk(kaltura_ids: list[str]) -> dict[str, dict]:
+    """Return a dict keyed by kaltura_id for a set of IDs."""
+    if not kaltura_ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(kaltura_ids))
+    rows = fetch_all(
+        f"SELECT * FROM video_migrations WHERE kaltura_id IN ({placeholders})",
+        tuple(kaltura_ids),
+    )
+    return {r["kaltura_id"]: r for r in rows}
+
+
+def get_all_video_migrations(project_id: str | None = None) -> dict[str, dict]:
+    """Return all migration records, optionally filtered by project."""
+    if project_id:
+        rows = fetch_all(
+            "SELECT * FROM video_migrations WHERE project_id = %s ORDER BY migrated_at DESC",
+            (project_id,),
+        )
+    else:
+        rows = fetch_all("SELECT * FROM video_migrations ORDER BY migrated_at DESC")
+    return {r["kaltura_id"]: r for r in rows}
 
 
 def create_default_mappings(project_id: str, source_platform: str = "kaltura"):
