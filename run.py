@@ -7,6 +7,9 @@ Usage:
     python run.py migrate      # Run migration batch
     python run.py retry        # Retry failed videos
     python run.py report       # Show migration status report
+    python run.py cleanup      # Verify videos made it to Zoom (dry run)
+    python run.py cleanup --confirm          # Also delete verified videos from Kaltura
+    python run.py cleanup --id 1_abc 1_def  # Check specific entry IDs only
     python run.py test         # Run pipeline test (no credentials needed)
     python run.py test --with-s3  # Test with LocalStack S3
 """
@@ -110,6 +113,46 @@ def main():
     elif command == "report":
         report = pipeline.generate_report()
         print(report)
+
+    elif command == "cleanup":
+        from migration.verify_cleanup import run_verify_cleanup
+
+        dry_run = "--confirm" not in sys.argv
+        entry_ids = None
+        if "--id" in sys.argv:
+            idx = sys.argv.index("--id")
+            entry_ids = sys.argv[idx + 1:]
+
+        if dry_run:
+            print("\nVerify & Cleanup — DRY RUN (pass --confirm to delete from Kaltura)\n")
+        else:
+            print("\nVerify & Cleanup — LIVE RUN (will delete verified videos from Kaltura)\n")
+
+        if entry_ids:
+            print(f"  Checking {len(entry_ids)} specific entries: {', '.join(entry_ids)}\n")
+        else:
+            print("  Checking all completed migrations...\n")
+
+        cleanup_report = run_verify_cleanup(pipeline, dry_run=dry_run, entry_ids=entry_ids)
+
+        print("\n── Results ──\n")
+        for vr in cleanup_report.results:
+            if vr.error:
+                status = f"ERROR: {vr.error}"
+            elif not vr.zoom_exists:
+                status = "MISSING on Zoom"
+            elif not vr.title_match:
+                status = f"TITLE MISMATCH (Zoom has: {vr.zoom_title!r})"
+            elif vr.deleted_from_kaltura:
+                status = "VERIFIED + deleted from Kaltura"
+            else:
+                status = "VERIFIED" + (" (Kaltura not deleted — dry run)" if dry_run else "")
+            print(f"  {vr.kaltura_id}  →  {vr.zoom_id[:16]}  {status}")
+
+        print("\n── Summary ──")
+        for line in cleanup_report.summary_lines():
+            print(line)
+        print()
 
     else:
         print(__doc__)

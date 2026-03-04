@@ -542,6 +542,33 @@ class ZoomClient:
         """
         return self._api_call("GET", f"/zoom_events/videos/{video_id}/metadata")
 
+    def get_video_info(self, video_id: str) -> dict:
+        """Fetch video info from Zoom, routing by target_api.
+
+        Returns a dict with at least: { exists: bool, title: str, duration: int }
+        """
+        try:
+            if self.config.target_api == "events":
+                data = self.get_events_metadata(video_id)
+                return {
+                    "exists": bool(data.get("title") or data.get("id")),
+                    "title": data.get("title", ""),
+                    "duration": data.get("duration", 0),
+                    "raw": data,
+                }
+            else:
+                # clips / vm
+                data = self.get_clip(video_id)
+                return {
+                    "exists": bool(data.get("id") or data.get("title")),
+                    "title": data.get("title", ""),
+                    "duration": data.get("duration", 0),
+                    "raw": data,
+                }
+        except Exception as e:
+            logger.warning("Could not fetch Zoom video %s: %s", video_id, e)
+            return {"exists": False, "title": "", "duration": 0, "error": str(e)}
+
     def list_hubs(self) -> list[dict]:
         """List all Zoom Events hubs.
 

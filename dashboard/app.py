@@ -523,6 +523,7 @@ class ProjectUpdate(BaseModel):
     name: Optional[str] = Field(default=None, max_length=100)
     description: Optional[str] = Field(default=None, max_length=1000)
     status: Optional[str] = Field(default=None, pattern=r"^(active|paused|archived|completed)$")
+    source_platform: Optional[str] = Field(default=None, pattern=r"^(kaltura|on24|brightcove|panopto)$")
     config_json: Optional[dict] = None
 
 
@@ -722,6 +723,9 @@ async def update_project(slug: str, request: Request, user: dict = Depends(_veri
     if data.status is not None:
         sets.append("status = %s")
         params.append(data.status)
+    if data.source_platform is not None:
+        sets.append("source_platform = %s")
+        params.append(data.source_platform)
     if data.config_json is not None:
         sets.append("config_json = %s")
         params.append(json.dumps(data.config_json))
@@ -2227,6 +2231,73 @@ async def get_video(video_id: str, user: dict = Depends(_verify_jwt)):
     if not status:
         return JSONResponse({"error": "Video not found"}, status_code=404)
     return status
+
+
+# ── Verify & Cleanup ──
+
+class VerifyCleanupRequest(BaseModel):
+    entry_ids: Optional[list[str]] = None   # None = all completed
+    dry_run: bool = True                    # False = actually delete from Kaltura
+    project_slug: Optional[str] = Field(default=None, max_length=100)
+
+
+@app.post("/api/verify-cleanup")
+async def verify_cleanup(body: VerifyCleanupRequest, user: dict = Depends(_verify_jwt)):
+    """Verify migrated videos exist on Zoom, optionally delete source from Kaltura."""
+    from migration.verify_cleanup import run_verify_cleanup
+
+    pipeline = None
+    if body.project_slug and _db.is_available():
+        pipeline = _get_pipeline_for_project(body.project_slug)
+    if pipeline is None:
+        pipeline = _pipeline
+
+    if _demo_mode or pipeline is None:
+        return JSONResponse({"error": "Connect your services in Settings first."}, status_code=400)
+
+    # Validate entry IDs if provided
+    if body.entry_ids:
+        for eid in body.entry_ids:
+            if not _validate_entry_id(eid):
+                return JSONResponse({"error": f"Invalid entry ID: {eid}"}, status_code=400)
+
+    report = run_verify_cleanup(pipeline, dry_run=body.dry_run, entry_ids=body.entry_ids)
+
+    audit_log(
+        "verify_cleanup",
+        user=user["sub"],
+        details={
+            "dry_run": body.dry_run,
+            "total": report.total,
+            "verified": report.verified,
+            "deleted": report.deleted,
+            "missing": report.missing_on_zoom,
+        },
+    )
+
+    return {
+        "dry_run": body.dry_run,
+        "total": report.total,
+        "verified": report.verified,
+        "title_mismatch": report.title_mismatch,
+        "missing_on_zoom": report.missing_on_zoom,
+        "deleted": report.deleted,
+        "skipped": report.skipped,
+        "errors": report.errors,
+        "results": [
+            {
+                "kaltura_id": r.kaltura_id,
+                "zoom_id": r.zoom_id,
+                "title": r.title,
+                "zoom_exists": r.zoom_exists,
+                "zoom_title": r.zoom_title,
+                "title_match": r.title_match,
+                "deleted_from_kaltura": r.deleted_from_kaltura,
+                "error": r.error,
+            }
+            for r in report.results
+        ],
+    }
 
 
 # ── Kaltura Library Browser ──

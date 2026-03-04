@@ -110,6 +110,16 @@ class KalturaClient:
         logger.debug("Got metadata for entry %s: %s", entry_id, result.get("name", ""))
         return result
 
+    def delete_entry(self, entry_id: str) -> bool:
+        """Delete a media entry from Kaltura. Returns True on success."""
+        try:
+            self._api_call("media", "delete", {"entryId": entry_id})
+            logger.info("Deleted Kaltura entry %s", entry_id)
+            return True
+        except Exception as e:
+            logger.error("Failed to delete Kaltura entry %s: %s", entry_id, e)
+            return False
+
     def get_flavor_assets(self, entry_id: str) -> list[dict]:
         """List available flavor assets (quality variants) for an entry."""
         result = self._api_call("flavorAsset", "list", {
