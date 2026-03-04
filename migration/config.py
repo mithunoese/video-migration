@@ -185,25 +185,27 @@ class Config:
         zm = credentials.get("zoom", {})
         cfg = config_json or {}
 
+        # Per-project creds take priority; fall back to global env vars so that
+        # projects with only Kaltura creds can still browse/migrate (Zoom/AWS are shared).
         return cls(
             kaltura=KalturaConfig(
-                partner_id=kal.get("partner_id", ""),
-                admin_secret=kal.get("admin_secret", ""),
-                user_id=kal.get("user_id", ""),
-                service_url=kal.get("service_url", "https://www.kaltura.com"),
+                partner_id=kal.get("partner_id", "") or os.getenv("KALTURA_PARTNER_ID", ""),
+                admin_secret=kal.get("admin_secret", "") or os.getenv("KALTURA_ADMIN_SECRET", ""),
+                user_id=kal.get("user_id", "") or os.getenv("KALTURA_USER_ID", ""),
+                service_url=kal.get("service_url", "") or os.getenv("KALTURA_SERVICE_URL", "https://www.kaltura.com"),
             ),
             aws=AWSConfig(
-                bucket_name=aws.get("bucket_name", aws.get("s3_bucket", "")),
-                region=aws.get("region", "us-east-1"),
-                staging_prefix=aws.get("staging_prefix", "migration-staging/"),
-                state_table=aws.get("state_table", "video-migration-state"),
-                endpoint_url=aws.get("endpoint_url", ""),
+                bucket_name=aws.get("bucket_name", aws.get("s3_bucket", "")) or os.getenv("AWS_S3_BUCKET", ""),
+                region=aws.get("region", "") or os.getenv("AWS_REGION", "us-east-1"),
+                staging_prefix=aws.get("staging_prefix", "") or os.getenv("AWS_STAGING_PREFIX", "migration-staging/"),
+                state_table=aws.get("state_table", "") or os.getenv("AWS_STATE_TABLE", "video-migration-state"),
+                endpoint_url=aws.get("endpoint_url", "") or os.getenv("AWS_ENDPOINT_URL", ""),
             ),
             zoom=ZoomConfig(
-                client_id=zm.get("client_id", ""),
-                client_secret=zm.get("client_secret", ""),
-                account_id=zm.get("account_id", ""),
-                target_api=zm.get("target_api", cfg.get("zoom_target_api", "clips")),
+                client_id=zm.get("client_id", "") or os.getenv("ZOOM_CLIENT_ID", ""),
+                client_secret=zm.get("client_secret", "") or os.getenv("ZOOM_CLIENT_SECRET", ""),
+                account_id=zm.get("account_id", "") or os.getenv("ZOOM_ACCOUNT_ID", ""),
+                target_api=zm.get("target_api", "") or cfg.get("zoom_target_api", "") or os.getenv("ZOOM_TARGET_API", "clips"),
             ),
             pipeline=PipelineConfig(
                 batch_size=min(int(cfg.get("batch_size", 10)), 500),
