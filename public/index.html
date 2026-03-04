@@ -180,6 +180,104 @@
     </div>
   </div>
 
+  <!-- ── Video Assets Modal ── -->
+  <div x-show="videoAssetsModal" x-cloak class="fixed inset-0 z-[95] flex items-center justify-center bg-black/50" @click.self="videoAssetsModal = false">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden" @click.stop>
+      <!-- Header -->
+      <div class="px-6 py-4 border-b border-gray-100 flex items-start gap-3">
+        <div class="w-9 h-9 rounded-xl bg-brand-50 flex items-center justify-center flex-shrink-0 mt-0.5">
+          <svg class="w-5 h-5 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+        </div>
+        <div class="flex-1 min-w-0">
+          <h3 class="text-sm font-bold text-gray-900 truncate" x-text="videoAssetsData?.title || videoAssetsData?.kaltura_id || 'Video Files'"></h3>
+          <div class="flex items-center gap-2 mt-0.5 flex-wrap">
+            <span class="text-[10px] text-gray-400 font-mono" x-text="'Kaltura: ' + (videoAssetsData?.kaltura_id || '—')"></span>
+            <template x-if="videoAssetsData?.zoom_id">
+              <span class="text-[10px] text-green-600 font-mono" x-text="'Zoom: ' + videoAssetsData?.zoom_id"></span>
+            </template>
+            <span x-show="videoAssetsData?.file_size_mb" class="text-[10px] text-gray-400" x-text="(videoAssetsData?.file_size_mb || 0).toFixed(1) + ' MB'"></span>
+          </div>
+        </div>
+        <button @click="videoAssetsModal = false" class="text-gray-400 hover:text-gray-600 transition-colors mt-0.5">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <!-- Loading -->
+      <div x-show="videoAssetsLoading" class="flex items-center justify-center py-16">
+        <svg class="w-6 h-6 text-brand-400 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+      </div>
+
+      <!-- File tree -->
+      <div x-show="!videoAssetsLoading && videoAssetsData" class="flex-1 overflow-y-auto p-4 space-y-1.5">
+        <!-- Video file row -->
+        <div class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-gray-50 border border-gray-100">
+          <div class="w-8 h-8 rounded-lg bg-brand-100 flex items-center justify-center flex-shrink-0">
+            <svg class="w-4 h-4 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+          </div>
+          <div class="flex-1 min-w-0">
+            <p class="text-xs font-semibold text-gray-700" x-text="(videoAssetsData?.title || 'video') + '.mp4'"></p>
+            <p class="text-[10px] text-gray-400" x-text="(videoAssetsData?.file_size_mb ? (videoAssetsData.file_size_mb).toFixed(1) + ' MB' : 'unknown size') + ' · Source video'"></p>
+          </div>
+          <span x-show="videoAssetsData?.zoom_id" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-green-50 text-green-700 flex-shrink-0">✓ On Zoom</span>
+          <span x-show="!videoAssetsData?.zoom_id" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 flex-shrink-0">Not migrated</span>
+        </div>
+
+        <!-- Thumbnails section -->
+        <div x-show="(videoAssetsData?.assets?.thumbnails || []).length > 0">
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-1 pt-2 pb-1">Thumbnails</p>
+          <template x-for="(t, i) in (videoAssetsData?.assets?.thumbnails || [])" :key="i">
+            <div class="flex items-center gap-3 px-3 py-2 rounded-xl border border-gray-100 hover:bg-gray-50">
+              <div class="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center flex-shrink-0">
+                <svg class="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 15l-5-5L5 21"/></svg>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-xs font-medium text-gray-700" x-text="(t.is_default ? 'thumbnail_default' : 'thumbnail_' + (i+1)) + '.jpg'"></p>
+                <p class="text-[10px] text-gray-400" x-text="(t.width && t.height ? t.width + '×' + t.height : 'unknown dimensions') + (t.is_default ? ' · Default' : '')"></p>
+              </div>
+              <span x-show="!t.skipped" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-green-50 text-green-700 flex-shrink-0">✓ Migrated</span>
+              <span x-show="t.skipped" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 flex-shrink-0" :title="t.skip_reason">⚠ Skipped</span>
+            </div>
+          </template>
+        </div>
+
+        <!-- Captions section -->
+        <div x-show="(videoAssetsData?.assets?.captions || []).length > 0">
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-1 pt-2 pb-1">Captions</p>
+          <template x-for="(c, i) in (videoAssetsData?.assets?.captions || [])" :key="i">
+            <div class="flex items-center gap-3 px-3 py-2 rounded-xl border border-gray-100 hover:bg-gray-50">
+              <div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" :class="c.skipped ? 'bg-amber-50' : 'bg-blue-50'">
+                <svg class="w-4 h-4" :class="c.skipped ? 'text-amber-500' : 'text-blue-500'" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"/></svg>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <p class="text-xs font-medium text-gray-700 uppercase" x-text="c.language || 'unknown'"></p>
+                  <!-- Format conversion arrow -->
+                  <span class="text-[10px] text-gray-400 font-mono uppercase" x-text="c.original_format || '?'"></span>
+                  <template x-if="c.converted_to_vtt">
+                    <span class="flex items-center gap-0.5 text-[10px] text-gray-400">
+                      <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+                      <span class="font-mono text-brand-600 font-semibold">VTT</span>
+                    </span>
+                  </template>
+                </div>
+                <p x-show="c.skipped" class="text-[10px] text-amber-600 mt-0.5" x-text="c.skip_reason || 'Skipped'"></p>
+              </div>
+              <span x-show="!c.skipped" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-green-50 text-green-700 flex-shrink-0">✓ Migrated</span>
+              <span x-show="c.skipped" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 flex-shrink-0">⚠ Skipped</span>
+            </div>
+          </template>
+        </div>
+
+        <!-- No asset data yet (pre-migration) -->
+        <div x-show="!videoAssetsLoading && videoAssetsData && !(videoAssetsData?.assets?.captions?.length) && !(videoAssetsData?.assets?.thumbnails?.length)" class="text-center py-6">
+          <p class="text-xs text-gray-400" x-show="videoAssetsData?.zoom_id">Asset details recorded from next migration run onwards.</p>
+          <p class="text-xs text-gray-400" x-show="!videoAssetsData?.zoom_id">Video not yet migrated. Run migration to see file details.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Sidebar -->
   <div class="fixed left-0 top-0 h-full w-60 bg-white border-r border-gray-100 flex flex-col z-50">
     <div class="px-5 pt-6 pb-5">
@@ -449,8 +547,14 @@
                     </template>
                   </div>
                 </div>
-                <!-- Status badge -->
+                <!-- Status badge / Files button -->
                 <span x-show="v.migration_status === 'failed'" class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-50 text-red-600 font-medium flex-shrink-0">Failed</span>
+                <!-- Files button — always visible for migrated or any video -->
+                <button @click.stop="loadVideoAssets(v)" title="View file details"
+                  class="w-6 h-6 rounded-lg flex items-center justify-center text-gray-300 hover:text-brand-500 hover:bg-brand-50 transition-colors flex-shrink-0"
+                  :class="v.migration_status === 'completed' ? 'opacity-100' : 'opacity-40 hover:opacity-100'">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                </button>
               </div>
             </template>
             <!-- No credentials configured for this project -->
@@ -1826,6 +1930,9 @@
           panopto: { server_url: '', client_id: '', client_secret: '' },
         },
         migKalturaNoCredentials: false,
+        videoAssetsModal: false,
+        videoAssetsData: null,
+        videoAssetsLoading: false,
         projectCredsSaving: false,
         projectCredsMessage: '',
         projectCredsMessageType: '',
@@ -2234,6 +2341,30 @@
             'completed': 'On Zoom ✓',
             'failed': 'Failed',
           }[status] || status;
+        },
+
+        // ── Video Assets Modal ──
+        async loadVideoAssets(video) {
+          this.videoAssetsModal = true;
+          this.videoAssetsLoading = true;
+          // Pre-populate with what we already know from the list
+          this.videoAssetsData = {
+            kaltura_id: video.id,
+            zoom_id: video.zoom_id,
+            title: video.name || video.id,
+            file_size_mb: video.data_size ? video.data_size / 1048576 : 0,
+            caption_count: video.caption_count || 0,
+            thumbnail_count: video.thumbnail_count || 0,
+            languages: video.languages || [],
+            assets: {},
+          };
+          try {
+            const r = await fetch(`/api/videos/${video.id}/assets`, { headers: this._authHeaders() });
+            if (r.ok) {
+              this.videoAssetsData = await r.json();
+            }
+          } catch(e) {}
+          this.videoAssetsLoading = false;
         },
 
         // ── Migration Pipeline 3-Column Methods ──

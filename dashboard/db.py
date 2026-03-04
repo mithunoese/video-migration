@@ -380,9 +380,15 @@ CREATE TABLE IF NOT EXISTS video_migrations (
     thumbnail_count INTEGER DEFAULT 0,
     languages       TEXT DEFAULT '',
     file_size_mb    FLOAT DEFAULT 0,
+    assets_json     JSONB DEFAULT '{}',
     migrated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(kaltura_id)
 );
+-- Add assets_json if upgrading an existing table
+DO $$ BEGIN
+  ALTER TABLE video_migrations ADD COLUMN IF NOT EXISTS assets_json JSONB DEFAULT '{}';
+EXCEPTION WHEN others THEN NULL;
+END $$;
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
@@ -454,12 +460,15 @@ def save_video_migration(
     languages: str = "",
     file_size_mb: float = 0,
     status: str = "completed",
+    assets_json: dict | None = None,
 ) -> None:
     """Upsert a video migration record.  Called after each successful migration."""
+    import json as _json
+    assets_str = _json.dumps(assets_json or {})
     execute(
         """INSERT INTO video_migrations
-               (kaltura_id, zoom_id, title, project_id, caption_count, thumbnail_count, languages, file_size_mb, status, migrated_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+               (kaltura_id, zoom_id, title, project_id, caption_count, thumbnail_count, languages, file_size_mb, status, assets_json, migrated_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
            ON CONFLICT (kaltura_id) DO UPDATE SET
                zoom_id = EXCLUDED.zoom_id,
                title = EXCLUDED.title,
@@ -468,8 +477,9 @@ def save_video_migration(
                languages = EXCLUDED.languages,
                file_size_mb = EXCLUDED.file_size_mb,
                status = EXCLUDED.status,
+               assets_json = EXCLUDED.assets_json,
                migrated_at = NOW()""",
-        (kaltura_id, zoom_id, title, project_id, caption_count, thumbnail_count, languages, file_size_mb, status),
+        (kaltura_id, zoom_id, title, project_id, caption_count, thumbnail_count, languages, file_size_mb, status, assets_str),
     )
 
 

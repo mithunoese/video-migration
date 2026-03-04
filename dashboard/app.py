@@ -1090,6 +1090,11 @@ async def start_project_migration(slug: str, request: Request, user: dict = Depe
                                 thumbnail_count=r.thumbnails_migrated or 0,
                                 languages=langs,
                                 file_size_mb=r.file_size_mb or 0,
+                                assets_json={
+                                    "video": {"file_size_mb": r.file_size_mb or 0, "duration_s": 0},
+                                    "captions": r.caption_details or [],
+                                    "thumbnails": r.thumbnail_details or [],
+                                },
                             )
                         except Exception as _dbe:
                             logger.warning("Failed to persist migration to DB: %s", _dbe)
@@ -2054,6 +2059,11 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
                                 thumbnail_count=r.thumbnails_migrated or 0,
                                 languages=langs,
                                 file_size_mb=r.file_size_mb or 0,
+                                assets_json={
+                                    "video": {"file_size_mb": r.file_size_mb or 0, "duration_s": 0},
+                                    "captions": r.caption_details or [],
+                                    "thumbnails": r.thumbnail_details or [],
+                                },
                             )
                         except Exception as _dbe:
                             logger.warning("Failed to persist dry-run migration to DB: %s", _dbe)
@@ -2168,6 +2178,42 @@ async def get_migration_checkpoint(user: dict = Depends(_verify_jwt)):
             "last_updated": checkpoint.get("last_updated", ""),
         }
     return {"has_checkpoint": False}
+
+
+@app.get("/api/videos/{video_id}/assets")
+async def get_video_assets(video_id: str, user: dict = Depends(_verify_jwt)):
+    """Return per-asset details (captions, thumbnails) for a migrated video."""
+    if not _validate_entry_id(video_id):
+        return JSONResponse({"error": "Invalid video ID format"}, status_code=400)
+
+    if _db.is_available():
+        rec = _db.fetch_one("SELECT * FROM video_migrations WHERE kaltura_id = %s", (video_id,))
+        if rec:
+            assets = rec.get("assets_json") or {}
+            return {
+                "kaltura_id": video_id,
+                "zoom_id": rec.get("zoom_id"),
+                "title": rec.get("title", video_id),
+                "status": rec.get("status", "completed"),
+                "file_size_mb": rec.get("file_size_mb", 0),
+                "caption_count": rec.get("caption_count", 0),
+                "thumbnail_count": rec.get("thumbnail_count", 0),
+                "languages": [l for l in (rec.get("languages") or "").split(",") if l],
+                "migrated_at": str(rec.get("migrated_at", "")),
+                "assets": assets,
+            }
+
+    # Fallback to tracker
+    tracker_state = _pipeline.tracker.get_status(video_id) if _pipeline else None
+    if tracker_state:
+        return {
+            "kaltura_id": video_id,
+            "zoom_id": (tracker_state.get("metadata") or {}).get("zoom_id"),
+            "title": (tracker_state.get("metadata") or {}).get("title", video_id),
+            "status": tracker_state.get("status", "unknown"),
+            "assets": {},
+        }
+    return JSONResponse({"error": "Video not found"}, status_code=404)
 
 
 @app.get("/api/videos/{video_id}")
