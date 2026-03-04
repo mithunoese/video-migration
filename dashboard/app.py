@@ -1479,6 +1479,20 @@ async def discover_videos(
     }
 
 
+# ── Admin: force DB schema migration ──
+
+@app.post("/api/admin/migrate-db")
+async def admin_migrate_db(user: dict = Depends(_verify_jwt)):
+    """Force-run CREATE TABLE IF NOT EXISTS for any new tables."""
+    if not _db.is_available():
+        return {"status": "skipped", "reason": "no database"}
+    try:
+        _db.create_tables()
+        return {"status": "ok", "message": "Schema migration complete"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 # ── Dashboard status ──
 
 @app.get("/api/status")
@@ -1929,6 +1943,7 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
     body = await request.json()
     entry_ids = body.get("entry_ids", [])
     resumable = body.get("resumable", True)
+    project_slug = body.get("project_slug", "")
 
     if not entry_ids:
         return JSONResponse({"error": "entry_ids required"}, status_code=400)
