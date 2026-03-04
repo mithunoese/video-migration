@@ -1909,7 +1909,7 @@
             const d = await r.json();
             if (r.ok) {
               await this.loadProjects();
-              this.currentProjectSlug = d.slug;
+              this.currentProjectSlug = d.project.slug;
               this.showNewProjectModal = false;
               this.newProject = { name: '', slug: '', source_platform: 'kaltura', description: '' };
               await this.switchProject();
