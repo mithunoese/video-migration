@@ -725,39 +725,23 @@ class ZoomClient:
 
     def upload_caption_events(self, video_id: str, vtt_path: str, language: str = "en",
                                label: str = "") -> dict:
-        """Upload a VTT caption file via the Zoom Events API.
+        """Upload a VTT caption file for a Zoom Events video.
 
-        Uses the Events file upload endpoint with the VTT content type.
-        The video_id returned from Events upload is used to associate the caption.
+        NOTE: The Zoom Events API does NOT have a dedicated caption endpoint
+        like Clips does (/clips/{clipId}/captions). The generic /zoom_events/files
+        endpoint creates orphan files with no video association.
 
-        POST https://fileapi.zoom.us/v2/zoom_events/files
-        file_type can be used to signal it's a caption, but the actual association
-        may need to go through the metadata API.
+        Until Zoom adds a dedicated Events caption endpoint, captions are skipped
+        for Events uploads to avoid creating unlinked files. The caption details
+        are logged so they can be manually uploaded via the Zoom Events portal.
         """
-        path = Path(vtt_path)
-        if not path.exists():
-            logger.warning("Caption file not found: %s", vtt_path)
-            return {}
-
-        url = f"{ZOOM_FILE_API}/zoom_events/files"
-
-        with open(path, "rb") as f:
-            encoder = MultipartEncoder(fields={
-                "file": (path.name, f, "text/vtt"),
-            })
-            headers = {**self._headers(), "Content-Type": encoder.content_type}
-            resp = requests.post(url, headers=headers, data=encoder,
-                                 timeout=60, allow_redirects=True)
-
-        if resp.ok:
-            result = resp.json() if resp.content else {}
-            logger.info("Uploaded Events caption for video %s: file_id=%s",
-                         video_id, result.get("file_id", ""))
-            return result
-        else:
-            logger.warning("Events caption upload failed for %s: %d %s",
-                           video_id, resp.status_code, resp.text[:500])
-            return {}
+        logger.warning(
+            "Zoom Events API does not support caption upload via API — "
+            "caption for video %s skipped (lang=%s, label=%s). "
+            "Upload manually via events.zoom.us Video Management.",
+            video_id, language, label,
+        )
+        return {"skipped": True, "reason": "events_api_no_caption_endpoint"}
 
     def upload_caption(self, video_id: str, vtt_path: str, language: str = "en",
                        label: str = "") -> dict:
@@ -802,36 +786,23 @@ class ZoomClient:
             return {}
 
     def upload_thumbnail_events(self, video_id: str, thumbnail_path: str) -> dict:
-        """Upload a thumbnail image via the Zoom Events file upload API.
+        """Upload a thumbnail for a Zoom Events video.
 
-        POST https://fileapi.zoom.us/v2/zoom_events/files
-        The Events API accepts image files alongside video/caption uploads.
+        NOTE: The Zoom Events API does NOT have a dedicated thumbnail endpoint
+        like Clips does (/clips/{clipId}/thumbnail). The generic /zoom_events/files
+        endpoint creates orphan files with no video association.
+
+        Until Zoom adds a dedicated Events thumbnail endpoint, thumbnails are
+        skipped for Events uploads. The thumbnail details are logged so they
+        can be manually uploaded via the Zoom Events portal.
         """
-        path = Path(thumbnail_path)
-        if not path.exists():
-            logger.warning("Thumbnail file not found: %s", thumbnail_path)
-            return {}
-
-        content_type = "image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
-        url = f"{ZOOM_FILE_API}/zoom_events/files"
-
-        with open(path, "rb") as f:
-            encoder = MultipartEncoder(fields={
-                "file": (path.name, f, content_type),
-            })
-            headers = {**self._headers(), "Content-Type": encoder.content_type}
-            resp = requests.post(url, headers=headers, data=encoder,
-                                 timeout=60, allow_redirects=True)
-
-        if resp.ok:
-            result = resp.json() if resp.content else {}
-            logger.info("Uploaded Events thumbnail for video %s: file_id=%s",
-                         video_id, result.get("file_id", ""))
-            return result
-        else:
-            logger.warning("Events thumbnail upload failed for %s: %d %s",
-                           video_id, resp.status_code, resp.text[:500])
-            return {}
+        logger.warning(
+            "Zoom Events API does not support thumbnail upload via API — "
+            "thumbnail for video %s skipped. "
+            "Upload manually via events.zoom.us Video Management.",
+            video_id,
+        )
+        return {"skipped": True, "reason": "events_api_no_thumbnail_endpoint"}
 
     def upload_thumbnail_auto(self, video_id: str, thumbnail_path: str) -> dict:
         """Upload a thumbnail — routes to Clips or Events based on config."""

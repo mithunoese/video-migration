@@ -237,11 +237,46 @@ class MigrationPipeline:
                             cap_label = cap.get("label", cap_lang)
                             converted = False
 
+                            # DFXP (Timed Text XML) is not supported by Zoom — skip with warning
+                            if cap_format == "dfxp":
+                                logger.warning(
+                                    "[%s] Skipping DFXP caption %s (%s) — "
+                                    "Zoom only accepts VTT. DFXP→VTT conversion not yet supported.",
+                                    entry_id, cap_id, cap_label,
+                                )
+                                caption_details.append({
+                                    "kaltura_caption_id": cap_id,
+                                    "language": cap_lang,
+                                    "original_format": "dfxp",
+                                    "converted_to_vtt": False,
+                                    "skipped": True,
+                                    "skip_reason": "DFXP format not supported by Zoom",
+                                })
+                                continue
+
                             try:
                                 # Download caption
                                 ext = "srt" if cap_format == "srt" else "vtt"
                                 cap_local = os.path.join(caption_dir, f"{cap_id}.{ext}")
                                 self.kaltura.download_caption(cap_id, cap_local)
+
+                                # Validate downloaded content matches expected format
+                                with open(cap_local, "r", encoding="utf-8", errors="replace") as _cf:
+                                    cap_content = _cf.read(500)
+                                if cap_content.lstrip().startswith("<?xml") or cap_content.lstrip().startswith("<tt"):
+                                    logger.warning(
+                                        "[%s] Caption %s declared as %s but contains XML/DFXP — skipping",
+                                        entry_id, cap_id, cap_format,
+                                    )
+                                    caption_details.append({
+                                        "kaltura_caption_id": cap_id,
+                                        "language": cap_lang,
+                                        "original_format": cap_format,
+                                        "converted_to_vtt": False,
+                                        "skipped": True,
+                                        "skip_reason": f"Content is XML despite format={cap_format}",
+                                    })
+                                    continue
 
                                 # Convert SRT → VTT if needed (Zoom only accepts VTT)
                                 vtt_path = cap_local
@@ -252,20 +287,33 @@ class MigrationPipeline:
 
                                 # Upload to Zoom
                                 if zoom_id and os.path.exists(vtt_path):
-                                    self.zoom.upload_caption(
+                                    cap_result = self.zoom.upload_caption(
                                         zoom_id, vtt_path,
                                         language=cap_lang,
                                         label=cap_label,
                                     )
-                                    captions_migrated += 1
-                                    caption_details.append({
-                                        "kaltura_caption_id": cap_id,
-                                        "language": cap_lang,
-                                        "original_format": cap_format,
-                                        "converted_to_vtt": converted,
-                                    })
-                                    logger.info("[%s] Caption uploaded: %s (%s)",
-                                                entry_id, cap_label, cap_lang)
+                                    if cap_result.get("skipped"):
+                                        # Events API doesn't support caption upload
+                                        caption_details.append({
+                                            "kaltura_caption_id": cap_id,
+                                            "language": cap_lang,
+                                            "original_format": cap_format,
+                                            "converted_to_vtt": converted,
+                                            "skipped": True,
+                                            "skip_reason": cap_result.get("reason", "api_limitation"),
+                                        })
+                                        logger.info("[%s] Caption %s skipped (Events API limitation)",
+                                                    entry_id, cap_label)
+                                    else:
+                                        captions_migrated += 1
+                                        caption_details.append({
+                                            "kaltura_caption_id": cap_id,
+                                            "language": cap_lang,
+                                            "original_format": cap_format,
+                                            "converted_to_vtt": converted,
+                                        })
+                                        logger.info("[%s] Caption uploaded: %s (%s)",
+                                                    entry_id, cap_label, cap_lang)
 
                             except Exception as ce:
                                 logger.warning("[%s] Caption %s failed (non-fatal): %s",
@@ -293,18 +341,31 @@ class MigrationPipeline:
                             self.kaltura.download_thumbnail(thumb_id, thumb_local)
 
                             if zoom_id and os.path.exists(thumb_local):
-                                self.zoom.upload_thumbnail_auto(zoom_id, thumb_local)
-                                thumbnails_migrated += 1
-                                thumbnail_details.append({
-                                    "kaltura_thumb_id": thumb_id,
-                                    "is_default": bool(default_thumb.get("isDefault")),
-                                    "width": default_thumb.get("width", 0),
-                                    "height": default_thumb.get("height", 0),
-                                })
-                                logger.info("[%s] Thumbnail uploaded: %s (%dx%d)",
-                                            entry_id, thumb_id,
-                                            default_thumb.get("width", 0),
-                                            default_thumb.get("height", 0))
+                                thumb_result = self.zoom.upload_thumbnail_auto(zoom_id, thumb_local)
+                                if thumb_result.get("skipped"):
+                                    # Events API doesn't support thumbnail upload
+                                    thumbnail_details.append({
+                                        "kaltura_thumb_id": thumb_id,
+                                        "is_default": bool(default_thumb.get("isDefault")),
+                                        "width": default_thumb.get("width", 0),
+                                        "height": default_thumb.get("height", 0),
+                                        "skipped": True,
+                                        "skip_reason": thumb_result.get("reason", "api_limitation"),
+                                    })
+                                    logger.info("[%s] Thumbnail skipped (Events API limitation)",
+                                                entry_id)
+                                else:
+                                    thumbnails_migrated += 1
+                                    thumbnail_details.append({
+                                        "kaltura_thumb_id": thumb_id,
+                                        "is_default": bool(default_thumb.get("isDefault")),
+                                        "width": default_thumb.get("width", 0),
+                                        "height": default_thumb.get("height", 0),
+                                    })
+                                    logger.info("[%s] Thumbnail uploaded: %s (%dx%d)",
+                                                entry_id, thumb_id,
+                                                default_thumb.get("width", 0),
+                                                default_thumb.get("height", 0))
 
                         except Exception as te:
                             logger.warning("[%s] Thumbnail %s failed (non-fatal): %s",
