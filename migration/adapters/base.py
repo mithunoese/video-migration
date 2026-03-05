@@ -32,6 +32,7 @@ class VideoAsset:
     download_url: str = ""
     caption_count: int = 0
     thumbnail_count: int = 0
+    caption_formats: list = field(default_factory=list)  # ["srt", "vtt", "dfxp"]
     custom_metadata: dict = field(default_factory=dict)
     raw_metadata: dict = field(default_factory=dict)
 

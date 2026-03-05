@@ -385,6 +385,66 @@ class KalturaClient:
                      thumb_id, dest, dest.stat().st_size / 1024)
         return dest
 
+    def list_cuepoints(self, entry_id: str) -> list[dict]:
+        """List cue points (chapters, scene markers, annotations) for a video entry.
+
+        Returns list of cue point dicts with keys:
+          id, cuePointType, startTime (ms), endTime (ms), name/text, tags, partnerData
+        Common types: annotation, chapter (KalturaChapterCuePoint), thumbCuePoint
+        """
+        try:
+            result = self._api_call("cuePoint_cuePoint", "list", {
+                "filter[entryIdEqual]": entry_id,
+                "pager[pageSize]": 500,
+            })
+            cuepoints = result.get("objects", [])
+            logger.debug("[%s] Found %d cue points", entry_id, len(cuepoints))
+            return cuepoints
+        except RuntimeError as e:
+            logger.debug("[%s] No cue points found: %s", entry_id, e)
+            return []
+
+    def get_caption_as_text(self, caption_id: str) -> str:
+        """Download and return raw caption file content as text."""
+        url = self.get_caption_url(caption_id)
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        return resp.text
+
+    def list_captions_batch(self, entry_ids: list[str]) -> dict[str, list[dict]]:
+        """Fetch captions for multiple entries in one API call.
+        Returns dict mapping entry_id → list of caption dicts.
+        """
+        if not entry_ids:
+            return {}
+        result = self._api_call("caption_captionasset", "list", {
+            "filter[entryIdIn]": ",".join(entry_ids),
+            "pager[pageSize]": 500,
+        })
+        by_entry: dict[str, list] = {eid: [] for eid in entry_ids}
+        for cap in result.get("objects", []):
+            eid = cap.get("entryId")
+            if eid in by_entry:
+                by_entry[eid].append(cap)
+        return by_entry
+
+    def list_thumbnails_batch(self, entry_ids: list[str]) -> dict[str, list[dict]]:
+        """Fetch thumbnails for multiple entries in one API call.
+        Returns dict mapping entry_id → list of thumbnail dicts.
+        """
+        if not entry_ids:
+            return {}
+        result = self._api_call("thumbAsset", "list", {
+            "filter[entryIdIn]": ",".join(entry_ids),
+            "pager[pageSize]": 500,
+        })
+        by_entry: dict[str, list] = {eid: [] for eid in entry_ids}
+        for thumb in result.get("objects", []):
+            eid = thumb.get("entryId")
+            if eid in by_entry:
+                by_entry[eid].append(thumb)
+        return by_entry
+
     # ═══════════════════════════════════════════════════════════════════
     #  ACCOUNT-WIDE CAPTION FORMAT COUNTER
     # ═══════════════════════════════════════════════════════════════════

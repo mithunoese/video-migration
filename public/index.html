@@ -601,20 +601,17 @@
                   <p class="text-[10px] text-gray-400" x-text="(v.duration ? formatDuration(v.duration) : '') + (v.data_size ? ' · ' + (v.data_size / 1048576).toFixed(1) + ' MB' : '')"></p>
                   <!-- Caption / thumbnail / language indicators — always visible -->
                   <div class="flex items-center gap-1 mt-0.5 flex-wrap">
+                    <!-- Caption format badges -->
+                    <template x-if="v.caption_formats && v.caption_formats.length > 0">
+                      <template x-for="fmt in v.caption_formats" :key="fmt">
+                        <span x-text="fmt.toUpperCase()"
+                          :class="{'bg-amber-100 text-amber-700': fmt==='srt', 'bg-green-100 text-green-700': fmt==='vtt', 'bg-purple-100 text-purple-700': fmt==='dfxp'}"
+                          class="text-[9px] font-medium px-1 py-0.5 rounded leading-none"></span>
+                      </template>
+                    </template>
                     <!-- No CC badge (muted) -->
-                    <template x-if="!v.caption_count || v.caption_count === 0">
-                      <span class="text-[9px] font-medium px-1 py-0.5 rounded bg-gray-100 text-gray-400 leading-none">No CC</span>
-                    </template>
-                    <!-- CC badge with language pills -->
-                    <template x-if="v.caption_count > 0">
-                      <span class="flex items-center gap-0.5">
-                        <span class="text-[9px] font-bold px-1 py-0.5 rounded bg-blue-100 text-blue-700 leading-none">CC</span>
-                        <template x-for="lang in (v.languages || [])" :key="lang">
-                          <span class="text-[9px] font-medium px-1 py-0.5 rounded bg-blue-50 text-blue-500 leading-none uppercase" x-text="lang"></span>
-                        </template>
-                        <span x-show="!v.languages || v.languages.length === 0" class="text-[9px] text-blue-400 leading-none" x-text="v.caption_count + (v.caption_count === 1 ? ' caption' : ' captions')"></span>
-                      </span>
-                    </template>
+                    <span x-show="!v.caption_formats || v.caption_formats.length === 0"
+                      class="text-[9px] font-medium px-1 py-0.5 rounded bg-gray-100 text-gray-400 leading-none">No CC</span>
                     <!-- Thumbnail indicator — muted if only 1, amber if multiple -->
                     <template x-if="!v.thumbnail_count || v.thumbnail_count <= 1">
                       <span class="text-[9px] font-medium px-1 py-0.5 rounded bg-gray-100 text-gray-400 leading-none">1 thumb</span>
@@ -1425,16 +1422,16 @@
 
       <!-- Step 1: Entry IDs -->
       <div class="card p-5 mb-5">
-        <h3 class="font-semibold text-gray-800 text-sm mb-3">Step 1: Enter Kaltura Entry IDs</h3>
-        <p class="text-xs text-gray-500 mb-3">Paste one entry ID per line (e.g., 0_r88llmuv). These will be used for both manifest generation and batch migration.</p>
-        <textarea x-model="dryRunEntryIds" rows="6" class="input-field font-mono text-xs" placeholder="0_r88llmuv
-0_an5g1hjg
-0_un8cn4mj
-0_aakiui81
-0_hy5qffv7"></textarea>
+        <h3 class="font-semibold text-gray-800 text-sm mb-3">Step 1: Enter Video IDs</h3>
+        <p class="text-xs text-gray-500 mb-3" x-text="(projects.find(p=>p.slug===currentProjectSlug)?.source_platform === 'kaltura' ? 'Paste Kaltura entry IDs, one per line (e.g. 0_r88llmuv).' : 'Paste source video IDs, one per line.') + ' These will be used for both manifest generation and batch migration.'"></p>
+        <textarea x-model="dryRunEntryIds" rows="6" class="input-field font-mono text-xs"
+          :placeholder="projects.find(p=>p.slug===currentProjectSlug)?.source_platform === 'kaltura' ? '0_r88llmuv\n0_an5g1hjg\n0_un8cn4mj' : 'video-id-1\nvideo-id-2\nvideo-id-3'"></textarea>
         <div class="flex items-center gap-3 mt-3">
           <span class="text-xs text-gray-400" x-text="dryRunEntryIds.split('\\n').filter(x => x.trim()).length + ' entry IDs'"></span>
-          <button @click="dryRunEntryIds = '0_r88llmuv\n0_an5g1hjg\n0_un8cn4mj\n0_aakiui81\n0_hy5qffv7\n0_6nh2dq1v\n0_ocpkxpli\n0_808muumr\n0_mrpnq76u\n0_00cxrl9l'" class="text-xs text-brand-500 hover:text-brand-700 underline">Load IFRS test batch IDs</button>
+          <!-- Only show IFRS preset for Kaltura projects named IFRS -->
+          <button x-show="projects.find(p=>p.slug===currentProjectSlug)?.source_platform === 'kaltura'"
+            @click="dryRunEntryIds = '0_r88llmuv\n0_an5g1hjg\n0_un8cn4mj\n0_aakiui81\n0_hy5qffv7\n0_6nh2dq1v\n0_ocpkxpli\n0_808muumr\n0_mrpnq76u\n0_00cxrl9l'"
+            class="text-xs text-brand-500 hover:text-brand-700 underline">Load IFRS test batch IDs</button>
         </div>
       </div>
 
@@ -1442,6 +1439,11 @@
       <div class="card p-5 mb-5">
         <h3 class="font-semibold text-gray-800 text-sm mb-3">Step 2: Generate Source Manifest</h3>
         <p class="text-xs text-gray-500 mb-3">Freeze a point-in-time snapshot of all metadata, captions, and thumbnails before migration.</p>
+        <!-- Non-Kaltura warning -->
+        <div x-show="currentProjectSlug && projects.find(p=>p.slug===currentProjectSlug)?.source_platform && projects.find(p=>p.slug===currentProjectSlug)?.source_platform !== 'kaltura'"
+          class="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700">
+          Manifest generation is only available for Kaltura source projects. Select a Kaltura project to use this step.
+        </div>
         <div class="flex items-center gap-3">
           <button @click="generateManifest()" :disabled="dryRunManifestLoading || !dryRunEntryIds.trim()" class="btn-primary px-5 py-2 text-xs flex items-center gap-1.5">
             <template x-if="dryRunManifestLoading"><span class="animate-spin">&#9696;</span></template>
@@ -1475,7 +1477,7 @@
               <table class="w-full text-xs">
                 <thead class="bg-gray-50 sticky top-0">
                   <tr>
-                    <th class="p-2 text-left font-semibold">Kaltura ID</th>
+                    <th class="p-2 text-left font-semibold">Source ID</th>
                     <th class="p-2 text-left font-semibold">Title</th>
                     <th class="p-2 text-right font-semibold">Duration</th>
                     <th class="p-2 text-right font-semibold">Size (MB)</th>
@@ -1533,7 +1535,7 @@
 
       <!-- Step 4: Migration Report -->
       <div class="card p-5 mb-5">
-        <h3 class="font-semibold text-gray-800 text-sm mb-3">Step 4: Migration Report (Kaltura ID &rarr; Zoom ID)</h3>
+        <h3 class="font-semibold text-gray-800 text-sm mb-3">Step 4: Migration Report (Source ID &rarr; Zoom ID)</h3>
         <p class="text-xs text-gray-500 mb-3">View the ID mapping report after migration completes. This is the critical document for AEM embed script replacement.</p>
         <div class="flex items-center gap-3 mb-4">
           <button @click="loadMigrationReport()" :disabled="dryRunReportLoading" class="btn-primary px-5 py-2 text-xs flex items-center gap-1.5">
@@ -1568,7 +1570,7 @@
               <table class="w-full text-xs">
                 <thead class="bg-gray-50 sticky top-0">
                   <tr>
-                    <th class="p-2 text-left font-semibold">Kaltura ID</th>
+                    <th class="p-2 text-left font-semibold">Source ID</th>
                     <th class="p-2 text-left font-semibold">Zoom ID</th>
                     <th class="p-2 text-left font-semibold">Title</th>
                     <th class="p-2 text-center font-semibold">Status</th>
@@ -1605,8 +1607,8 @@
         </template>
       </div>
 
-      <!-- Caption Stats (account-wide) -->
-      <div class="card p-5 mb-5">
+      <!-- Caption Stats (Kaltura only) -->
+      <div class="card p-5 mb-5" x-show="!currentProjectSlug || projects.find(p=>p.slug===currentProjectSlug)?.source_platform === 'kaltura' || !projects.find(p=>p.slug===currentProjectSlug)?.source_platform">
         <h3 class="font-semibold text-gray-800 text-sm mb-3">Caption Format Analysis</h3>
         <p class="text-xs text-gray-500 mb-3">Scan the Kaltura account to count SRT vs VTT caption files. Helps estimate conversion effort.</p>
         <div class="flex items-center gap-3 mb-3">
@@ -2045,6 +2047,253 @@
       </div> <!-- /flex row -->
     </div>
 
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <!-- CONTENT ANALYSIS TAB                                              -->
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <div x-show="currentTab === 'content-analysis'" x-cloak class="fade-in">
+
+      <!-- Header -->
+      <div class="flex items-center justify-between mb-6">
+        <div>
+          <h1 class="section-title">Content Analysis</h1>
+          <p class="section-subtitle">Inspect transcripts, chapters, engagement data, and key frames for each video — before migrating.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-gray-400 bg-gray-100 px-3 py-1.5 rounded-lg font-medium" x-text="caTotal + ' videos'"></span>
+          <span class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-violet-50 text-violet-700 border border-violet-100">Kaltura Source</span>
+        </div>
+      </div>
+
+      <!-- Two-column layout: video list + detail panel -->
+      <div class="flex gap-5 h-[calc(100vh-220px)] min-h-[600px]">
+
+        <!-- LEFT: Video list -->
+        <div class="w-80 flex-shrink-0 flex flex-col gap-3">
+          <!-- Search -->
+          <div class="relative">
+            <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <input type="text" x-model="caSearch" @input.debounce.400ms="loadCaVideos(1)" placeholder="Search videos…" class="input-field pl-9 text-sm">
+          </div>
+
+          <!-- Video list -->
+          <div class="flex-1 overflow-y-auto space-y-1.5 pr-1">
+            <!-- Loading skeleton -->
+            <template x-if="caLoading">
+              <template x-for="i in 8" :key="i">
+                <div class="card p-3 flex gap-3 animate-pulse">
+                  <div class="w-16 h-10 bg-gray-100 rounded-lg flex-shrink-0"></div>
+                  <div class="flex-1 space-y-1.5"><div class="h-3 bg-gray-100 rounded w-3/4"></div><div class="h-2.5 bg-gray-100 rounded w-1/2"></div></div>
+                </div>
+              </template>
+            </template>
+
+            <!-- Empty state -->
+            <template x-if="!caLoading && caVideos.length === 0">
+              <div class="text-center py-12">
+                <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-gray-100 flex items-center justify-center">
+                  <svg class="w-6 h-6 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.876V15.12a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                </div>
+                <p class="text-sm text-gray-400">No videos found</p>
+              </div>
+            </template>
+
+            <!-- Video cards -->
+            <template x-for="v in caVideos" :key="v.id">
+              <button @click="loadCaDetail(v)"
+                :class="caSelected?.id === v.id ? 'border-brand-300 bg-brand-50 shadow-sm' : 'border-transparent hover:bg-gray-50'"
+                class="w-full text-left card p-3 flex gap-3 cursor-pointer border transition-all">
+                <!-- Thumbnail -->
+                <div class="w-16 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-gray-100">
+                  <img x-show="v.thumbnail_url" :src="v.thumbnail_url" class="w-full h-full object-cover" loading="lazy">
+                  <div x-show="!v.thumbnail_url" class="w-full h-full flex items-center justify-center">
+                    <svg class="w-5 h-5 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.876V15.12a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                  </div>
+                </div>
+                <!-- Info -->
+                <div class="flex-1 min-w-0">
+                  <p class="text-xs font-medium text-gray-800 truncate leading-tight" x-text="v.name || v.id"></p>
+                  <p class="text-[10px] text-gray-400 mt-0.5" x-text="formatDuration(v.duration) + (v.plays ? ' · ' + v.plays.toLocaleString() + ' plays' : '')"></p>
+                  <div class="flex items-center gap-1 mt-1 flex-wrap">
+                    <template x-if="v.caption_formats && v.caption_formats.length > 0">
+                      <template x-for="fmt in v.caption_formats" :key="fmt">
+                        <span x-text="fmt.toUpperCase()" :class="{'bg-amber-100 text-amber-700': fmt==='srt','bg-green-100 text-green-700': fmt==='vtt','bg-purple-100 text-purple-700': fmt==='dfxp'}" class="text-[8px] font-semibold px-1 py-0.5 rounded leading-none"></span>
+                      </template>
+                    </template>
+                    <span x-show="!v.caption_formats || v.caption_formats.length === 0" class="text-[8px] px-1 py-0.5 rounded bg-gray-100 text-gray-400 leading-none">No CC</span>
+                    <span x-show="v.thumbnail_count > 1" x-text="v.thumbnail_count + ' thumbs'" class="text-[8px] px-1 py-0.5 rounded bg-amber-50 text-amber-600 leading-none"></span>
+                  </div>
+                </div>
+              </button>
+            </template>
+          </div>
+
+          <!-- Pagination -->
+          <div class="flex items-center justify-between pt-1 border-t border-gray-100">
+            <button @click="loadCaVideos(caPage - 1)" :disabled="caPage <= 1" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 disabled:opacity-40 hover:bg-gray-50 transition-colors">Prev</button>
+            <span class="text-xs text-gray-400" x-text="'Page ' + caPage + ' of ' + caTotalPages"></span>
+            <button @click="loadCaVideos(caPage + 1)" :disabled="caPage >= caTotalPages" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 disabled:opacity-40 hover:bg-gray-50 transition-colors">Next</button>
+          </div>
+        </div>
+
+        <!-- RIGHT: Detail panel -->
+        <div class="flex-1 min-w-0 flex flex-col">
+
+          <!-- Empty state (no selection) -->
+          <div x-show="!caSelected" class="flex-1 flex flex-col items-center justify-center text-center card">
+            <div class="w-16 h-16 rounded-2xl bg-violet-50 flex items-center justify-center mb-4">
+              <svg class="w-8 h-8 text-violet-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.069A1 1 0 0121 8.876V15.12a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+            </div>
+            <p class="text-sm font-medium text-gray-500">Select a video to inspect its content</p>
+            <p class="text-xs text-gray-400 mt-1">Transcripts, chapters, engagement, and key frames</p>
+          </div>
+
+          <!-- Loading state -->
+          <div x-show="caSelected && caDetailLoading" class="flex-1 flex items-center justify-center card">
+            <div class="flex flex-col items-center gap-3">
+              <div class="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin"></div>
+              <p class="text-sm text-gray-500">Fetching content from Kaltura…</p>
+            </div>
+          </div>
+
+          <!-- Detail content -->
+          <div x-show="caSelected && !caDetailLoading && caDetail" class="flex-1 flex flex-col gap-4 overflow-y-auto">
+
+            <!-- Video header -->
+            <div class="card p-4 flex gap-4">
+              <!-- Thumbnail -->
+              <div class="w-32 h-20 rounded-xl overflow-hidden flex-shrink-0 bg-gray-100">
+                <img x-show="caSelected?.thumbnail_url" :src="caSelected?.thumbnail_url" class="w-full h-full object-cover">
+                <div x-show="!caSelected?.thumbnail_url" class="w-full h-full flex items-center justify-center">
+                  <svg class="w-8 h-8 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.069A1 1 0 0121 8.876V15.12a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                </div>
+              </div>
+              <!-- Meta -->
+              <div class="flex-1 min-w-0">
+                <h2 class="text-sm font-semibold text-gray-900 leading-tight truncate" x-text="caSelected?.name"></h2>
+                <p class="text-xs text-gray-500 mt-1 line-clamp-2" x-text="caSelected?.description || 'No description'"></p>
+                <!-- Stats row -->
+                <div class="flex items-center gap-4 mt-3 flex-wrap">
+                  <div class="flex items-center gap-1.5">
+                    <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><polyline points="12 6 12 12 16 14" stroke-width="2"/></svg>
+                    <span class="text-xs text-gray-600 font-medium" x-text="formatDuration(caSelected?.duration)"></span>
+                  </div>
+                  <div class="flex items-center gap-1.5" x-show="caSelected?.plays">
+                    <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3" stroke-width="2"/></svg>
+                    <span class="text-xs text-gray-600 font-medium" x-text="(caSelected?.plays || 0).toLocaleString() + ' plays'"></span>
+                  </div>
+                  <div class="flex items-center gap-1.5" x-show="caSelected?.views">
+                    <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                    <span class="text-xs text-gray-600 font-medium" x-text="(caSelected?.views || 0).toLocaleString() + ' views'"></span>
+                  </div>
+                  <div class="flex items-center gap-1.5" x-show="caSelected?.width">
+                    <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" stroke-width="2"/><path stroke-linecap="round" stroke-width="2" d="M8 21h8M12 17v4"/></svg>
+                    <span class="text-xs text-gray-600 font-medium" x-text="(caSelected?.width || '') + '×' + (caSelected?.height || '')"></span>
+                  </div>
+                  <div class="flex items-center gap-1.5" x-show="caSelected?.size_bytes">
+                    <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+                    <span class="text-xs text-gray-600 font-medium" x-text="((caSelected?.size_bytes || 0) / 1048576).toFixed(1) + ' MB'"></span>
+                  </div>
+                </div>
+                <!-- Tags -->
+                <div class="flex flex-wrap gap-1 mt-2" x-show="caSelected?.tags">
+                  <template x-for="tag in (caSelected?.tags || '').split(',').filter(t=>t.trim())" :key="tag">
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500" x-text="tag.trim()"></span>
+                  </template>
+                </div>
+              </div>
+            </div>
+
+            <!-- Chapters (if any) -->
+            <div x-show="caDetail?.chapters && caDetail.chapters.length > 0" class="card p-4">
+              <div class="flex items-center gap-2 mb-3">
+                <div class="w-6 h-6 rounded-lg bg-violet-100 flex items-center justify-center flex-shrink-0">
+                  <svg class="w-3.5 h-3.5 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h10"/></svg>
+                </div>
+                <h3 class="text-xs font-semibold text-gray-700 uppercase tracking-wide">Chapters</h3>
+                <span class="tab-badge bg-violet-100 text-violet-700 ml-auto" x-text="caDetail.chapters.length"></span>
+              </div>
+              <div class="space-y-1.5">
+                <template x-for="(ch, i) in caDetail.chapters" :key="ch.id">
+                  <div class="flex items-center gap-3 py-1.5 px-2 rounded-lg hover:bg-gray-50 transition-colors">
+                    <span class="text-[10px] font-mono font-semibold text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded w-14 text-center flex-shrink-0" x-text="caFmtMs(ch.start_ms)"></span>
+                    <span class="text-xs text-gray-700 flex-1" x-text="ch.name || ('Chapter ' + (i + 1))"></span>
+                    <span x-show="ch.end_ms" class="text-[10px] text-gray-400 font-mono" x-text="'→ ' + caFmtMs(ch.end_ms)"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <!-- Annotations / scene markers -->
+            <div x-show="caDetail?.annotations && caDetail.annotations.length > 0" class="card p-4">
+              <div class="flex items-center gap-2 mb-3">
+                <div class="w-6 h-6 rounded-lg bg-amber-100 flex items-center justify-center flex-shrink-0">
+                  <svg class="w-3.5 h-3.5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"/></svg>
+                </div>
+                <h3 class="text-xs font-semibold text-gray-700 uppercase tracking-wide">Scene Markers / Annotations</h3>
+                <span class="tab-badge bg-amber-100 text-amber-700 ml-auto" x-text="caDetail.annotations.length"></span>
+              </div>
+              <div class="space-y-1 max-h-36 overflow-y-auto">
+                <template x-for="ann in caDetail.annotations" :key="ann.id">
+                  <div class="flex items-start gap-3 py-1.5 px-2 rounded-lg hover:bg-gray-50 transition-colors">
+                    <span class="text-[10px] font-mono font-semibold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded w-14 text-center flex-shrink-0 mt-0.5" x-text="caFmtMs(ann.start_ms)"></span>
+                    <span class="text-xs text-gray-600 flex-1 leading-relaxed" x-text="ann.name || '(no label)'"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <!-- Transcript -->
+            <div class="card p-4 flex-1 flex flex-col min-h-0">
+              <div class="flex items-center gap-2 mb-3">
+                <div class="w-6 h-6 rounded-lg bg-brand-100 flex items-center justify-center flex-shrink-0">
+                  <svg class="w-3.5 h-3.5 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                </div>
+                <h3 class="text-xs font-semibold text-gray-700 uppercase tracking-wide">Transcript</h3>
+                <template x-if="caDetail?.transcript?.language">
+                  <span class="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded bg-brand-50 text-brand-700" x-text="caDetail.transcript.language"></span>
+                </template>
+                <template x-if="caDetail?.transcript?.format">
+                  <span class="text-[10px] font-medium uppercase px-1.5 py-0.5 rounded bg-gray-100 text-gray-500" x-text="caDetail.transcript.format"></span>
+                </template>
+                <span class="text-[10px] text-gray-400 ml-auto" x-show="caDetail?.transcript?.word_count" x-text="(caDetail?.transcript?.word_count || 0).toLocaleString() + ' words'"></span>
+              </div>
+
+              <!-- No transcript -->
+              <div x-show="!caDetail?.transcript?.lines || caDetail.transcript.lines.length === 0" class="flex-1 flex items-center justify-center">
+                <div class="text-center py-6">
+                  <svg class="w-8 h-8 text-gray-200 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                  <p class="text-xs text-gray-400">No captions / transcript available for this video</p>
+                  <p class="text-[10px] text-gray-300 mt-1">Upload SRT/VTT captions in Kaltura to enable transcript view</p>
+                </div>
+              </div>
+
+              <!-- Transcript search + lines -->
+              <template x-if="caDetail?.transcript?.lines && caDetail.transcript.lines.length > 0">
+                <div class="flex flex-col flex-1 min-h-0 gap-2">
+                  <div class="relative">
+                    <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                    <input type="text" x-model="caTranscriptSearch" placeholder="Search transcript…" class="input-field pl-8 py-1.5 text-xs">
+                  </div>
+                  <div class="flex-1 overflow-y-auto space-y-0.5 pr-1 min-h-0 max-h-96">
+                    <template x-for="(line, idx) in caFilteredLines()" :key="idx">
+                      <div class="flex items-start gap-3 py-1.5 px-2 rounded-lg hover:bg-gray-50 transition-colors group">
+                        <span class="text-[10px] font-mono text-brand-500 bg-brand-50 px-1.5 py-0.5 rounded w-14 text-center flex-shrink-0 mt-0.5 opacity-70 group-hover:opacity-100" x-text="caFmtMs(line.start_ms)"></span>
+                        <span class="text-xs text-gray-700 flex-1 leading-relaxed" x-text="line.text"></span>
+                        <span class="text-[9px] font-mono text-gray-300 group-hover:text-gray-400 flex-shrink-0 mt-0.5" x-text="caFmtMs(line.end_ms)"></span>
+                      </div>
+                    </template>
+                    <div x-show="caFilteredLines().length === 0 && caTranscriptSearch" class="text-center py-4 text-xs text-gray-400">No matches for "<span x-text="caTranscriptSearch"></span>"</div>
+                  </div>
+                  <p class="text-[10px] text-gray-400 text-right" x-text="caFilteredLines().length + ' lines shown'"></p>
+                </div>
+              </template>
+            </div>
+
+          </div> <!-- /detail content -->
+        </div> <!-- /right panel -->
+      </div> <!-- /two-column -->
+    </div> <!-- /content-analysis tab -->
+
   </main>
 
   <script>
@@ -2069,6 +2318,7 @@
           { id: 'settings', label: 'Settings', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>' },
           { id: 'dryrun', label: 'Dry Run', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>' },
           { id: 'audit', label: 'Audit & Recon', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>' },
+          { id: 'content-analysis', label: 'Content Analysis', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.876V15.12a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>' },
         ],
         // Multi-project state
         projects: [],
@@ -2136,6 +2386,9 @@
         dryRunCheckpoint: null,
         dryRunCaptionStats: null,
         dryRunCaptionStatsLoading: false,
+        // Content Analysis state
+        caVideos: [], caTotal: 0, caPage: 1, caTotalPages: 1, caSearch: '', caLoading: false,
+        caSelected: null, caDetail: null, caDetailLoading: false, caTranscriptSearch: '',
         chatMessages: [{ role: 'assistant', content: 'Welcome! I can help you understand your migration. Try asking:\n\n- "How many videos are pending?"\n- "Show me failed videos"\n- "Estimate cost for 5000 videos"\n- "What formats are in the library?"', tier: 0 }],
         chatInput: '', chatLoading: false,
         statusChart: null,
@@ -2247,6 +2500,7 @@
             if (tab === 'settings') { this.loadSettings(); this.loadProjectCreds(); this.loadClientTokens(); this.loadCostProjection(); }
             if (tab === 'dryrun') { this.checkDryRunCheckpoint(); }
             if (tab === 'audit') { this.loadReconciliation(); this.loadAuditTrail(); this.loadJourneyVideos(); }
+            if (tab === 'content-analysis') { this.loadCaVideos(); }
           });
           this.$nextTick(() => this.renderStatusChart());
         },
@@ -2966,7 +3220,8 @@
         async loadMigrationReport() {
           this.dryRunReportLoading = true;
           try {
-            const r = await fetch('/api/migration/report', { headers: this._authHeaders() });
+            const qs = this.currentProjectSlug ? `?project_slug=${encodeURIComponent(this.currentProjectSlug)}` : '';
+            const r = await fetch('/api/migration/report' + qs, { headers: this._authHeaders() });
             const d = await r.json();
             if (r.ok) { this.dryRunReport = d; }
             else { alert(d.error || 'No report found'); }
@@ -2985,7 +3240,8 @@
 
         async checkDryRunCheckpoint() {
           try {
-            const r = await fetch('/api/migration/checkpoint', { headers: this._authHeaders() });
+            const qs = this.currentProjectSlug ? `?project_slug=${encodeURIComponent(this.currentProjectSlug)}` : '';
+            const r = await fetch('/api/migration/checkpoint' + qs, { headers: this._authHeaders() });
             if (r.ok) { this.dryRunCheckpoint = await r.json(); }
           } catch(e) { /* ignore */ }
         },
@@ -2993,7 +3249,8 @@
         async loadCaptionStats() {
           this.dryRunCaptionStatsLoading = true;
           try {
-            const r = await fetch('/api/kaltura/caption-stats', { headers: this._authHeaders() });
+            const qs = this.currentProjectSlug ? `?project_slug=${encodeURIComponent(this.currentProjectSlug)}` : '';
+            const r = await fetch('/api/kaltura/caption-stats' + qs, { headers: this._authHeaders() });
             const d = await r.json();
             if (r.ok) { this.dryRunCaptionStats = d; }
             else { alert(d.error || 'Caption stats failed'); }
@@ -3031,6 +3288,35 @@
           const colors = rawLabels.map(l => ({ pending:'#008285', completed:'#16a34a', failed:'#dc2626', downloading:'#2563eb', uploading:'#d97706', staged:'#7c3aed' })[l] || '#9ca3af');
           this.statusChart = new Chart(ctx, { type: 'doughnut', data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0 }] },
             options: { responsive: true, plugins: { legend: { position: 'right', labels: { color: '#6b7280', font: { size: 11 } } } } } });
+        },
+
+        // ── Content Analysis ──
+        async loadCaVideos(page = 1) {
+          this.caLoading = true; this.caPage = page;
+          try {
+            const params = new URLSearchParams({ page, page_size: 30 });
+            if (this.caSearch) params.set('search', this.caSearch);
+            const slug = this.currentProjectSlug || 'default';
+            const r = await fetch(`/api/projects/${slug}/content-analysis?${params}`, { headers: { Authorization: 'Bearer ' + this.token } });
+            if (!r.ok) { const e = await r.json(); this.caVideos = []; this.caTotal = 0; return; }
+            const d = await r.json();
+            this.caVideos = d.videos || []; this.caTotal = d.total || 0; this.caTotalPages = d.total_pages || 1;
+          } finally { this.caLoading = false; }
+        },
+        async loadCaDetail(video) {
+          this.caSelected = video; this.caDetail = null; this.caDetailLoading = true; this.caTranscriptSearch = '';
+          try {
+            const slug = this.currentProjectSlug || 'default';
+            const r = await fetch(`/api/projects/${slug}/content-analysis/${video.id}`, { headers: { Authorization: 'Bearer ' + this.token } });
+            if (r.ok) this.caDetail = await r.json();
+          } finally { this.caDetailLoading = false; }
+        },
+        caFmtMs(ms) { if (!ms && ms !== 0) return ''; const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60); return h>0?`${h}:${String(m%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`:`${m}:${String(s%60).padStart(2,'0')}`; },
+        caFilteredLines() {
+          if (!this.caDetail?.transcript?.lines) return [];
+          if (!this.caTranscriptSearch) return this.caDetail.transcript.lines;
+          const q = this.caTranscriptSearch.toLowerCase();
+          return this.caDetail.transcript.lines.filter(l => l.text.toLowerCase().includes(q));
         },
 
         formatDuration(s) { if (!s) return '0:00'; const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60; return h>0?`${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`:`${m}:${String(sec).padStart(2,'0')}`; },

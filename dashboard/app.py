@@ -1510,12 +1510,14 @@ async def discover_videos(
             caption_count = db_rec.get("caption_count", 0)
             thumbnail_count = db_rec.get("thumbnail_count", 0)
             languages = [l for l in (db_rec.get("languages") or "").split(",") if l]
+            caption_formats = languages  # migrated: use DB languages as format proxy
         else:
             mig_status = "not_started"
             zoom_id = None
-            caption_count = 0
-            thumbnail_count = 0
+            caption_count = a.caption_count
+            thumbnail_count = a.thumbnail_count
             languages = []
+            caption_formats = list(a.caption_formats) if hasattr(a, "caption_formats") else []
         videos.append({
             "id": a.id,
             "name": a.title,
@@ -1531,6 +1533,7 @@ async def discover_videos(
             "caption_count": caption_count,
             "thumbnail_count": thumbnail_count,
             "languages": languages,
+            "caption_formats": caption_formats,
         })
 
     return {
@@ -1546,6 +1549,230 @@ async def discover_videos(
             "min_duration": min_duration if min_duration > 0 else None,
         },
     }
+
+
+# ── Content Analysis ──────────────────────────────────────────────────────────
+
+def _resolve_kaltura_client(slug: str):
+    """Resolve a live KalturaClient for a given project slug.
+    Returns (client, error_response) — exactly one will be None.
+    """
+    pipeline = _get_pipeline_for_project(slug)
+    if pipeline is not None:
+        return pipeline.kaltura, None
+
+    if not _db.is_available():
+        return None, JSONResponse({"error": "no_credentials", "message": "Pipeline not configured"}, status_code=400)
+
+    project = _db.fetch_one("SELECT id, source_platform FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        return None, JSONResponse({"error": "not_found", "message": "Project not found"}, status_code=404)
+
+    platform = project.get("source_platform") or ""
+    if platform != "kaltura":
+        return None, JSONResponse({"error": "no_credentials", "message": "Content Analysis requires a Kaltura source project."}, status_code=400)
+
+    creds = _db.get_all_credentials(str(project["id"])).get("kaltura", {})
+    if not creds:
+        return None, JSONResponse({"error": "no_credentials", "message": "No Kaltura credentials. Add them in Settings."}, status_code=400)
+
+    from migration.kaltura_client import KalturaClient
+    from migration.config import KalturaConfig
+    cfg = KalturaConfig(
+        partner_id=creds.get("partner_id", ""),
+        admin_secret=creds.get("admin_secret", ""),
+        user_id=creds.get("user_id", ""),
+        service_url=creds.get("service_url", "https://www.kaltura.com"),
+    )
+    client = KalturaClient(cfg)
+    try:
+        client.authenticate()
+    except Exception as e:
+        return None, JSONResponse({"error": "auth_failed", "message": f"Kaltura auth failed: {e}"}, status_code=400)
+    return client, None
+
+
+@app.get("/api/projects/{slug}/content-analysis")
+async def content_analysis_list(
+    slug: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    search: str = Query("", max_length=200),
+    user: dict = Depends(_verify_jwt),
+):
+    """List videos with engagement + caption metadata for content analysis."""
+    client, err = _resolve_kaltura_client(slug)
+    if err:
+        return err
+
+    result = client.list_videos(page=page, page_size=page_size, search=search or None)
+    entries = result.get("objects", [])
+    total = result.get("totalCount", 0)
+
+    # Batch-fetch caption counts and formats in one call
+    entry_ids = [e.get("id", "") for e in entries if e.get("id")]
+    captions_by_entry: dict = {}
+    thumbs_by_entry: dict = {}
+    try:
+        captions_by_entry = client.list_captions_batch(entry_ids)
+        thumbs_by_entry = client.list_thumbnails_batch(entry_ids)
+    except Exception:
+        pass
+
+    import math
+    videos = []
+    for e in entries:
+        eid = e.get("id", "")
+        caps = captions_by_entry.get(eid, [])
+        formats = list({client.caption_format_name(c.get("format", 0)) for c in caps})
+        videos.append({
+            "id": eid,
+            "name": e.get("name", ""),
+            "description": (e.get("description") or "")[:300],
+            "tags": e.get("tags", ""),
+            "categories": e.get("categories", ""),
+            "duration": e.get("duration", 0),
+            "size_bytes": e.get("dataSize", 0),
+            "plays": e.get("plays", 0),
+            "views": e.get("views", 0),
+            "width": e.get("width", 0),
+            "height": e.get("height", 0),
+            "created_at": e.get("createdAt", 0),
+            "thumbnail_url": e.get("thumbnailUrl", ""),
+            "caption_count": len(caps),
+            "caption_formats": formats,
+            "thumbnail_count": len(thumbs_by_entry.get(eid, [])),
+        })
+
+    return {
+        "videos": videos,
+        "total": total,
+        "page": page,
+        "total_pages": max(1, math.ceil(total / page_size)),
+    }
+
+
+@app.get("/api/projects/{slug}/content-analysis/{entry_id}")
+async def content_analysis_detail(
+    slug: str,
+    entry_id: str,
+    user: dict = Depends(_verify_jwt),
+):
+    """Full content analysis for a single video: transcript, chapters, cue points."""
+    client, err = _resolve_kaltura_client(slug)
+    if err:
+        return err
+
+    # Fetch in parallel (sequential here — each is fast)
+    captions = client.list_captions(entry_id)
+    cuepoints = client.list_cuepoints(entry_id)
+    thumbs = client.list_thumbnails(entry_id)
+
+    # Build transcript from first available caption (prefer SRT or VTT)
+    transcript_lines = []
+    transcript_caption = None
+    for cap in sorted(captions, key=lambda c: (c.get("isDefault", False) is False, c.get("format", 99))):
+        fmt = cap.get("format", 0)
+        if fmt in (1, 3):  # SRT or VTT
+            transcript_caption = cap
+            break
+    if not transcript_caption and captions:
+        transcript_caption = captions[0]
+
+    if transcript_caption:
+        try:
+            raw = client.get_caption_as_text(transcript_caption["id"])
+            transcript_lines = _parse_caption_to_lines(raw, transcript_caption.get("format", 1))
+        except Exception:
+            pass
+
+    # Parse cue points into chapters vs annotations vs key frames
+    chapters = []
+    annotations = []
+    key_frames = []
+    for cp in cuepoints:
+        cp_type = cp.get("cuePointType", "")
+        entry = {
+            "id": cp.get("id", ""),
+            "start_ms": cp.get("startTime", 0),
+            "end_ms": cp.get("endTime"),
+            "name": cp.get("name") or cp.get("text") or "",
+            "tags": cp.get("tags", ""),
+        }
+        if "chapter" in cp_type.lower():
+            chapters.append(entry)
+        elif "thumb" in cp_type.lower():
+            key_frames.append({**entry, "thumb_url": cp.get("assetId", "")})
+        else:
+            annotations.append(entry)
+
+    return {
+        "entry_id": entry_id,
+        "captions": [
+            {
+                "id": c.get("id"),
+                "label": c.get("label", ""),
+                "language": c.get("language", ""),
+                "format": client.caption_format_name(c.get("format", 0)),
+                "is_default": bool(c.get("isDefault")),
+            }
+            for c in captions
+        ],
+        "transcript": {
+            "caption_id": transcript_caption["id"] if transcript_caption else None,
+            "language": transcript_caption.get("language", "") if transcript_caption else "",
+            "format": client.caption_format_name(transcript_caption.get("format", 0)) if transcript_caption else "",
+            "lines": transcript_lines,
+            "word_count": sum(len(l["text"].split()) for l in transcript_lines),
+        },
+        "chapters": sorted(chapters, key=lambda c: c["start_ms"]),
+        "annotations": sorted(annotations, key=lambda a: a["start_ms"]),
+        "key_frames": key_frames,
+        "thumbnail_count": len(thumbs),
+    }
+
+
+def _parse_caption_to_lines(text: str, fmt_code: int) -> list[dict]:
+    """Parse SRT or VTT caption text into a list of {start_ms, end_ms, text} dicts."""
+    import re
+    lines = []
+
+    if fmt_code == 1:  # SRT
+        # Pattern: index\ntimestamp --> timestamp\ntext\n
+        blocks = re.split(r"\n\s*\n", text.strip())
+        ts_re = re.compile(r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})")
+        for block in blocks:
+            block_lines = block.strip().splitlines()
+            for i, line in enumerate(block_lines):
+                m = ts_re.search(line)
+                if m:
+                    def to_ms(h, mi, s, ms): return int(h)*3600000 + int(mi)*60000 + int(s)*1000 + int(ms)
+                    start_ms = to_ms(*m.groups()[:4])
+                    end_ms = to_ms(*m.groups()[4:])
+                    caption_text = " ".join(l.strip() for l in block_lines[i+1:] if l.strip())
+                    if caption_text:
+                        lines.append({"start_ms": start_ms, "end_ms": end_ms, "text": caption_text})
+                    break
+
+    elif fmt_code == 3:  # VTT
+        blocks = re.split(r"\n\s*\n", text.strip())
+        ts_re = re.compile(r"(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})")
+        for block in blocks:
+            if block.strip().startswith("WEBVTT"):
+                continue
+            block_lines = block.strip().splitlines()
+            for i, line in enumerate(block_lines):
+                m = ts_re.search(line)
+                if m:
+                    def to_ms(h, mi, s, ms): return int(h)*3600000 + int(mi)*60000 + int(s)*1000 + int(ms)
+                    start_ms = to_ms(*m.groups()[:4])
+                    end_ms = to_ms(*m.groups()[4:])
+                    caption_text = " ".join(l.strip() for l in block_lines[i+1:] if l.strip())
+                    if caption_text:
+                        lines.append({"start_ms": start_ms, "end_ms": end_ms, "text": caption_text})
+                    break
+
+    return lines
 
 
 # ── Admin: force DB schema migration ──
@@ -1940,24 +2167,34 @@ async def get_events_video_metadata(video_id: str, user: dict = Depends(_verify_
 @app.post("/api/manifest/generate")
 @limiter.limit("10/minute")
 async def generate_source_manifest(request: Request, user: dict = Depends(_verify_jwt)):
-    """Generate a frozen source manifest for a list of Kaltura entry IDs.
+    """Generate a frozen source manifest for a list of entry IDs.
 
-    POST body: { "entry_ids": ["0_abc123", "0_def456", ...] }
-    Returns the manifest + CSV download link.
+    POST body: { "entry_ids": ["0_abc123", ...], "project_slug": "ifrs" }
+    Kaltura projects only — uses the project-specific Kaltura client.
     """
-    if _demo_mode or _pipeline is None:
-        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
-
     body = await request.json()
     entry_ids = body.get("entry_ids", [])
+    project_slug = body.get("project_slug", "")
     if not entry_ids:
         return JSONResponse({"error": "entry_ids required"}, status_code=400)
 
-    audit_log("manifest_generate", user=user["sub"], details={"entry_ids": entry_ids})
+    # Resolve Kaltura client for the correct project
+    kaltura_client = None
+    if project_slug:
+        client, err = _resolve_kaltura_client(project_slug)
+        if err:
+            return err
+        kaltura_client = client
+    elif not _demo_mode and _pipeline is not None:
+        kaltura_client = _pipeline.kaltura
+    else:
+        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+
+    audit_log("manifest_generate", user=user["sub"], details={"entry_ids": entry_ids, "project": project_slug})
 
     try:
-        manifest = _pipeline.kaltura.generate_source_manifest(entry_ids)
-        csv_content = _pipeline.kaltura.manifest_to_csv(manifest)
+        manifest = kaltura_client.generate_source_manifest(entry_ids)
+        csv_content = kaltura_client.manifest_to_csv(manifest)
         return {
             "manifest": manifest,
             "csv": csv_content,
@@ -1974,6 +2211,7 @@ async def generate_source_manifest(request: Request, user: dict = Depends(_verif
 @app.get("/api/kaltura/caption-stats")
 async def get_caption_format_stats(
     max_videos: int = Query(None, ge=1, le=50000),
+    project_slug: str = Query("", max_length=100),
     user: dict = Depends(_verify_jwt),
 ):
     """Count SRT vs VTT caption files across the Kaltura account.
@@ -1981,11 +2219,19 @@ async def get_caption_format_stats(
     This scans all videos and their caption assets. Can be slow for large accounts.
     Use max_videos to limit the scan scope.
     """
-    if _demo_mode or _pipeline is None:
+    kaltura_client = None
+    if project_slug:
+        client, err = _resolve_kaltura_client(project_slug)
+        if err:
+            return err
+        kaltura_client = client
+    elif not _demo_mode and _pipeline is not None:
+        kaltura_client = _pipeline.kaltura
+    else:
         return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
 
     try:
-        stats = _pipeline.kaltura.count_caption_formats(max_videos=max_videos)
+        stats = kaltura_client.count_caption_formats(max_videos=max_videos)
         return stats
     except Exception as e:
         logger.error("Caption stats failed: %s", e)
@@ -2080,29 +2326,31 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
         _migration_running = True
         _migration_cancel.clear()
 
-    if _demo_mode or _pipeline is None:
+    # Resolve project-specific pipeline (fall back to global if no slug)
+    pipeline = _get_pipeline_for_project(project_slug) if project_slug else _pipeline
+    if _demo_mode or pipeline is None:
         with _migration_lock:
             _migration_running = False
-        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+        return JSONResponse({"error": "Pipeline not initialized for this project"}, status_code=400)
 
     audit_log("batch_migration_start", user=user["sub"], details={
-        "entry_ids": entry_ids, "resumable": resumable, "count": len(entry_ids),
+        "entry_ids": entry_ids, "resumable": resumable, "count": len(entry_ids), "project": project_slug,
     })
 
     def _run_batch():
         global _migration_running
         try:
             if resumable:
-                results = _pipeline.run_migration_resumable(entry_ids)
+                results = pipeline.run_migration_resumable(entry_ids)
             else:
-                results = _pipeline.run_migration(video_ids=entry_ids)
+                results = pipeline.run_migration(video_ids=entry_ids)
 
             # Generate migration report
-            report = _pipeline.generate_migration_report(results)
+            report = pipeline.generate_migration_report(results)
 
             # Save report to disk
-            report_paths = _pipeline.save_migration_report(
-                report, _pipeline.config.pipeline.download_dir,
+            report_paths = pipeline.save_migration_report(
+                report, pipeline.config.pipeline.download_dir,
             )
 
             # Broadcast results + persist to DB
@@ -2190,16 +2438,20 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
 
 
 @app.get("/api/migration/report")
-async def get_migration_report(user: dict = Depends(_verify_jwt)):
-    """Get the latest migration report (Kaltura ID → Zoom ID mapping).
+async def get_migration_report(
+    project_slug: str = Query("", max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
+    """Get the latest migration report (Source ID → Zoom ID mapping).
 
     Returns CSV and JSON data for the most recent migration run.
     """
-    if _demo_mode or _pipeline is None:
+    pipeline = _get_pipeline_for_project(project_slug) if project_slug else _pipeline
+    if _demo_mode or pipeline is None:
         return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
 
     # Look for report files in the download directory
-    download_dir = Path(_pipeline.config.pipeline.download_dir)
+    download_dir = Path(pipeline.config.pipeline.download_dir)
     csv_files = sorted(download_dir.glob("migration_report_*.csv"), reverse=True)
     json_files = sorted(download_dir.glob("migration_report_*.json"), reverse=True)
 
@@ -2224,15 +2476,19 @@ async def get_migration_report(user: dict = Depends(_verify_jwt)):
 
 
 @app.get("/api/migration/checkpoint")
-async def get_migration_checkpoint(user: dict = Depends(_verify_jwt)):
+async def get_migration_checkpoint(
+    project_slug: str = Query("", max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     """Check if there's a resumable migration checkpoint.
 
     Returns checkpoint data if a previous migration was interrupted.
     """
-    if _demo_mode or _pipeline is None:
+    pipeline = _get_pipeline_for_project(project_slug) if project_slug else _pipeline
+    if _demo_mode or pipeline is None:
         return {"has_checkpoint": False}
 
-    checkpoint = _pipeline._load_checkpoint()
+    checkpoint = pipeline._load_checkpoint()
     if checkpoint:
         return {
             "has_checkpoint": True,

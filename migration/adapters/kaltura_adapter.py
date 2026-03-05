@@ -74,6 +74,23 @@ class KalturaAdapter(SourceAdapter):
 
             assets.append(asset)
 
+        # Batch-fetch captions and thumbnails for this page
+        if assets:
+            entry_ids = [a.id for a in assets]
+            try:
+                captions_by_entry = self._client.list_captions_batch(entry_ids)
+                thumbs_by_entry = self._client.list_thumbnails_batch(entry_ids)
+                for a in assets:
+                    caps = captions_by_entry.get(a.id, [])
+                    a.caption_count = len(caps)
+                    a.caption_formats = list({
+                        self._client.caption_format_name(c.get("format", 0))
+                        for c in caps
+                    })
+                    a.thumbnail_count = len(thumbs_by_entry.get(a.id, []))
+            except Exception:
+                pass  # Graceful degradation — counts stay 0
+
         return ListResult(
             assets=assets,
             total_count=total,
