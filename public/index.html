@@ -154,6 +154,19 @@
           <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Description <span class="text-gray-300 normal-case">(optional)</span></label>
           <input x-model="newProject.description" type="text" placeholder="Client or project description" class="input-field mt-1.5">
         </div>
+        <div>
+          <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Required for clients with data sovereignty requirements, e.g. Singapore (ap-southeast-1). Media and metadata will be staged in this AWS region only.">Data Region <span class="text-gray-300 normal-case">(required for Singapore / data sovereignty clients)</span></label>
+          <select x-model="newProject.data_region" class="input-field mt-1.5">
+            <option value="">— Global default —</option>
+            <option value="us-east-1">us-east-1 (US East — Virginia)</option>
+            <option value="us-west-2">us-west-2 (US West — Oregon)</option>
+            <option value="eu-west-1">eu-west-1 (Europe — Ireland)</option>
+            <option value="eu-central-1">eu-central-1 (Europe — Frankfurt)</option>
+            <option value="ap-southeast-1">ap-southeast-1 (Singapore)</option>
+            <option value="ap-southeast-2">ap-southeast-2 (Sydney)</option>
+            <option value="ap-northeast-1">ap-northeast-1 (Tokyo)</option>
+          </select>
+        </div>
 
         <!-- Source credentials — shown inline so project is ready to use immediately -->
         <div class="border border-brand-100 rounded-xl p-4 bg-brand-50/30">
@@ -280,73 +293,117 @@
     </div>
   </div>
 
-  <!-- ── Verify & Cleanup Modal ── -->
-  <div x-show="verifyCleanupModal" x-cloak class="fixed inset-0 z-[95] flex items-center justify-center bg-black/50" @click.self="verifyCleanupModal = false">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden" @click.stop>
-      <!-- Header -->
-      <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-        <div>
-          <h3 class="text-sm font-bold text-gray-900">Verify &amp; Cleanup</h3>
-          <p class="text-[11px] text-gray-400 mt-0.5">Confirm videos exist on Zoom with correct metadata, then remove from Kaltura</p>
+  <!-- Batch Migrate Confirmation Modal -->
+  <div x-show="showBatchMigrateModal" x-cloak class="fixed inset-0 z-[95] flex items-center justify-center bg-black/50" @click.self="showBatchMigrateModal = false">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md" @click.stop>
+      <div class="px-6 pt-6 pb-4">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-10 h-10 rounded-xl bg-brand-50 flex items-center justify-center flex-shrink-0">
+            <svg class="w-5 h-5 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-gray-900">Migrate All Videos</h3>
+            <p class="text-xs text-gray-400 mt-0.5">Run the full 5-stage pipeline across every video in the library</p>
+          </div>
         </div>
-        <button @click="verifyCleanupModal = false" class="text-gray-400 hover:text-gray-600">
+
+        <div class="bg-gray-50 rounded-xl p-4 mb-4 space-y-2">
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-gray-500">Project</span>
+            <span class="font-semibold text-gray-800" x-text="projects.find(p=>p.slug===currentProjectSlug)?.name || currentProjectSlug"></span>
+          </div>
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-gray-500">Source platform</span>
+            <span class="font-semibold text-gray-800 capitalize" x-text="currentProjectPlatform || 'Unknown'"></span>
+          </div>
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-gray-500">Videos in library</span>
+            <span class="font-semibold text-gray-800" x-text="(migKalturaTotal || 0).toLocaleString()"></span>
+          </div>
+          <div class="flex items-center justify-between text-xs" x-show="currentProjectDataRegion">
+            <span class="text-gray-500">Data region</span>
+            <span class="font-semibold text-gray-800" x-text="currentProjectDataRegion"></span>
+          </div>
+        </div>
+
+        <div class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4">
+          <p class="text-xs text-amber-700 font-medium">The pipeline will run through all stages: List Assets → Fetch Metadata → Download → S3 Stage → Upload to Zoom. Previously completed videos will be skipped.</p>
+        </div>
+
+        <div class="mb-4">
+          <label class="text-xs font-semibold text-gray-600 mb-1.5 block">Optional: limit to specific entry IDs</label>
+          <textarea x-model="batchMigrateEntryIds" rows="3" placeholder="Leave blank to migrate all. Or paste Kaltura entry IDs, one per line…"
+            class="w-full text-xs px-3 py-2 rounded-xl border border-gray-200 focus:border-brand-400 focus:ring-1 focus:ring-brand-200 outline-none resize-none font-mono"></textarea>
+        </div>
+
+        <div class="flex gap-3">
+          <button @click="showBatchMigrateModal = false" class="flex-1 py-2.5 text-sm font-medium text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200 transition-colors">Cancel</button>
+          <button @click="startBatchMigration()" :disabled="migrationRunning" class="flex-1 py-2.5 btn-primary text-sm">
+            <span x-show="!migrationRunning">Start Migration</span>
+            <span x-show="migrationRunning">Starting…</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin Page Modal -->
+  <div x-show="currentTab === 'admin'" x-cloak class="fixed inset-0 z-[100] flex items-start justify-center bg-black/60 pt-16" @click.self="switchTab('dashboard')">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden" @click.stop>
+      <div class="px-6 py-5 border-b border-gray-100 flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-bold text-gray-900">Admin Panel</h2>
+          <p class="text-xs text-gray-400 mt-0.5">Project management — requires PIN</p>
+        </div>
+        <button @click="switchTab('dashboard')" class="text-gray-400 hover:text-gray-600">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
         </button>
       </div>
-      <!-- Options -->
-      <div x-show="!verifyCleanupResults" class="px-6 py-5 space-y-4 flex-1">
-        <div class="bg-yellow-50 border border-yellow-200 rounded-xl p-4 text-xs text-yellow-800">
-          <strong>Dry Run mode</strong> will only check Zoom — nothing is deleted. Toggle off to also delete verified videos from Kaltura.
+
+      <!-- PIN gate -->
+      <div x-show="!adminAuthed" class="flex-1 flex flex-col items-center justify-center p-8 gap-4">
+        <div class="w-12 h-12 rounded-xl bg-gray-100 flex items-center justify-center">
+          <svg class="w-6 h-6 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
         </div>
-        <label class="flex items-center gap-3 cursor-pointer">
-          <div class="relative">
-            <input type="checkbox" x-model="verifyCleanupDryRun" class="sr-only peer">
-            <div class="w-9 h-5 bg-gray-200 peer-checked:bg-brand-500 rounded-full transition-colors"></div>
-            <div class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-4"></div>
-          </div>
-          <span class="text-sm text-gray-700">Dry run <span class="text-gray-400">(uncheck to delete from Kaltura after verification)</span></span>
-        </label>
-        <div class="flex gap-3 pt-2">
-          <button @click="runVerifyCleanup()" :disabled="verifyCleanupRunning" class="btn-primary text-sm px-5 py-2" x-text="verifyCleanupRunning ? 'Checking…' : (verifyCleanupDryRun ? 'Check Zoom (dry run)' : 'Verify + Delete from Kaltura')"></button>
-          <button @click="verifyCleanupModal = false" class="text-sm text-gray-500 hover:text-gray-700 px-4 py-2">Cancel</button>
+        <p class="text-sm font-semibold text-gray-700">Enter admin PIN</p>
+        <div class="flex gap-2 w-full max-w-xs">
+          <input type="password" x-model="adminPin" @keydown.enter="verifyAdminPin()" placeholder="PIN" class="flex-1 input-field text-sm text-center tracking-widest" maxlength="20">
+          <button @click="verifyAdminPin()" :disabled="adminPinLoading" class="btn-primary text-sm px-4">Go</button>
         </div>
+        <p x-show="adminPinError" class="text-xs text-red-500" x-text="adminPinError"></p>
       </div>
-      <!-- Results -->
-      <div x-show="verifyCleanupResults" class="flex-1 overflow-y-auto">
-        <div class="px-6 py-4 border-b border-gray-100 grid grid-cols-4 gap-3 text-center">
-          <div><p class="text-lg font-bold text-gray-900" x-text="verifyCleanupResults?.verified || 0"></p><p class="text-[10px] text-gray-400">Verified</p></div>
-          <div><p class="text-lg font-bold text-red-600" x-text="verifyCleanupResults?.missing_on_zoom || 0"></p><p class="text-[10px] text-gray-400">Missing</p></div>
-          <div><p class="text-lg font-bold text-yellow-600" x-text="verifyCleanupResults?.title_mismatch || 0"></p><p class="text-[10px] text-gray-400">Title mismatch</p></div>
-          <div><p class="text-lg font-bold text-brand-600" x-text="verifyCleanupResults?.deleted || 0"></p><p class="text-[10px] text-gray-400">Deleted Kaltura</p></div>
+
+      <!-- Admin content -->
+      <div x-show="adminAuthed" class="flex-1 overflow-y-auto">
+        <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+          <p class="text-xs font-semibold text-gray-600" x-text="adminProjects.length + ' projects'"></p>
+          <button @click="loadAdminProjects()" class="text-xs text-brand-600 hover:text-brand-700">Refresh</button>
         </div>
-        <table class="w-full text-xs">
-          <thead class="bg-gray-50 sticky top-0">
-            <tr>
-              <th class="px-4 py-2 text-left text-[10px] text-gray-400 font-semibold uppercase">Kaltura ID</th>
-              <th class="px-4 py-2 text-left text-[10px] text-gray-400 font-semibold uppercase">Title</th>
-              <th class="px-4 py-2 text-center text-[10px] text-gray-400 font-semibold uppercase">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            <template x-for="r in (verifyCleanupResults?.results || [])" :key="r.kaltura_id">
-              <tr class="border-b border-gray-50 hover:bg-gray-50/50">
-                <td class="px-4 py-2 font-mono text-[10px] text-gray-500" x-text="r.kaltura_id"></td>
-                <td class="px-4 py-2 text-gray-700 max-w-xs truncate" x-text="r.title"></td>
-                <td class="px-4 py-2 text-center">
-                  <template x-if="r.error"><span class="text-[10px] text-red-600 font-medium" x-text="'Error: ' + r.error"></span></template>
-                  <template x-if="!r.error && !r.zoom_exists"><span class="text-[10px] bg-red-50 text-red-700 px-2 py-0.5 rounded-full font-medium">Missing on Zoom</span></template>
-                  <template x-if="!r.error && r.zoom_exists && !r.title_match"><span class="text-[10px] bg-yellow-50 text-yellow-700 px-2 py-0.5 rounded-full font-medium">Title mismatch</span></template>
-                  <template x-if="!r.error && r.zoom_exists && r.title_match && r.deleted_from_kaltura"><span class="text-[10px] bg-brand-50 text-brand-700 px-2 py-0.5 rounded-full font-medium">Verified + Deleted</span></template>
-                  <template x-if="!r.error && r.zoom_exists && r.title_match && !r.deleted_from_kaltura"><span class="text-[10px] bg-green-50 text-green-700 px-2 py-0.5 rounded-full font-medium">Verified</span></template>
-                </td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
-        <div class="px-6 py-3 border-t border-gray-100 flex justify-end">
-          <button @click="verifyCleanupResults = null" class="text-xs text-gray-500 hover:text-gray-700 mr-3">Run again</button>
-          <button @click="verifyCleanupModal = false" class="btn-primary text-xs px-4 py-2">Done</button>
+        <div class="divide-y divide-gray-100">
+          <template x-for="proj in adminProjects" :key="proj.slug">
+            <div class="px-6 py-4 flex items-center gap-4">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                  <p class="text-sm font-semibold text-gray-800 truncate" x-text="proj.name"></p>
+                  <span class="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-gray-100 text-gray-500" x-text="proj.source_platform || 'unknown'"></span>
+                </div>
+                <p class="text-xs text-gray-400 font-mono mt-0.5" x-text="proj.slug"></p>
+              </div>
+              <!-- Rename inline -->
+              <div class="flex items-center gap-1.5" x-show="adminEditSlug !== proj.slug">
+                <button @click="adminEditSlug = proj.slug; adminEditName = proj.name" class="text-[10px] text-brand-600 hover:text-brand-700 px-2 py-1 rounded-lg bg-brand-50 hover:bg-brand-100 transition-colors">Rename</button>
+                <button @click="adminDeleteProject(proj.slug)" class="text-[10px] text-red-600 hover:text-red-700 px-2 py-1 rounded-lg bg-red-50 hover:bg-red-100 transition-colors">Delete</button>
+              </div>
+              <div x-show="adminEditSlug === proj.slug" class="flex items-center gap-1.5">
+                <input x-model="adminEditName" type="text" class="text-xs px-2 py-1 rounded-lg border border-gray-200 focus:border-brand-400 outline-none w-36" @keydown.enter="adminSaveRename(proj.slug)" @keydown.escape="adminEditSlug = ''">
+                <button @click="adminSaveRename(proj.slug)" class="text-[10px] text-green-600 hover:text-green-700 px-2 py-1 rounded-lg bg-green-50 transition-colors">Save</button>
+                <button @click="adminEditSlug = ''" class="text-[10px] text-gray-400 hover:text-gray-600 px-2 py-1 rounded-lg bg-gray-100 transition-colors">Cancel</button>
+              </div>
+            </div>
+          </template>
+          <div x-show="adminProjects.length === 0" class="px-6 py-8 text-center text-sm text-gray-400">No projects found</div>
         </div>
+        <div x-show="adminMessage" class="px-6 py-3 border-t border-gray-100 text-xs font-medium" :class="adminMessage?.startsWith('Error') ? 'text-red-600 bg-red-50' : 'text-green-600 bg-green-50'" x-text="adminMessage"></div>
       </div>
     </div>
   </div>
@@ -381,10 +438,10 @@
 
     <nav class="flex-1 px-3 space-y-0.5">
       <template x-for="tab in tabs" :key="tab.id">
-        <button @click="currentTab = tab.id" :class="currentTab === tab.id ? 'bg-brand-50 text-brand-700 font-semibold shadow-sm' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50'" class="w-full text-left px-3 py-2.5 rounded-xl text-[13px] flex items-center gap-3 transition-all duration-150">
+        <a :href="'#' + tab.id" @click.prevent="switchTab(tab.id)" :class="currentTab === tab.id ? 'bg-brand-50 text-brand-700 font-semibold shadow-sm' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50'" class="w-full text-left px-3 py-2.5 rounded-xl text-[13px] flex items-center gap-3 transition-all duration-150 no-underline">
           <span x-html="tab.icon" :class="currentTab === tab.id ? 'opacity-100' : 'opacity-50'"></span>
           <span x-text="tab.label"></span>
-        </button>
+        </a>
       </template>
     </nav>
 
@@ -395,7 +452,7 @@
       </div>
       <div x-show="status.demo_mode && (status.connections?.kaltura || status.connections?.s3 || status.connections?.zoom)" class="flex gap-1.5 flex-wrap mt-1">
         <span class="text-[10px] px-1.5 py-0.5 rounded font-semibold" :class="status.connections?.kaltura ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-400'" x-text="status.connections?.kaltura ? 'Kaltura \u2713' : 'Kaltura'"></span>
-        <span class="text-[10px] px-1.5 py-0.5 rounded font-semibold" :class="status.connections?.s3 ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-400'" x-text="status.skip_s3 ? 'S3 Skipped' : status.connections?.s3 ? 'AWS \u2713' : 'AWS'"></span>
+        <span class="text-[10px] px-1.5 py-0.5 rounded font-semibold" :class="status.connections?.s3 ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-400'" x-text="status.connections?.s3 ? 'AWS \u2713' : 'AWS'"></span>
         <span class="text-[10px] px-1.5 py-0.5 rounded font-semibold" :class="status.connections?.zoom ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-400'" x-text="status.connections?.zoom ? 'Zoom \u2713' : 'Zoom'"></span>
       </div>
       <div x-show="authenticated" class="flex items-center justify-between text-xs">
@@ -515,30 +572,58 @@
         <div class="flex items-center gap-2">
           <button x-show="migrationRunning" @click="if(confirm('Stop the current migration? Videos in progress will finish.')) stopMigration()" class="px-4 py-2 btn-danger text-xs">Stop Migration</button>
           <button @click="retryFailed()" x-show="failedCount > 0 && !migrationRunning" class="px-4 py-2 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded-xl text-xs font-medium transition-colors border border-amber-200">Retry Failed</button>
+          <button x-show="!migrationRunning" @click="openBatchMigrate()" class="px-4 py-2 btn-primary text-xs flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            Migrate All Videos
+          </button>
         </div>
       </div>
 
-      <!-- Progress Bar (during active migration) -->
+      <!-- Pipeline Stage Tracker -->
       <div x-show="migrationRunning || Object.keys(pipelineVideos).length > 0" x-transition class="card-static p-4 mb-5">
-        <div class="flex items-center gap-4">
+        <div class="flex items-center justify-between mb-3">
           <div class="flex items-center gap-2">
             <span class="w-2 h-2 rounded-full animate-pulse" :class="migrationRunning ? 'bg-brand-500' : 'bg-gray-300'"></span>
             <span class="text-xs font-semibold text-gray-600" x-text="migrationRunning ? 'Migrating...' : 'Migration Complete'"></span>
           </div>
-          <div class="flex items-center gap-2 text-xs text-gray-500">
-            <span class="text-green-600 font-semibold" x-text="doneCount"></span> done
+          <div class="flex items-center gap-3 text-xs text-gray-500">
+            <span><span class="text-green-600 font-semibold" x-text="doneCount"></span> done</span>
             <template x-if="failedCount > 0"><span>· <span class="text-red-600 font-semibold" x-text="failedCount"></span> failed</span></template>
-            · <span x-text="pipelineTotal - doneCount - failedCount"></span> remaining
+            <span>· <span x-text="pipelineTotal - doneCount - failedCount"></span> remaining</span>
+            <span class="font-bold text-gray-500" x-text="pipelineProgress + '%'"></span>
           </div>
-          <div class="flex-1">
-            <div class="progress-bar-track"><div class="progress-bar-fill" :style="'width: ' + pipelineProgress + '%'"></div></div>
-          </div>
-          <span class="text-xs font-bold text-gray-500" x-text="pipelineProgress + '%'"></span>
+        </div>
+        <!-- 5-stage pipeline flow -->
+        <div class="flex items-center gap-1">
+          <template x-for="(stage, idx) in [
+            { key: 'list_assets',     label: 'List Assets',    icon: 'M4 6h16M4 10h16M4 14h16M4 18h16' },
+            { key: 'fetch_metadata',  label: 'Fetch Metadata', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2' },
+            { key: 'download',        label: 'Download',       icon: 'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4' },
+            { key: 'transform',       label: 'Transform',      icon: 'M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4' },
+            { key: 'upload',          label: 'Upload to Zoom', icon: 'M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12' }
+          ]" :key="stage.key">
+            <div class="flex-1 min-w-0">
+              <div class="flex flex-col items-center gap-1">
+                <div class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
+                     :class="pipelineStageCounts[stage.key] > 0 ? 'bg-brand-100 text-brand-600' : 'bg-gray-100 text-gray-300'">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" :d="stage.icon"/></svg>
+                </div>
+                <span class="text-[9px] font-semibold text-center leading-tight text-gray-500" x-text="stage.label"></span>
+                <span class="text-[10px] font-bold" :class="pipelineStageCounts[stage.key] > 0 ? 'text-brand-600' : 'text-gray-300'" x-text="pipelineStageCounts[stage.key] || 0"></span>
+              </div>
+            </div>
+            <template x-if="idx < 4">
+              <svg class="w-4 h-4 text-gray-200 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            </template>
+          </template>
+        </div>
+        <div class="mt-3">
+          <div class="progress-bar-track"><div class="progress-bar-fill" :style="'width: ' + pipelineProgress + '%'"></div></div>
         </div>
       </div>
 
       <!-- 3-Column Library View -->
-      <div class="grid gap-4 transition-all duration-300" :class="migKalturaExpanded ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-3'" style="min-height: 500px;">
+      <div class="grid gap-4 transition-all duration-300" :class="migKalturaExpanded ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-[2fr_1fr_1fr]'" style="min-height: 500px;">
 
         <!-- ═══ Column 1: Kaltura (Source) ═══ -->
         <div class="card-static flex flex-col overflow-hidden" :class="migKalturaExpanded ? 'col-span-1' : ''">
@@ -576,7 +661,7 @@
           </div>
 
           <!-- Video list -->
-          <div class="flex-1 overflow-y-auto" :style="migKalturaExpanded ? 'max-height: none' : 'max-height: 420px'">
+          <div class="flex-1 overflow-y-auto" :style="migKalturaExpanded ? 'max-height: none' : 'max-height: 600px'">
             <div x-show="migKalturaLoading" class="flex items-center justify-center py-12">
               <svg class="w-5 h-5 text-brand-400 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
             </div>
@@ -619,7 +704,7 @@
                     <template x-if="v.thumbnail_count > 1">
                       <span class="flex items-center gap-0.5 text-[9px] font-medium px-1 py-0.5 rounded bg-amber-50 text-amber-600 leading-none">
                         <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 15l-5-5L5 21"/></svg>
-                        <span x-text="v.thumbnail_count + ' thumbs'"></span>
+                        <span x-text="v.thumbnail_count + ' Thumbnails'"></span>
                       </span>
                     </template>
                   </div>
@@ -641,7 +726,7 @@
               </div>
               <p class="text-xs font-semibold text-gray-700 mb-1">No source credentials</p>
               <p class="text-[11px] text-gray-400 mb-3" x-text="'Add ' + ({'kaltura':'Kaltura','on24':'ON24','brightcove':'Brightcove','panopto':'Panopto','':'source'}[currentProjectPlatform] || 'source') + ' credentials for this project in Settings.'"></p>
-              <button @click="currentTab='settings'" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100 transition-colors">Go to Settings</button>
+              <a href="#settings" @click.prevent="switchTab('settings')" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100 transition-colors">Go to Settings</a>
             </div>
             <div x-show="!migKalturaLoading && !migKalturaNoCredentials && migKalturaVideos.length === 0" class="text-xs text-gray-300 text-center py-12">No videos found</div>
           </div>
@@ -677,8 +762,8 @@
         </div>
 
         <!-- ═══ Column 2: AWS S3 (In Transit) ═══ -->
+        <!-- Full column -->
         <div class="card-static flex flex-col overflow-hidden"
-             x-show="!migKalturaExpanded"
              x-transition:enter="transition ease-out duration-350"
              x-transition:enter-start="opacity-0 translate-y-6 scale-95"
              x-transition:enter-end="opacity-100 translate-y-0 scale-100"
@@ -702,17 +787,17 @@
           </div>
 
           <!-- In-transit videos (from live pipelineVideos) -->
-          <div class="flex-1 overflow-y-auto" style="max-height: 480px;">
+          <div class="flex-1 overflow-y-auto" style="max-height: 600px;">
             <template x-for="v in inTransitVideos" :key="v.id">
               <div class="flex items-center gap-2.5 px-3 py-2.5 border-b border-gray-50">
                 <svg class="w-4 h-4 text-blue-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
                 <div class="flex-1 min-w-0">
                   <p class="text-xs font-medium text-gray-700 truncate" x-text="v.title"></p>
-                  <p class="text-[10px] text-gray-400" x-text="v.stage === 'kaltura' ? 'Downloading from Kaltura...' : v.stage === 'aws' ? 'Staged on S3' : v.stage === 'zoom' ? 'Uploading to Zoom...' : 'Processing...'"></p>
+                  <p class="text-[10px] text-gray-400" x-text="v.stage === 'kaltura' ? 'Downloading media file...' : v.stage === 'aws' ? 'Staged on S3 — transforming metadata...' : v.stage === 'zoom' ? 'Uploading to Zoom...' : v.stage === 'downloading' ? 'Fetching metadata...' : 'Processing...'"></p>
                 </div>
                 <span class="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                      :class="v.stage === 'kaltura' ? 'bg-brand-50 text-brand-700' : v.stage === 'aws' ? 'bg-blue-50 text-blue-700' : 'bg-green-50 text-green-700'"
-                      x-text="v.stage === 'kaltura' ? 'Downloading' : v.stage === 'aws' ? 'Staged' : v.stage === 'zoom' ? 'Uploading' : v.stage"></span>
+                      :class="v.stage === 'kaltura' ? 'bg-brand-50 text-brand-700' : v.stage === 'aws' ? 'bg-blue-50 text-blue-700' : v.stage === 'zoom' ? 'bg-green-50 text-green-700' : 'bg-gray-50 text-gray-500'"
+                      x-text="v.stage === 'kaltura' ? 'Download' : v.stage === 'aws' ? 'Transform' : v.stage === 'zoom' ? 'Upload' : v.stage === 'downloading' ? 'Fetch Metadata' : v.stage"></span>
               </div>
             </template>
             <div x-show="inTransitVideos.length === 0" class="flex flex-col items-center justify-center py-16 text-center px-6">
@@ -720,14 +805,14 @@
                 <svg class="w-6 h-6 text-blue-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
               </div>
               <p class="text-xs text-gray-400">No videos in transit</p>
-              <p class="text-[10px] text-gray-300 mt-1">Select videos from Kaltura and click Migrate</p>
+              <p class="text-[10px] text-gray-300 mt-1">Select videos from <span x-text="currentProjectPlatform ? (currentProjectPlatform.charAt(0).toUpperCase() + currentProjectPlatform.slice(1)) : 'source'"></span> and click Migrate</p>
             </div>
           </div>
         </div>
 
         <!-- ═══ Column 3: Zoom (Destination) ═══ -->
+        <!-- Full column -->
         <div class="card-static flex flex-col overflow-hidden"
-             x-show="!migKalturaExpanded"
              x-transition:enter="transition ease-out duration-400 delay-75"
              x-transition:enter-start="opacity-0 translate-y-8 scale-95"
              x-transition:enter-end="opacity-100 translate-y-0 scale-100"
@@ -756,7 +841,7 @@
           </div>
 
           <!-- Completed + failed videos -->
-          <div class="flex-1 overflow-y-auto" style="max-height: 480px;">
+          <div class="flex-1 overflow-y-auto" style="max-height: 600px;">
             <!-- Live completed from current session -->
             <template x-for="v in Object.values(pipelineVideos).filter(v => v.stage === 'done')" :key="v.id + '-live'">
               <div class="flex items-center gap-2.5 px-3 py-2.5 border-b border-gray-50 bg-green-50/30">
@@ -856,11 +941,6 @@
             <button @click="zoomCompletedPage = Math.min(zoomCompletedTotalPages, zoomCompletedPage + 1); loadZoomCompleted()" :disabled="zoomCompletedPage >= zoomCompletedTotalPages" class="text-xs text-green-600 hover:text-green-700 disabled:text-gray-300 font-medium">Next &rarr;</button>
           </div>
 
-          <!-- Verify & Cleanup footer -->
-          <div class="border-t border-gray-100 px-3 py-2 flex items-center justify-between bg-gray-50/50">
-            <span class="text-[10px] text-gray-400">Check Zoom + remove from Kaltura after verification</span>
-            <button @click="openVerifyCleanup()" class="text-xs font-semibold text-brand-600 hover:text-brand-700 bg-brand-50 hover:bg-brand-100 px-3 py-1 rounded-lg transition-colors">Verify &amp; Cleanup</button>
-          </div>
         </div>
       </div>
 
@@ -873,21 +953,21 @@
         </template>
       </div>
 
-      <!-- Credential Settings (collapsed by default) -->
+      <!-- Pipeline Configuration (collapsed by default) -->
       <details class="mt-5 card-static overflow-hidden">
         <summary class="px-5 py-4 cursor-pointer flex items-center justify-between hover:bg-gray-50 transition-colors select-none">
           <div class="flex items-center gap-2.5">
             <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-            <span class="text-sm font-semibold text-gray-700">Credential Settings</span>
+            <span class="text-sm font-semibold text-gray-700">Pipeline Configuration</span>
           </div>
           <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
         </summary>
         <div class="px-5 py-4 border-t border-gray-100">
           <p class="text-xs text-gray-400 mb-4">Fine-tune how the migration runs. Defaults work well for most organizations.</p>
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="How many videos to process per migration run.">Videos per Run</label><input type="number" x-model="settings.batch_size" min="1" max="100" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="How many videos can transfer simultaneously.">Simultaneous Transfers</label><input type="number" x-model="settings.max_concurrency" min="1" max="20" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="How many times to automatically retry a video if it fails.">Auto-Retry Count</label><input type="number" x-model="settings.retry_attempts" min="1" max="10" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="How many videos to process per migration run.">Videos per Run</label><input type="number" x-model="settings.batch_size" min="1" max="100" class="input-field mt-1.5"><p class="text-[10px] text-gray-400 mt-1">How many videos the source returns per batch. Lower = less memory use.</p></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="How many videos can transfer simultaneously.">Simultaneous Transfers</label><input type="number" x-model="settings.max_concurrency" min="1" max="20" class="input-field mt-1.5"><p class="text-[10px] text-gray-400 mt-1">Max parallel S3 → Zoom upload threads. Default 5.</p></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="How many times to automatically retry a video if it fails.">Auto-Retry Count</label><input type="number" x-model="settings.retry_attempts" min="1" max="10" class="input-field mt-1.5"><p class="text-[10px] text-gray-400 mt-1">Times to retry a failed video with exponential backoff.</p></div>
           </div>
           <button @click="saveSettings()" :disabled="settingsSaving" class="mt-4 btn-primary text-xs px-4 py-2" x-text="settingsSaving ? 'Saving…' : 'Save'"></button>
         </div>
@@ -960,70 +1040,120 @@
 
       <div x-show="fieldMappingMessage" x-transition class="mb-4 text-sm font-medium text-green-700 bg-green-50 border border-green-200 px-4 py-2.5 rounded-xl" x-text="fieldMappingMessage"></div>
 
-      <!-- Mapping Table -->
-      <div class="card-static overflow-hidden mb-6">
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="bg-gray-50 text-left">
-                <th class="px-4 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider w-8"></th>
-                <th class="px-4 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider">Source Field</th>
-                <th class="px-4 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider">Destination</th>
-                <th class="px-4 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider">Transform</th>
-                <th class="px-4 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider">Template</th>
-                <th class="px-4 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider w-20">Active</th>
-                <th class="px-4 py-3 w-10"></th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-100">
-              <template x-for="(m, idx) in fieldMappings" :key="idx">
-                <tr class="hover:bg-gray-50/50 transition-colors" :class="!m.enabled ? 'opacity-40' : ''">
-                  <td class="px-4 py-2.5 text-center">
-                    <span class="text-[10px] font-bold text-gray-300" x-text="idx + 1"></span>
-                  </td>
-                  <td class="px-4 py-2.5">
-                    <input x-model="m.source_field" type="text" class="w-full text-xs px-2 py-1.5 rounded-lg border border-gray-200 focus:border-brand-400 focus:ring-1 focus:ring-brand-200 outline-none" placeholder="e.g. name, tags">
-                  </td>
-                  <td class="px-4 py-2.5">
-                    <select x-model="m.dest_field" class="w-full text-xs px-2 py-1.5 rounded-lg border border-gray-200 focus:border-brand-400 outline-none">
-                      <option value="title">Title</option>
-                      <option value="description">Description</option>
-                      <option value="thumbnail">Thumbnail</option>
-                    </select>
-                  </td>
-                  <td class="px-4 py-2.5">
-                    <select x-model="m.transform" class="w-full text-xs px-2 py-1.5 rounded-lg border border-gray-200 focus:border-brand-400 outline-none">
-                      <option value="direct">Direct Copy</option>
-                      <option value="append">Append</option>
-                      <option value="format_duration">Format Duration</option>
-                      <option value="template">Template</option>
-                      <option value="skip">Skip</option>
-                    </select>
-                  </td>
-                  <td class="px-4 py-2.5">
-                    <input x-model="m.template" type="text" class="w-full text-xs px-2 py-1.5 rounded-lg border border-gray-200 focus:border-brand-400 focus:ring-1 focus:ring-brand-200 outline-none font-mono" placeholder="{value}" :disabled="m.transform === 'direct' || m.transform === 'skip'">
-                  </td>
-                  <td class="px-4 py-2.5 text-center">
-                    <button @click="m.enabled = !m.enabled" class="relative w-9 h-5 rounded-full transition-colors duration-200" :class="m.enabled ? 'bg-brand-500' : 'bg-gray-300'">
-                      <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200" :class="m.enabled ? 'translate-x-4' : ''"></span>
-                    </button>
-                  </td>
-                  <td class="px-4 py-2.5">
-                    <button @click="removeFieldMapping(idx)" class="text-gray-300 hover:text-red-500 transition-colors">
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                    </button>
-                  </td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
+      <!-- Visual Field Mapping -->
+      <!-- Project name indicator -->
+      <div class="flex items-center justify-between mb-4">
+        <p class="text-xs text-gray-500">Mappings for: <span class="font-semibold text-gray-800" x-text="projects.find(p=>p.slug===currentProjectSlug)?.name || currentProjectSlug"></span></p>
+        <span class="text-[10px] text-gray-400 font-mono" x-text="currentProjectSlug"></span>
+      </div>
+      <!-- Section headers -->
+      <div class="flex items-center mb-3 mt-1">
+        <div class="flex-1 text-xs font-bold text-gray-700 uppercase tracking-wide flex items-center gap-1.5">
+          <span x-text="(currentProjectPlatform ? (currentProjectPlatform.charAt(0).toUpperCase() + currentProjectPlatform.slice(1)) : 'Source') + ' Fields'"></span>
+          <span class="text-[9px] font-normal text-gray-400">→ transform →</span>
         </div>
-        <div class="px-4 py-3 bg-gray-50 border-t border-gray-100">
-          <button @click="addFieldMapping()" class="text-xs text-brand-600 hover:text-brand-700 font-semibold flex items-center gap-1.5">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-            Add Mapping Row
-          </button>
-        </div>
+        <div class="text-xs font-bold text-green-700 uppercase tracking-wide">Zoom Fields</div>
+      </div>
+      <!-- Column headers -->
+      <div class="grid grid-cols-[1fr_auto_1fr_auto_1fr_auto_auto] items-center gap-3 px-4 pb-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+        <span>Source Field</span>
+        <span></span>
+        <span>Transform</span>
+        <span></span>
+        <span>Zoom Destination</span>
+        <span class="text-center">Active</span>
+        <span></span>
+      </div>
+      <div class="space-y-2 mb-4">
+        <template x-for="(m, idx) in fieldMappings" :key="idx">
+          <div class="card px-4 py-3 transition-opacity" :class="!m.enabled ? 'opacity-40' : ''">
+            <div class="grid grid-cols-[1fr_auto_1fr_auto_1fr_auto_auto] items-center gap-3">
+
+              <!-- Source field badge -->
+              <div class="flex items-center gap-2 min-w-0">
+                <div class="w-2 h-2 rounded-full flex-shrink-0" :class="m.enabled ? 'bg-brand-400' : 'bg-gray-300'"></div>
+                <input x-model="m.source_field" type="text" list="source-fields-list"
+                  class="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 focus:border-brand-400 focus:ring-1 focus:ring-brand-200 outline-none font-mono bg-gray-50 focus:bg-white"
+                  placeholder="source.field">
+              </div>
+
+              <!-- Arrow 1 -->
+              <svg class="w-4 h-4 text-gray-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+
+              <!-- Transform -->
+              <div class="flex flex-col gap-1 min-w-0">
+                <select x-model="m.transform"
+                  class="w-full text-xs px-2 py-1.5 rounded-lg border border-gray-200 focus:border-brand-400 outline-none bg-amber-50 text-amber-700 font-medium">
+                  <option value="direct">Direct Copy</option>
+                  <option value="append">Append</option>
+                  <option value="format_duration">Format Duration</option>
+                  <option value="template">Template</option>
+                  <option value="skip">Skip</option>
+                </select>
+                <input x-show="m.transform === 'template' || m.transform === 'append'" x-model="m.template" type="text"
+                  class="w-full text-xs px-2 py-1.5 rounded-lg border border-gray-200 focus:border-brand-400 outline-none font-mono bg-white"
+                  placeholder="{value}">
+              </div>
+
+              <!-- Arrow 2 -->
+              <svg class="w-4 h-4 text-gray-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+
+              <!-- Zoom destination -->
+              <select x-model="m.dest_field"
+                class="w-full text-xs px-2.5 py-1.5 rounded-lg border border-green-200 focus:border-green-400 outline-none bg-green-50 text-green-700 font-semibold">
+                <option value="title">Title</option>
+                <option value="description">Description</option>
+                <option value="tags">Tags</option>
+                <option value="categories">Categories</option>
+                <option value="duration">Duration</option>
+                <option value="thumbnail">Thumbnail</option>
+                <option value="source_id">Source ID (reference)</option>
+              </select>
+
+              <!-- Toggle -->
+              <div class="flex justify-center">
+                <button @click="m.enabled = !m.enabled" class="relative w-9 h-5 rounded-full transition-colors duration-200 flex-shrink-0" :class="m.enabled ? 'bg-brand-500' : 'bg-gray-300'">
+                  <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200" :class="m.enabled ? 'translate-x-4' : ''"></span>
+                </button>
+              </div>
+
+              <!-- Remove -->
+              <button @click="removeFieldMapping(idx)" class="text-gray-300 hover:text-red-500 transition-colors flex-shrink-0">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+              </button>
+
+            </div>
+          </div>
+        </template>
+      </div>
+      <!-- Datalist for platform-specific source field suggestions -->
+      <datalist id="source-fields-list">
+        <template x-if="currentProjectPlatform === 'kaltura'">
+          <template x-for="f in ['name','description','tags','categories','duration','thumbnail_url','kaltura_id','plays','views','created_at','updated_at']" :key="f">
+            <option :value="f"></option>
+          </template>
+        </template>
+        <template x-if="currentProjectPlatform === 'on24'">
+          <template x-for="f in ['title','description','presenters','date','duration','thumbnail','event_id']" :key="f">
+            <option :value="f"></option>
+          </template>
+        </template>
+        <template x-if="currentProjectPlatform === 'brightcove'">
+          <template x-for="f in ['name','description','tags','duration','thumbnail_url','video_id','published_at']" :key="f">
+            <option :value="f"></option>
+          </template>
+        </template>
+        <template x-if="currentProjectPlatform === 'panopto'">
+          <template x-for="f in ['name','description','duration','thumbnail_url','session_id','created','folder_name']" :key="f">
+            <option :value="f"></option>
+          </template>
+        </template>
+      </datalist>
+      <div class="mb-6">
+        <button @click="addFieldMapping()" class="text-xs text-brand-600 hover:text-brand-700 font-semibold flex items-center gap-1.5 px-4 py-2 rounded-xl border border-brand-200 bg-brand-50 hover:bg-brand-100 transition-colors">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+          Add Mapping
+        </button>
       </div>
 
       <!-- Transform Preview -->
@@ -1096,6 +1226,27 @@
             </select>
           </div>
 
+          <!-- Data Region -->
+          <div class="mb-5">
+            <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Required for data sovereignty clients (e.g. Singapore). Media stages in this AWS region only.">Data Region</label>
+            <select x-model="currentProjectDataRegion" class="input-field mt-1.5 max-w-xs">
+              <option value="">— Global default —</option>
+              <option value="us-east-1">us-east-1 (US East — Virginia)</option>
+              <option value="us-west-2">us-west-2 (US West — Oregon)</option>
+              <option value="eu-west-1">eu-west-1 (Europe — Ireland)</option>
+              <option value="eu-central-1">eu-central-1 (Europe — Frankfurt)</option>
+              <option value="ap-southeast-1">ap-southeast-1 (Singapore)</option>
+              <option value="ap-southeast-2">ap-southeast-2 (Sydney)</option>
+              <option value="ap-northeast-1">ap-northeast-1 (Tokyo)</option>
+            </select>
+            <template x-if="currentProjectDataRegion === 'ap-southeast-1'">
+              <p class="text-[11px] text-amber-600 mt-1.5 flex items-center gap-1">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                Singapore data residency — data must not leave ap-southeast-1
+              </p>
+            </template>
+          </div>
+
           <!-- No platform selected -->
           <div x-show="currentProjectPlatform === ''" class="py-3 px-4 rounded-xl bg-amber-50 border border-amber-200/60 text-xs text-amber-700">
             Select a source platform above to enter credentials.
@@ -1137,25 +1288,12 @@
         <div class="card-static p-6">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-sm font-bold text-gray-800 flex items-center gap-2.5">
-              <span class="dot" :class="(status.connections || {}).s3 ? 'dot-green' : settings.skip_s3 === 'true' ? 'dot-green' : 'dot-yellow'"></span> AWS S3 Staging
+              <span class="dot" :class="(status.connections || {}).s3 ? 'dot-green' : 'dot-yellow'"></span> AWS S3 Staging
             </h3>
-            <button x-show="settings.skip_s3 !== 'true'" @click="testConnection('s3')" class="text-xs text-brand-600 hover:text-brand-700 font-semibold px-3 py-1 rounded-lg hover:bg-brand-50 transition-colors">Test Connection</button>
+            <button @click="testConnection('s3')" class="text-xs text-brand-600 hover:text-brand-700 font-semibold px-3 py-1 rounded-lg hover:bg-brand-50 transition-colors">Test Connection</button>
           </div>
-          <!-- Skip S3 toggle -->
-          <div class="flex items-center justify-between p-3 rounded-xl mb-4" :class="settings.skip_s3 === 'true' ? 'bg-amber-50 border border-amber-200/60' : 'bg-gray-50 border border-gray-100'">
-            <div>
-              <p class="text-xs font-semibold" :class="settings.skip_s3 === 'true' ? 'text-amber-800' : 'text-gray-700'">Skip S3 Staging</p>
-              <p class="text-[11px] mt-0.5" :class="settings.skip_s3 === 'true' ? 'text-amber-600' : 'text-gray-400'">Direct Kaltura &rarr; Zoom (no AWS needed)</p>
-            </div>
-            <button @click="settings.skip_s3 = settings.skip_s3 === 'true' ? '' : 'true'" class="relative w-10 h-5 rounded-full transition-colors duration-200" :class="settings.skip_s3 === 'true' ? 'bg-amber-500' : 'bg-gray-300'">
-              <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200" :class="settings.skip_s3 === 'true' ? 'translate-x-5' : ''"></span>
-            </button>
-          </div>
-          <div x-show="settings.skip_s3 === 'true'" class="text-xs text-amber-700 bg-amber-50/50 rounded-lg p-3 mb-4 border border-amber-100">
-            <strong>Direct mode:</strong> Videos go straight from Kaltura to Zoom. Good for testing and small batches. For 30K+ videos, enable S3 staging for fault recovery.
-          </div>
-          <div x-show="settings.skip_s3 !== 'true'" class="space-y-4">
-            <p class="text-xs text-gray-400 leading-relaxed">Secure staging area. Videos are temporarily stored here during transfer. Recommended for large migrations (30K+ videos).</p>
+          <div class="space-y-4">
+            <p class="text-xs text-gray-400 leading-relaxed">Required staging layer. All media and metadata land in S3 first, then upload to Zoom. Enables fault recovery and restartable pipelines for large migrations.</p>
             <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Your AWS IAM access key ID. Found in AWS Console > IAM > Security Credentials.">Access Key ID</label><input type="text" x-model="settings.aws_access_key_id" placeholder="AKIA..." class="input-field mt-1.5"></div>
             <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Your AWS IAM secret access key. Treat this like a password.">Secret Access Key</label><input type="password" x-model="settings.aws_secret_access_key" placeholder="••••••••" class="input-field mt-1.5"></div>
             <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="The name of the Amazon cloud storage container where videos are temporarily held during transfer.">Cloud Storage Bucket</label><input type="text" x-model="settings.aws_s3_bucket" placeholder="my-migration-bucket" class="input-field mt-1.5"></div>
@@ -1423,7 +1561,7 @@
       <!-- Step 1: Entry IDs -->
       <div class="card p-5 mb-5">
         <h3 class="font-semibold text-gray-800 text-sm mb-3">Step 1: Enter Video IDs</h3>
-        <p class="text-xs text-gray-500 mb-3" x-text="(projects.find(p=>p.slug===currentProjectSlug)?.source_platform === 'kaltura' ? 'Paste Kaltura entry IDs, one per line (e.g. 0_r88llmuv).' : 'Paste source video IDs, one per line.') + ' These will be used for both manifest generation and batch migration.'"></p>
+        <p class="text-xs text-gray-500 mb-3" x-text="projects.find(p=>p.slug===currentProjectSlug)?.source_platform === 'kaltura' ? 'Paste Kaltura entry IDs, one per line (e.g. 0_r88llmuv).' : 'Paste source video IDs, one per line.'"></p>
         <textarea x-model="dryRunEntryIds" rows="6" class="input-field font-mono text-xs"
           :placeholder="projects.find(p=>p.slug===currentProjectSlug)?.source_platform === 'kaltura' ? '0_r88llmuv\n0_an5g1hjg\n0_un8cn4mj' : 'video-id-1\nvideo-id-2\nvideo-id-3'"></textarea>
         <div class="flex items-center gap-3 mt-3">
@@ -2060,7 +2198,7 @@
         </div>
         <div class="flex items-center gap-2">
           <span class="text-xs text-gray-400 bg-gray-100 px-3 py-1.5 rounded-lg font-medium" x-text="caTotal + ' videos'"></span>
-          <span class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-violet-50 text-violet-700 border border-violet-100">Kaltura Source</span>
+          <span class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-violet-50 text-violet-700 border border-violet-100" x-text="(currentProjectPlatform || 'Source').charAt(0).toUpperCase() + (currentProjectPlatform || 'source').slice(1) + ' Source'"></span>
         </div>
       </div>
 
@@ -2209,6 +2347,96 @@
               </div>
             </div>
 
+            <!-- Full Metadata panel -->
+            <div x-show="caDetail?.metadata" class="card p-4">
+              <div class="flex items-center gap-2 mb-3">
+                <div class="w-6 h-6 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
+                  <svg class="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                </div>
+                <h3 class="text-xs font-semibold text-gray-700 uppercase tracking-wide">Metadata</h3>
+                <button @click="caMetaExpanded = !caMetaExpanded" class="ml-auto text-[10px] text-brand-600 hover:text-brand-700 font-medium" x-text="caMetaExpanded ? 'Collapse' : 'Expand'"></button>
+              </div>
+              <div x-show="caMetaExpanded" x-transition class="grid grid-cols-2 gap-x-6 gap-y-2">
+                <template x-if="caDetail.metadata?.created_at">
+                  <div class="col-span-2 flex gap-2 py-1 border-b border-gray-50">
+                    <span class="text-[10px] font-semibold text-gray-400 w-28 flex-shrink-0">Created</span>
+                    <span class="text-[10px] text-gray-600" x-text="new Date((caDetail.metadata.created_at||0)*1000).toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'numeric'})"></span>
+                  </div>
+                </template>
+                <template x-if="caDetail.metadata?.updated_at">
+                  <div class="col-span-2 flex gap-2 py-1 border-b border-gray-50">
+                    <span class="text-[10px] font-semibold text-gray-400 w-28 flex-shrink-0">Updated</span>
+                    <span class="text-[10px] text-gray-600" x-text="new Date((caDetail.metadata.updated_at||0)*1000).toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'numeric'})"></span>
+                  </div>
+                </template>
+                <template x-if="caDetail.metadata?.categories">
+                  <div class="col-span-2 flex gap-2 py-1 border-b border-gray-50">
+                    <span class="text-[10px] font-semibold text-gray-400 w-28 flex-shrink-0">Categories</span>
+                    <span class="text-[10px] text-gray-600 leading-relaxed" x-text="caDetail.metadata.categories"></span>
+                  </div>
+                </template>
+                <template x-if="caDetail.metadata?.download_url">
+                  <div class="col-span-2 flex gap-2 py-1 border-b border-gray-50">
+                    <span class="text-[10px] font-semibold text-gray-400 w-28 flex-shrink-0">Download URL</span>
+                    <a :href="caDetail.metadata.download_url" target="_blank" rel="noopener" class="text-[10px] text-brand-600 hover:underline truncate">Download original</a>
+                  </div>
+                </template>
+                <!-- File size -->
+                <template x-if="caDetail.metadata?.size_bytes > 0">
+                  <div class="col-span-2 flex gap-2 py-1 border-b border-gray-50">
+                    <span class="text-[10px] font-semibold text-gray-400 w-28 flex-shrink-0">File Size</span>
+                    <span class="text-[10px] text-gray-600" x-text="((caDetail.metadata.size_bytes || 0) / 1048576).toFixed(1) + ' MB'"></span>
+                  </div>
+                </template>
+                <!-- Tags as pills -->
+                <template x-if="caDetail.metadata?.tags">
+                  <div class="col-span-2 flex gap-2 py-1 border-b border-gray-50 items-start">
+                    <span class="text-[10px] font-semibold text-gray-400 w-28 flex-shrink-0 mt-0.5">Tags</span>
+                    <div class="flex flex-wrap gap-1">
+                      <template x-for="tag in (caDetail.metadata.tags || '').split(',').filter(t => t.trim())" :key="tag">
+                        <span class="text-[9px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500" x-text="tag.trim()"></span>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+                <!-- Access Control -->
+                <template x-if="caDetail.metadata?.access_control_id">
+                  <div class="col-span-2 flex gap-2 py-1 border-b border-gray-50">
+                    <span class="text-[10px] font-semibold text-gray-400 w-28 flex-shrink-0">Access Control</span>
+                    <span class="text-[10px] text-gray-600" x-text="caDetail.metadata.access_control_name || ('ID: ' + caDetail.metadata.access_control_id)"></span>
+                  </div>
+                </template>
+                <!-- Captions available as badges -->
+                <div class="col-span-2 flex gap-2 py-1 border-b border-gray-50 items-center">
+                  <span class="text-[10px] font-semibold text-gray-400 w-28 flex-shrink-0">Captions</span>
+                  <div class="flex flex-wrap gap-1">
+                    <template x-if="caDetail.captions && caDetail.captions.length > 0">
+                      <template x-for="cap in caDetail.captions" :key="cap.id">
+                        <span :class="{'bg-amber-100 text-amber-700': cap.format==='srt', 'bg-green-100 text-green-700': cap.format==='vtt', 'bg-purple-100 text-purple-700': cap.format==='dfxp'}"
+                          class="text-[9px] font-medium px-1.5 py-0.5 rounded"
+                          x-text="((cap.language || '?').toUpperCase()) + ' · ' + cap.format.toUpperCase()"></span>
+                      </template>
+                    </template>
+                    <template x-if="!caDetail.captions || caDetail.captions.length === 0">
+                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-400">No CC</span>
+                    </template>
+                  </div>
+                </div>
+                <!-- Custom metadata -->
+                <template x-if="caDetail.metadata?.custom_metadata && Object.keys(caDetail.metadata.custom_metadata).length > 0">
+                  <div class="col-span-2 mt-1">
+                    <p class="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Custom Fields</p>
+                    <template x-for="(val, key) in caDetail.metadata.custom_metadata" :key="key">
+                      <div class="flex gap-2 py-1 border-b border-gray-50">
+                        <span class="text-[10px] font-semibold text-gray-400 w-28 flex-shrink-0 truncate" x-text="key"></span>
+                        <span class="text-[10px] text-gray-600" x-text="val"></span>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </div>
+
             <!-- Chapters (if any) -->
             <div x-show="caDetail?.chapters && caDetail.chapters.length > 0" class="card p-4">
               <div class="flex items-center gap-2 mb-3">
@@ -2264,12 +2492,30 @@
                 <span class="text-[10px] text-gray-400 ml-auto" x-show="caDetail?.transcript?.word_count" x-text="(caDetail?.transcript?.word_count || 0).toLocaleString() + ' words'"></span>
               </div>
 
+              <!-- Caption track selector (shown when 2+ captions available) -->
+              <template x-if="caDetail.captions && caDetail.captions.length > 1">
+                <div class="flex items-center gap-1.5 flex-wrap mb-2">
+                  <span class="text-[10px] text-gray-400 mr-1">Track:</span>
+                  <template x-for="cap in caDetail.captions" :key="cap.id">
+                    <button @click="switchCaption(cap.id)"
+                      :class="caActiveCaptionId===cap.id ? 'bg-brand-100 text-brand-700 border-brand-300' : 'bg-gray-100 text-gray-500 border-transparent hover:bg-gray-200'"
+                      class="text-[10px] font-semibold px-2 py-0.5 rounded-full border transition-colors"
+                      x-text="(cap.language||'?').toUpperCase()+' · '+cap.format.toUpperCase()">
+                    </button>
+                  </template>
+                </div>
+              </template>
+
               <!-- No transcript -->
               <div x-show="!caDetail?.transcript?.lines || caDetail.transcript.lines.length === 0" class="flex-1 flex items-center justify-center">
                 <div class="text-center py-6">
                   <svg class="w-8 h-8 text-gray-200 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                  <p class="text-xs text-gray-400">No captions / transcript available for this video</p>
-                  <p class="text-[10px] text-gray-300 mt-1">Upload SRT/VTT captions in Kaltura to enable transcript view</p>
+                  <template x-if="caDetail?.transcript?.error">
+                    <p class="text-xs text-red-400" x-text="'Transcript fetch failed: ' + caDetail.transcript.error"></p>
+                  </template>
+                  <template x-if="!caDetail?.transcript?.error">
+                    <p class="text-xs text-gray-400">No captions available</p>
+                  </template>
                 </div>
               </div>
 
@@ -2315,6 +2561,7 @@
         loginLoading: false,
 
         currentTab: 'dashboard',
+        _validTabs: ['dashboard','migration','field-mapping','ai','settings','dryrun','audit','content-analysis','admin'],
         tabs: [
           { id: 'dashboard', label: 'Dashboard', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>' },
           // Kaltura Library tab removed — merged into Migration 3-column view
@@ -2330,7 +2577,7 @@
         projects: [],
         currentProjectSlug: '',
         showNewProjectModal: false,
-        newProject: { name: '', slug: '', source_platform: '', description: '', creds: { partner_id: '', admin_secret: '', user_id: '', api_key: '', client_id: '', client_secret: '' } },
+        newProject: { name: '', slug: '', source_platform: '', description: '', data_region: '', creds: { partner_id: '', admin_secret: '', user_id: '', api_key: '', client_id: '', client_secret: '' } },
         newProjectError: '',
 
         // Project credentials (per-project)
@@ -2341,10 +2588,7 @@
           panopto: { server_url: '', client_id: '', client_secret: '' },
         },
         currentProjectPlatform: '',
-        verifyCleanupModal: false,
-        verifyCleanupDryRun: true,
-        verifyCleanupRunning: false,
-        verifyCleanupResults: null,
+        currentProjectDataRegion: '',
         migKalturaNoCredentials: false,
         videoAssetsModal: false,
         videoAssetsData: null,
@@ -2394,7 +2638,19 @@
         dryRunCaptionStatsLoading: false,
         // Content Analysis state
         caVideos: [], caTotal: 0, caPage: 1, caTotalPages: 1, caSearch: '', caLoading: false,
-        caSelected: null, caDetail: null, caDetailLoading: false, caTranscriptSearch: '',
+        caSelected: null, caDetail: null, caDetailLoading: false, caTranscriptSearch: '', caActiveCaptionId: null, caMetaExpanded: true,
+        // Batch migration modal state
+        showBatchMigrateModal: false,
+        batchMigrateEntryIds: '',
+        // Admin page state
+        adminAuthed: false,
+        adminPin: '',
+        adminPinLoading: false,
+        adminPinError: '',
+        adminProjects: [],
+        adminEditSlug: '',
+        adminEditName: '',
+        adminMessage: '',
         chatMessages: [{ role: 'assistant', content: 'Welcome! I can help you understand your migration. Try asking:\n\n- "How many videos are pending?"\n- "Show me failed videos"\n- "Estimate cost for 5000 videos"\n- "What formats are in the library?"', tier: 0 }],
         chatInput: '', chatLoading: false,
         statusChart: null,
@@ -2440,7 +2696,24 @@
         journeyLoading: false,
 
         async init() {
-          // Check for stored token
+          // Restore tab from URL hash (before auth so direct links work after login)
+          const hashTab = window.location.hash.slice(1);
+          if (hashTab && this._validTabs.includes(hashTab)) this.currentTab = hashTab;
+          else if (!hashTab) window.location.hash = '#dashboard';
+
+          // Restore active project from sessionStorage
+          const savedSlug = sessionStorage.getItem('vm_project');
+          if (savedSlug) this.currentProjectSlug = savedSlug;
+
+          // Back/forward navigation
+          window.addEventListener('hashchange', () => {
+            const tab = window.location.hash.slice(1);
+            if (this._validTabs.includes(tab) && tab !== this.currentTab) {
+              this.currentTab = tab;
+            }
+          });
+
+          // Check for stored auth token
           const stored = sessionStorage.getItem('vm_token');
           if (stored) {
             this.authToken = stored;
@@ -2453,10 +2726,25 @@
               } else { sessionStorage.removeItem('vm_token'); }
             } catch(e) { sessionStorage.removeItem('vm_token'); }
           }
-          if (!this.authenticated) return; // Wait for login
+          if (!this.authenticated) return;
 
           await this.loadProjects();
           await this._loadDashboard();
+        },
+
+        switchTab(tab) {
+          this.currentTab = tab;
+          if (window.location.hash !== '#' + tab) window.location.hash = '#' + tab;
+        },
+
+        _onTabActivate(tab) {
+          if (tab === 'dashboard') this.$nextTick(() => this.renderStatusChart());
+          if (tab === 'migration') { this.loadMigKaltura(); this.loadZoomCompleted(); }
+          if (tab === 'field-mapping') this.loadFieldMappings();
+          if (tab === 'settings') { this.loadSettings(); this.loadProjectCreds(); this.loadClientTokens(); this.loadCostProjection(); }
+          if (tab === 'dryrun') { this.checkDryRunCheckpoint(); }
+          if (tab === 'audit') { this.loadReconciliation(); this.loadAuditTrail(); this.loadJourneyVideos(); }
+          if (tab === 'content-analysis') { this.loadCaVideos(); }
         },
 
         async login() {
@@ -2499,16 +2787,17 @@
         async _loadDashboard() {
           await this.loadStatus(); await this.loadActivity(); await this.loadVideos();
           await this.loadSettings();
+          await this.loadProjectCreds();
           this.$watch('currentTab', (tab) => {
-            if (tab === 'dashboard') this.$nextTick(() => this.renderStatusChart());
-            if (tab === 'migration') { this.loadMigKaltura(); this.loadZoomCompleted(); }
-            if (tab === 'field-mapping') this.loadFieldMappings();
-            if (tab === 'settings') { this.loadSettings(); this.loadProjectCreds(); this.loadClientTokens(); this.loadCostProjection(); }
-            if (tab === 'dryrun') { this.checkDryRunCheckpoint(); }
-            if (tab === 'audit') { this.loadReconciliation(); this.loadAuditTrail(); this.loadJourneyVideos(); }
-            if (tab === 'content-analysis') { this.loadCaVideos(); }
+            // Keep URL hash in sync for changes arriving from hashchange listener
+            if (window.location.hash !== '#' + tab) window.location.hash = '#' + tab;
+            this._onTabActivate(tab);
           });
-          this.$nextTick(() => this.renderStatusChart());
+          this.$watch('currentProjectSlug', (slug) => {
+            if (slug) sessionStorage.setItem('vm_project', slug);
+          });
+          // Load data for whichever tab is active on initial load
+          this._onTabActivate(this.currentTab);
         },
 
         // ── Project Management ──
@@ -2519,8 +2808,23 @@
               const d = await r.json();
               this.projects = d.projects || [];
               if (this.projects.length > 0 && !this.currentProjectSlug) {
-                this.currentProjectSlug = this.projects[0].slug;
+                // Prefer sessionStorage-saved project if it still exists
+                const saved = sessionStorage.getItem('vm_project');
+                const restoredProject = saved && this.projects.find(p => p.slug === saved);
+                this.currentProjectSlug = restoredProject ? saved : this.projects[0].slug;
+                if (this.currentTab === 'content-analysis') this.loadCaVideos();
               }
+            }
+          } catch(e) {}
+        },
+        async fetchProjectRecord(slug) {
+          try {
+            const r = await fetch(`/api/projects/${slug}`, { headers: this._authHeaders() });
+            if (r.ok) {
+              const d = await r.json();
+              const proj = d.project || {};
+              this.currentProjectPlatform = proj.source_platform || '';
+              this.currentProjectDataRegion = (proj.config_json || {}).data_region || proj.data_region || '';
             }
           } catch(e) {}
         },
@@ -2535,14 +2839,18 @@
           this.migKalturaVideos = [];
           this.migKalturaPage = 1;
           this.migSelectedVideos = {};
-          // Always update currentProjectPlatform from the newly-selected project
-          const proj = this.projects.find(p => p.slug === this.currentProjectSlug) || {};
-          this.currentProjectPlatform = proj.source_platform || '';
+          // Fetch fresh project record from DB to get authoritative platform/region
+          await this.fetchProjectRecord(this.currentProjectSlug);
           await this.loadStatus();
-          if (this.currentTab === 'settings') { this.loadProjectCreds(); this.loadClientTokens(); this.loadCostProjection(); }
+          await this.loadProjectCreds();
+          if (this.currentTab === 'settings') { this.loadClientTokens(); this.loadCostProjection(); }
           if (this.currentTab === 'field-mapping') this.loadFieldMappings();
           if (this.currentTab === 'migration') { this.loadMigKaltura(); this.loadZoomCompleted(); }
           if (this.currentTab === 'dryrun') this.loadDryRunCheckpoint();
+          if (this.currentTab === 'content-analysis') {
+            this.caVideos = []; this.caSelected = null; this.caDetail = null;
+            this.loadCaVideos();
+          }
         },
         async createProject() {
           this.newProjectError = '';
@@ -2559,7 +2867,7 @@
               this.showNewProjectModal = false;
               const savedCreds = { ...this.newProject.creds };
               const savedPlatform = this.newProject.source_platform;
-              this.newProject = { name: '', slug: '', source_platform: '', description: '', creds: { partner_id: '', admin_secret: '', user_id: '', api_key: '', client_id: '', client_secret: '' } };
+              this.newProject = { name: '', slug: '', source_platform: '', description: '', data_region: '', creds: { partner_id: '', admin_secret: '', user_id: '', api_key: '', client_id: '', client_secret: '' } };
               // Auto-save credentials if any were entered
               const hasAnyCred = Object.values(savedCreds).some(v => v && v.trim());
               if (hasAnyCred) {
@@ -2582,10 +2890,6 @@
         async loadProjectCreds() {
           if (!this.currentProjectSlug) return;
           try {
-            // Set platform from the project record
-            const proj = this.projects.find(p => p.slug === this.currentProjectSlug) || {};
-            this.currentProjectPlatform = proj.source_platform || '';
-
             const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, { headers: this._authHeaders() });
             if (r.ok) {
               const d = await r.json();
@@ -2607,14 +2911,17 @@
             const platform = this.currentProjectPlatform || '';
             const creds = platform ? (this.projectCreds[platform] || {}) : {};
 
-            // Update source_platform on the project if it changed
+            // Update source_platform and data_region on the project if changed
             const proj = this.projects.find(p => p.slug === this.currentProjectSlug) || {};
-            if (proj.source_platform !== platform) {
+            const projectUpdates = {};
+            if (proj.source_platform !== platform) projectUpdates.source_platform = platform;
+            if ((proj.data_region || '') !== this.currentProjectDataRegion) projectUpdates.data_region = this.currentProjectDataRegion;
+            if (Object.keys(projectUpdates).length > 0) {
               await fetch(`/api/projects/${this.currentProjectSlug}`, {
                 method: 'PUT', headers: this._authHeaders(),
-                body: JSON.stringify({ source_platform: platform })
+                body: JSON.stringify(projectUpdates)
               });
-              if (proj) proj.source_platform = platform;
+              if (proj) { proj.source_platform = platform; proj.data_region = this.currentProjectDataRegion; }
             }
 
             // Only save credentials if a platform is actually selected
@@ -2664,8 +2971,23 @@
             if (r.ok) {
               const d = await r.json();
               this.fieldMappings = d.mappings || [];
+              if (this.fieldMappings.length === 0) {
+                this.fieldMappings = this._defaultFieldMappings();
+              }
             }
           } catch(e) {}
+        },
+        _defaultFieldMappings() {
+          const p = this.currentProjectPlatform;
+          return [
+            { source_field: 'name',          dest_field: 'title',       transform: 'direct', template: '', enabled: true,  sort_order: 0 },
+            { source_field: 'description',   dest_field: 'description', transform: 'direct', template: '', enabled: true,  sort_order: 1 },
+            { source_field: 'tags',          dest_field: 'tags',        transform: 'direct', template: '', enabled: true,  sort_order: 2 },
+            { source_field: 'categories',    dest_field: 'categories',  transform: 'direct', template: '', enabled: true,  sort_order: 3 },
+            { source_field: 'duration',      dest_field: 'duration',    transform: 'direct', template: '', enabled: false, sort_order: 4 },
+            { source_field: 'thumbnail_url', dest_field: 'thumbnail',   transform: 'direct', template: '', enabled: true,  sort_order: 5 },
+            { source_field: p === 'kaltura' ? 'kaltura_id' : 'source_id', dest_field: 'source_id', transform: 'direct', template: '', enabled: true, sort_order: 6 },
+          ];
         },
         async saveFieldMappings() {
           if (!this.currentProjectSlug) return;
@@ -2687,7 +3009,7 @@
           setTimeout(() => { this.fieldMappingMessage = ''; }, 3000);
         },
         addFieldMapping() {
-          this.fieldMappings.push({ source_field: '', dest_field: 'description', transform: 'direct', template: '', enabled: true, sort_order: this.fieldMappings.length });
+          this.fieldMappings.push({ source_field: '', dest_field: 'title', transform: 'direct', template: '', enabled: true, sort_order: this.fieldMappings.length });
         },
         removeFieldMapping(idx) {
           this.fieldMappings.splice(idx, 1);
@@ -2882,31 +3204,96 @@
             }
           } catch(e) {}
         },
-        openVerifyCleanup() {
-          this.verifyCleanupModal = true;
-          this.verifyCleanupResults = null;
-          this.verifyCleanupDryRun = true;
+        // ── Batch Migration ──
+        openBatchMigrate() {
+          this.batchMigrateEntryIds = '';
+          this.showBatchMigrateModal = true;
         },
-        async runVerifyCleanup() {
-          this.verifyCleanupRunning = true;
+        async startBatchMigration() {
+          const rawIds = this.batchMigrateEntryIds.trim();
+          const video_ids = rawIds ? rawIds.split('\n').map(s => s.trim()).filter(Boolean) : null;
+          this.migrationRunning = true;
+          this.migrationEvents = [];
+          this.showBatchMigrateModal = false;
           try {
-            const body = {
-              dry_run: this.verifyCleanupDryRun,
-              project_slug: this.currentProjectSlug || null,
-            };
-            const r = await fetch('/api/verify-cleanup', {
+            await fetch(`/api/projects/${this.currentProjectSlug}/migration/start`, {
               method: 'POST', headers: this._authHeaders(),
-              body: JSON.stringify(body),
+              body: JSON.stringify({
+                video_ids,
+                batch_size: parseInt(this.settings?.batch_size) || 10,
+              }),
+            });
+            this.connectSSE();
+          } catch(e) {
+            this.migrationRunning = false;
+            alert('Failed to start migration: ' + e.message);
+          }
+        },
+
+        // ── Admin Page ──
+        async verifyAdminPin() {
+          if (!this.adminPin) return;
+          this.adminPinLoading = true;
+          this.adminPinError = '';
+          try {
+            const r = await fetch('/api/admin/verify-pin', {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({ pin: this.adminPin }),
             });
             if (r.ok) {
-              this.verifyCleanupResults = await r.json();
+              this.adminAuthed = true;
+              this.adminPin = '';
+              await this.loadAdminProjects();
+            } else {
+              this.adminPinError = 'Incorrect PIN';
+            }
+          } catch(e) { this.adminPinError = 'Connection error'; }
+          this.adminPinLoading = false;
+        },
+        async loadAdminProjects() {
+          try {
+            const r = await fetch('/api/projects?include_archived=true', { headers: this._authHeaders() });
+            if (r.ok) {
+              const d = await r.json();
+              this.adminProjects = d.projects || [];
+            }
+          } catch(e) {}
+        },
+        async adminDeleteProject(slug) {
+          if (!confirm(`Delete project "${slug}"? This cannot be undone.`)) return;
+          this.adminMessage = '';
+          try {
+            const r = await fetch(`/api/projects/${slug}`, { method: 'DELETE', headers: this._authHeaders() });
+            if (r.ok) {
+              this.adminMessage = `Deleted project: ${slug}`;
+              await this.loadAdminProjects();
+              await this.loadProjects();
             } else {
               const d = await r.json().catch(() => ({}));
-              alert('Verify failed: ' + (d.error || d.detail || 'Unknown error'));
+              this.adminMessage = 'Error: ' + (d.detail || 'Delete failed');
             }
-          } catch(e) { alert('Connection error'); }
-          this.verifyCleanupRunning = false;
+          } catch(e) { this.adminMessage = 'Error: Connection error'; }
         },
+        async adminSaveRename(slug) {
+          if (!this.adminEditName.trim()) return;
+          this.adminMessage = '';
+          try {
+            const r = await fetch(`/api/projects/${slug}`, {
+              method: 'PUT', headers: this._authHeaders(),
+              body: JSON.stringify({ name: this.adminEditName.trim() }),
+            });
+            if (r.ok) {
+              this.adminMessage = 'Renamed successfully';
+              this.adminEditSlug = '';
+              await this.loadAdminProjects();
+              await this.loadProjects();
+            } else {
+              const d = await r.json().catch(() => ({}));
+              this.adminMessage = 'Error: ' + (d.detail || 'Rename failed');
+            }
+          } catch(e) { this.adminMessage = 'Error: Connection error'; }
+        },
+
         toggleMigSelect(video) {
           if (this.migSelectedVideos[video.id]) {
             const copy = { ...this.migSelectedVideos };
@@ -3310,9 +3697,23 @@
           } finally { this.caLoading = false; }
         },
         async loadCaDetail(video) {
-          this.caSelected = video; this.caDetail = null; this.caDetailLoading = true; this.caTranscriptSearch = '';
+          this.caSelected = video; this.caDetail = null; this.caDetailLoading = true; this.caTranscriptSearch = ''; this.caActiveCaptionId = null;
           try {
             const r = await fetch(`/api/projects/${this.currentProjectSlug}/content-analysis/${video.id}`, { headers: this._authHeaders() });
+            if (r.ok) {
+              this.caDetail = await r.json();
+              this.caActiveCaptionId = this.caDetail?.transcript?.caption_id || null;
+            }
+          } finally { this.caDetailLoading = false; }
+        },
+        async switchCaption(captionId) {
+          this.caActiveCaptionId = captionId;
+          this.caDetailLoading = true;
+          try {
+            const r = await fetch(
+              `/api/projects/${this.currentProjectSlug}/content-analysis/${this.caSelected.id}?caption_id=${captionId}`,
+              { headers: this._authHeaders() }
+            );
             if (r.ok) this.caDetail = await r.json();
           } finally { this.caDetailLoading = false; }
         },
@@ -3429,6 +3830,17 @@
         get pipelineTotal() { return Object.keys(this.pipelineVideos).length; },
         get pipelineProgress() { return this.pipelineTotal > 0 ? Math.round((this.doneCount + this.failedCount) / this.pipelineTotal * 100) : 0; },
         get inTransitVideos() { return Object.values(this.pipelineVideos).filter(v => v.stage === 'kaltura' || v.stage === 'aws' || v.stage === 'zoom'); },
+        get pipelineStageCounts() {
+          const counts = { list_assets: 0, fetch_metadata: 0, download: 0, transform: 0, upload: 0 };
+          for (const v of Object.values(this.pipelineVideos)) {
+            if (v.stage === 'discovering') counts.list_assets++;
+            else if (v.stage === 'downloading') counts.fetch_metadata++;
+            else if (v.stage === 'kaltura') counts.download++;
+            else if (v.stage === 'aws') counts.transform++;
+            else if (v.stage === 'zoom') counts.upload++;
+          }
+          return counts;
+        },
         get errorGroups() {
           const failed = Object.values(this.pipelineVideos).filter(v => v.stage === 'failed');
           const groups = {};

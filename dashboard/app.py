@@ -514,6 +514,7 @@ class ProjectCreate(BaseModel):
     slug: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9\-]*$")
     description: str = Field(default="", max_length=1000)
     source_platform: str = Field(default="", max_length=50)
+    data_region: str = Field(default="", max_length=50)
     config_json: dict = Field(default_factory=dict)
 
 
@@ -522,6 +523,7 @@ class ProjectUpdate(BaseModel):
     description: Optional[str] = Field(default=None, max_length=1000)
     status: Optional[str] = Field(default=None, pattern=r"^(active|paused|archived|completed)$")
     source_platform: Optional[str] = Field(default=None, pattern=r"^(kaltura|on24|brightcove|panopto)?$")
+    data_region: Optional[str] = Field(default=None, max_length=50)
     config_json: Optional[dict] = None
 
 
@@ -590,17 +592,19 @@ def _invalidate_project_pipeline(slug: str):
 
 
 @app.get("/api/projects")
-async def list_projects(user: dict = Depends(_verify_jwt)):
+async def list_projects(include_archived: bool = False, user: dict = Depends(_verify_jwt)):
     """List all projects."""
     if not _db.is_available():
         return {"projects": [{"name": "Default (env)", "slug": "default", "source_platform": "kaltura", "status": "active"}]}
 
+    where = "" if include_archived else "WHERE status != 'archived'"
     rows = _db.fetch_all(
-        """SELECT id, name, slug, description, source_platform, status, config_json, created_at, updated_at
-           FROM projects ORDER BY created_at DESC"""
+        f"""SELECT id, name, slug, description, source_platform, status, config_json, created_at, updated_at
+           FROM projects {where} ORDER BY created_at DESC"""
     )
     projects = []
     for r in rows:
+        cfg = r["config_json"] or {}
         projects.append({
             "id": str(r["id"]),
             "name": r["name"],
@@ -608,7 +612,8 @@ async def list_projects(user: dict = Depends(_verify_jwt)):
             "description": r["description"],
             "source_platform": r["source_platform"],
             "status": r["status"],
-            "config_json": r["config_json"] or {},
+            "data_region": cfg.get("data_region", ""),
+            "config_json": cfg,
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
         })
@@ -629,11 +634,14 @@ async def create_project(request: Request, user: dict = Depends(_verify_jwt)):
     if existing:
         raise HTTPException(status_code=409, detail=f"Project slug '{data.slug}' already exists")
 
+    config = {**data.config_json}
+    if data.data_region:
+        config["data_region"] = data.data_region
     row = _db.execute_returning(
         """INSERT INTO projects (name, slug, description, source_platform, config_json)
            VALUES (%s, %s, %s, %s, %s)
            RETURNING id, name, slug, description, source_platform, status, config_json, created_at""",
-        (data.name, data.slug, data.description, data.source_platform, json.dumps(data.config_json)),
+        (data.name, data.slug, data.description, data.source_platform, json.dumps(config)),
     )
 
     # Create default field mappings
@@ -724,9 +732,16 @@ async def update_project(slug: str, request: Request, user: dict = Depends(_veri
     if data.source_platform is not None:
         sets.append("source_platform = %s")
         params.append(data.source_platform)
-    if data.config_json is not None:
+    if data.config_json is not None or data.data_region is not None:
+        # Merge data_region into config_json if provided
+        existing = _db.fetch_one("SELECT config_json FROM projects WHERE slug = %s", (slug,))
+        cfg = (existing["config_json"] if existing else None) or {}
+        if data.config_json is not None:
+            cfg.update(data.config_json)
+        if data.data_region is not None:
+            cfg["data_region"] = data.data_region
         sets.append("config_json = %s")
-        params.append(json.dumps(data.config_json))
+        params.append(json.dumps(cfg))
 
     if not sets:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -741,15 +756,28 @@ async def update_project(slug: str, request: Request, user: dict = Depends(_veri
 
 
 @app.delete("/api/projects/{slug}")
-async def archive_project(slug: str, user: dict = Depends(_verify_jwt)):
-    """Archive (soft-delete) a project."""
+async def delete_project(slug: str, user: dict = Depends(_verify_jwt)):
+    """Hard-delete a project and all its child records."""
     if not _db.is_available():
         raise HTTPException(status_code=503, detail="Database not available")
 
-    _db.execute("UPDATE projects SET status = 'archived', updated_at = NOW() WHERE slug = %s", (slug,))
+    _db.execute("DELETE FROM projects WHERE slug = %s", (slug,))
     _invalidate_project_pipeline(slug)
-    audit_log("project_archived", user=user["sub"], details={"slug": slug})
-    return {"status": "archived"}
+    audit_log("project_deleted", user=user["sub"], details={"slug": slug})
+    return {"status": "deleted"}
+
+
+@app.post("/api/admin/verify-pin")
+async def admin_verify_pin(request: Request, user: dict = Depends(_verify_jwt)):
+    """Verify admin PIN against ADMIN_PIN env var."""
+    body = await request.json()
+    pin = str(body.get("pin", "")).strip()
+    expected = os.environ.get("ADMIN_PIN", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="ADMIN_PIN not configured")
+    if not pin or pin != expected:
+        raise HTTPException(status_code=403, detail="Incorrect PIN")
+    return {"status": "ok"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1656,6 +1684,7 @@ async def content_analysis_list(
 async def content_analysis_detail(
     slug: str,
     entry_id: str,
+    caption_id: str = Query("", max_length=50),
     user: dict = Depends(_verify_jwt),
 ):
     """Full content analysis for a single video: transcript, chapters, cue points."""
@@ -1667,24 +1696,32 @@ async def content_analysis_detail(
     captions = client.list_captions(entry_id)
     cuepoints = client.list_cuepoints(entry_id)
     thumbs = client.list_thumbnails(entry_id)
+    full_meta = client.extract_full_metadata(entry_id)
 
-    # Build transcript from first available caption (prefer SRT or VTT)
+    # Build transcript from selected or auto-selected caption
     transcript_lines = []
     transcript_caption = None
-    for cap in sorted(captions, key=lambda c: (c.get("isDefault", False) is False, c.get("format", 99))):
-        fmt = cap.get("format", 0)
-        if fmt in (1, 3):  # SRT or VTT
-            transcript_caption = cap
-            break
-    if not transcript_caption and captions:
-        transcript_caption = captions[0]
+    if caption_id:
+        # Caller specified a caption track — find it directly
+        transcript_caption = next((c for c in captions if c.get("id") == caption_id), None)
+    if not transcript_caption:
+        # Auto-select: prefer default, then SRT/VTT by format number
+        for cap in sorted(captions, key=lambda c: (not c.get("isDefault"), c.get("format", 99))):
+            fmt = cap.get("format", 0)
+            if fmt in (1, 3):  # SRT or VTT
+                transcript_caption = cap
+                break
+        if not transcript_caption and captions:
+            transcript_caption = captions[0]
 
+    transcript_error = None
     if transcript_caption:
         try:
             raw = client.get_caption_as_text(transcript_caption["id"])
             transcript_lines = _parse_caption_to_lines(raw, transcript_caption.get("format", 1))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error("[content-analysis] Caption fetch failed for %s: %s", transcript_caption["id"], e)
+            transcript_error = str(e)
 
     # Parse cue points into chapters vs annotations vs key frames
     chapters = []
@@ -1708,6 +1745,26 @@ async def content_analysis_detail(
 
     return {
         "entry_id": entry_id,
+        "metadata": {
+            "title": full_meta.get("title", ""),
+            "description": full_meta.get("description", ""),
+            "tags": full_meta.get("tags", ""),
+            "categories": full_meta.get("categories", ""),
+            "duration": full_meta.get("duration", 0),
+            "width": full_meta.get("width", 0),
+            "height": full_meta.get("height", 0),
+            "plays": full_meta.get("plays", 0),
+            "views": full_meta.get("views", 0),
+            "media_type": full_meta.get("media_type", 0),
+            "access_control_id": full_meta.get("access_control_id", ""),
+            "access_control_name": client.get_access_control_name(full_meta.get("access_control_id")),
+            "size_bytes": full_meta.get("size_bytes", 0),
+            "thumbnail_url": full_meta.get("thumbnail_url", ""),
+            "download_url": full_meta.get("download_url", ""),
+            "created_at": full_meta.get("created_at", 0),
+            "updated_at": full_meta.get("updated_at", 0),
+            "custom_metadata": full_meta.get("custom_metadata", {}),
+        },
         "captions": [
             {
                 "id": c.get("id"),
@@ -1724,6 +1781,7 @@ async def content_analysis_detail(
             "format": client.caption_format_name(transcript_caption.get("format", 0)) if transcript_caption else "",
             "lines": transcript_lines,
             "word_count": sum(len(l["text"].split()) for l in transcript_lines),
+            "error": transcript_error,
         },
         "chapters": sorted(chapters, key=lambda c: c["start_ms"]),
         "annotations": sorted(annotations, key=lambda a: a["start_ms"]),
@@ -2553,13 +2611,12 @@ async def get_video(video_id: str, user: dict = Depends(_verify_jwt)):
 
 class VerifyCleanupRequest(BaseModel):
     entry_ids: Optional[list[str]] = None   # None = all completed
-    dry_run: bool = True                    # False = actually delete from Kaltura
     project_slug: Optional[str] = Field(default=None, max_length=100)
 
 
 @app.post("/api/verify-cleanup")
 async def verify_cleanup(body: VerifyCleanupRequest, user: dict = Depends(_verify_jwt)):
-    """Verify migrated videos exist on Zoom, optionally delete source from Kaltura."""
+    """Verify migrated videos exist on Zoom. Source content is never deleted."""
     from migration.verify_cleanup import run_verify_cleanup
 
     pipeline = None
@@ -2577,27 +2634,23 @@ async def verify_cleanup(body: VerifyCleanupRequest, user: dict = Depends(_verif
             if not _validate_entry_id(eid):
                 return JSONResponse({"error": f"Invalid entry ID: {eid}"}, status_code=400)
 
-    report = run_verify_cleanup(pipeline, dry_run=body.dry_run, entry_ids=body.entry_ids)
+    report = run_verify_cleanup(pipeline, entry_ids=body.entry_ids)
 
     audit_log(
-        "verify_cleanup",
+        "verify_migration",
         user=user["sub"],
         details={
-            "dry_run": body.dry_run,
             "total": report.total,
             "verified": report.verified,
-            "deleted": report.deleted,
             "missing": report.missing_on_zoom,
         },
     )
 
     return {
-        "dry_run": body.dry_run,
         "total": report.total,
         "verified": report.verified,
         "title_mismatch": report.title_mismatch,
         "missing_on_zoom": report.missing_on_zoom,
-        "deleted": report.deleted,
         "skipped": report.skipped,
         "errors": report.errors,
         "results": [
@@ -2608,7 +2661,6 @@ async def verify_cleanup(body: VerifyCleanupRequest, user: dict = Depends(_verif
                 "zoom_exists": r.zoom_exists,
                 "zoom_title": r.zoom_title,
                 "title_match": r.title_match,
-                "deleted_from_kaltura": r.deleted_from_kaltura,
                 "error": r.error,
             }
             for r in report.results

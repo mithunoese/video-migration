@@ -110,15 +110,6 @@ class KalturaClient:
         logger.debug("Got metadata for entry %s: %s", entry_id, result.get("name", ""))
         return result
 
-    def delete_entry(self, entry_id: str) -> bool:
-        """Delete a media entry from Kaltura. Returns True on success."""
-        try:
-            self._api_call("media", "delete", {"entryId": entry_id})
-            logger.info("Deleted Kaltura entry %s", entry_id)
-            return True
-        except Exception as e:
-            logger.error("Failed to delete Kaltura entry %s: %s", entry_id, e)
-            return False
 
     def get_flavor_assets(self, entry_id: str) -> list[dict]:
         """List available flavor assets (quality variants) for an entry."""
@@ -226,6 +217,7 @@ class KalturaClient:
             "height": entry.get("height", 0),
             "media_type": entry.get("mediaType", 0),
             "access_control_id": entry.get("accessControlId", ""),
+            "size_bytes": entry.get("dataSize", 0),
             "thumbnail_url": entry.get("thumbnailUrl", ""),
             "download_url": entry.get("downloadUrl", ""),
             "custom_metadata": custom,
@@ -403,6 +395,16 @@ class KalturaClient:
         except RuntimeError as e:
             logger.debug("[%s] No cue points found: %s", entry_id, e)
             return []
+
+    def get_access_control_name(self, policy_id) -> str:
+        """Get the name of an access control policy by ID."""
+        if not policy_id:
+            return ""
+        try:
+            result = self._api_call("accessControl", "get", {"id": int(policy_id)})
+            return result.get("name", "")
+        except Exception:
+            return ""
 
     def get_caption_as_text(self, caption_id: str) -> str:
         """Download and return raw caption file content as text."""
