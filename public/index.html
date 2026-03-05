@@ -2787,6 +2787,7 @@
         async _loadDashboard() {
           await this.loadStatus(); await this.loadActivity(); await this.loadVideos();
           await this.loadSettings();
+          await this.fetchProjectRecord(this.currentProjectSlug);
           await this.loadProjectCreds();
           this.$watch('currentTab', (tab) => {
             // Keep URL hash in sync for changes arriving from hashchange listener

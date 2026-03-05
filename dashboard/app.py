@@ -399,7 +399,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Content-Type", "Authorization"],
     max_age=3600,
 )
@@ -422,7 +422,7 @@ async def add_security_headers(request: Request, call_next):
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
-        "img-src 'self' data:; "
+        "img-src 'self' data: https://*.kaltura.com https://*.cfvod.kaltura.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "connect-src 'self'"
     )
@@ -831,11 +831,11 @@ async def save_project_credentials(slug: str, request: Request, user: dict = Dep
         if value == mask:
             continue  # user didn't change this secret
 
-        if data.service == "kaltura":
+        if data.service in ("kaltura", "on24", "brightcove", "panopto"):
             is_secret = cred_defs.get(key_name, False)
         elif data.service == "zoom":
             is_secret = zoom_secrets.get(key_name, False)
-        else:
+        else:  # aws
             is_secret = aws_secrets.get(key_name, False)
 
         _db.store_credential(project_id, data.service, key_name, value, is_secret)
@@ -1927,7 +1927,7 @@ async def get_status(user: dict = Depends(_verify_jwt)):
         "db_available": _db.is_available(),
         "costs": {
             "total_spent": cost_data["total_spent"],
-            "projected_monthly": cost_data.get("total_spent", 0),
+            "projected_monthly": round(cost_data["cost_per_video"] * max(total, 0), 2),
             "cost_per_video": cost_data["cost_per_video"],
         },
     }
