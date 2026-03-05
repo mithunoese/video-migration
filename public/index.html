@@ -2087,8 +2087,14 @@
               </template>
             </template>
 
+            <!-- No project selected -->
+            <template x-if="!currentProjectSlug">
+              <div class="text-center py-12">
+                <p class="text-sm text-gray-400">Select a project to load videos</p>
+              </div>
+            </template>
             <!-- Empty state -->
-            <template x-if="!caLoading && caVideos.length === 0">
+            <template x-if="currentProjectSlug && !caLoading && caVideos.length === 0">
               <div class="text-center py-12">
                 <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-gray-100 flex items-center justify-center">
                   <svg class="w-6 h-6 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.876V15.12a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
@@ -3292,12 +3298,12 @@
 
         // ── Content Analysis ──
         async loadCaVideos(page = 1) {
+          if (!this.currentProjectSlug) { this.caVideos = []; this.caTotal = 0; return; }
           this.caLoading = true; this.caPage = page;
           try {
             const params = new URLSearchParams({ page, page_size: 30 });
             if (this.caSearch) params.set('search', this.caSearch);
-            const slug = this.currentProjectSlug || 'default';
-            const r = await fetch(`/api/projects/${slug}/content-analysis?${params}`, { headers: { Authorization: 'Bearer ' + this.token } });
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/content-analysis?${params}`, { headers: this._authHeaders() });
             if (!r.ok) { const e = await r.json(); this.caVideos = []; this.caTotal = 0; return; }
             const d = await r.json();
             this.caVideos = d.videos || []; this.caTotal = d.total || 0; this.caTotalPages = d.total_pages || 1;
@@ -3306,8 +3312,7 @@
         async loadCaDetail(video) {
           this.caSelected = video; this.caDetail = null; this.caDetailLoading = true; this.caTranscriptSearch = '';
           try {
-            const slug = this.currentProjectSlug || 'default';
-            const r = await fetch(`/api/projects/${slug}/content-analysis/${video.id}`, { headers: { Authorization: 'Bearer ' + this.token } });
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/content-analysis/${video.id}`, { headers: this._authHeaders() });
             if (r.ok) this.caDetail = await r.json();
           } finally { this.caDetailLoading = false; }
         },
