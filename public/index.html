@@ -805,7 +805,7 @@
                 <svg class="w-6 h-6 text-blue-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
               </div>
               <p class="text-xs text-gray-400">No videos in transit</p>
-              <p class="text-[10px] text-gray-300 mt-1">Select videos from <span x-text="currentProjectPlatform ? (currentProjectPlatform.charAt(0).toUpperCase() + currentProjectPlatform.slice(1)) : 'source'"></span> and click Migrate</p>
+              <p class="text-[10px] text-gray-300 mt-1">Select videos from <span x-text="({'kaltura':'Kaltura','on24':'ON24','brightcove':'Brightcove','panopto':'Panopto'}[currentProjectPlatform] || currentProjectPlatform || 'source')"></span> and click Migrate</p>
             </div>
           </div>
         </div>
