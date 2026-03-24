@@ -1028,9 +1028,19 @@
           } catch(e) {}
         },
 
-        connectSSE() {
+        async connectSSE() {
           if (this.eventSource) this.eventSource.close();
-          this.eventSource = new EventSource(`/api/migration/stream?token=${this.token}`);
+          // Fetch short-lived SSE token to avoid long-lived JWT in server logs
+          let sseToken = null;
+          try {
+            const r = await fetch('/api/migration/stream-token', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json' }
+            });
+            if (r.ok) { const d = await r.json(); sseToken = d.token; }
+          } catch {}
+          if (!sseToken) { this.startPolling(); return; }
+          this.eventSource = new EventSource(`/api/migration/stream?sse_token=${encodeURIComponent(sseToken)}`);
           let connected = false;
           this.eventSource.onopen = () => { connected = true; };
           this.eventSource.onmessage = (event) => {

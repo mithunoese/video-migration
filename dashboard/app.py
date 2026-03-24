@@ -140,7 +140,8 @@ def _verify_jwt(credentials: Optional[HTTPAuthorizationCredentials] = Depends(se
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
-def audit_log(action: str, user: str = "anonymous", details: dict | None = None, status: str = "success"):
+def audit_log(action: str, user: str = "anonymous", details: dict | None = None, status: str = "success",
+              project_slug: str | None = None):
     """Log security-relevant actions to both logger and persistent audit store."""
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -157,6 +158,7 @@ def audit_log(action: str, user: str = "anonymous", details: dict | None = None,
         video_id=details.get("video_id") if details else None,
         data=details,
         status=status,
+        project_slug=project_slug,
     )
 
 
@@ -175,10 +177,13 @@ class VideoStatus(str, Enum):
 class MigrationStartRequest(BaseModel):
     batch_size: int = Field(default=10, ge=1, le=100)
     video_ids: Optional[List[str]] = Field(default=None)
+    project_slug: str = Field(..., min_length=1, max_length=100)
+    resumable: bool = Field(default=False)
 
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
+    project_slug: str = Field(default="", max_length=100)
 
 
 class LoginRequest(BaseModel):
@@ -225,12 +230,95 @@ _pipeline = None
 _config = None
 _cost_tracker = CostTracker()
 _audit_store = AuditStore()
-_migration_running = False
-_migration_lock = threading.Lock()
-_migration_cancel = threading.Event()
+_migration_running: dict[str, bool] = {}   # keyed by project_slug
+_migration_locks: dict[str, threading.Lock] = {}  # per-project locks
+_migration_cancel: dict[str, threading.Event] = {}  # per-project cancel events
+_migration_paused: dict[str, threading.Event] = {}  # per-project pause events
+_lock_creation_guard = threading.Lock()  # guards _migration_locks / _cancel / _paused dict mutations
+
+# Short-lived SSE tokens: token -> (expiry_timestamp, user_sub)
+# Allows SSE to use a single-use query param token without exposing the long-lived JWT in logs.
+_sse_tokens: dict[str, tuple[float, str]] = {}
+
+# Zoom OAuth state tokens: state -> expiry_timestamp (10 min window)
+_zoom_oauth_states: dict[str, float] = {}
+# Short-lived auth exchange codes: code -> (expiry, jwt_token, project_slug)
+# Avoids embedding long-lived JWT in redirect URL (visible in server logs)
+_zoom_auth_codes: dict[str, tuple[float, str, str]] = {}
 _sse_subscribers: list[asyncio.Queue] = []
 _migration_events_store: list[dict] = []
 _events_lock = threading.Lock()
+
+# Item 1 — Zoom client instance cache (avoids re-fetching OAuth token on every API call)
+_zoom_client_cache: dict[str, "ZoomClient"] = {}  # keyed by project_slug
+
+# Item 3 — REACH availability cache (one check per project per process lifetime)
+_reach_licensed_cache: dict[str, bool] = {}  # keyed by project_slug
+
+# Item 5 — boto3 Secrets Manager client (lazy-initialised)
+_secrets_client = None
+
+
+def _get_secrets_client():
+    """Return a boto3 Secrets Manager client, initialising once."""
+    global _secrets_client
+    if _secrets_client is None:
+        try:
+            import boto3
+            _secrets_client = boto3.client(
+                "secretsmanager",
+                region_name=os.environ.get("AWS_REGION", "us-east-1"),
+            )
+        except Exception as e:
+            logger.warning("Could not initialise Secrets Manager client: %s", e)
+    return _secrets_client
+
+
+def _fetch_credentials_for_project(project_id: str, service: str) -> dict:
+    """Return decrypted credentials for a project+service.
+
+    When USE_SECRETS_MANAGER=true: reads ARN from DB → fetches JSON from AWS SM.
+    Otherwise: reads directly from Postgres (pgcrypto encrypted).
+    """
+    use_sm = os.environ.get("USE_SECRETS_MANAGER", "").lower() in ("true", "1")
+    if use_sm:
+        arn = _db.get_secret_arn(project_id, service)
+        if arn:
+            try:
+                sm = _get_secrets_client()
+                if sm:
+                    import json as _json
+                    resp = sm.get_secret_value(SecretId=arn)
+                    return _json.loads(resp["SecretString"])
+            except Exception as e:
+                logger.warning("SM fetch failed for project %s service %s arn %s: %s",
+                               project_id, service, arn, e)
+    # Fall back to Postgres
+    return _db.get_credentials(project_id, service)
+
+
+def _get_migration_lock(project_slug: str) -> threading.Lock:
+    if project_slug not in _migration_locks:
+        with _lock_creation_guard:
+            if project_slug not in _migration_locks:  # double-check after acquiring guard
+                _migration_locks[project_slug] = threading.Lock()
+    return _migration_locks[project_slug]
+
+
+def _get_cancel_event(project_slug: str) -> threading.Event:
+    if project_slug not in _migration_cancel:
+        with _lock_creation_guard:
+            if project_slug not in _migration_cancel:
+                _migration_cancel[project_slug] = threading.Event()
+    return _migration_cancel[project_slug]
+
+
+def _get_pause_event(project_slug: str) -> threading.Event:
+    if project_slug not in _migration_paused:
+        with _lock_creation_guard:
+            if project_slug not in _migration_paused:
+                _migration_paused[project_slug] = threading.Event()
+    return _migration_paused[project_slug]
 
 # ── Settings persistence ──
 
@@ -409,23 +497,36 @@ app.add_middleware(
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
+    is_zoom_app = request.url.path.startswith("/zoom-app") or request.url.path.startswith("/auth/zoom")
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    # Zoom Apps run in a WebView — allow framing only for zoom-app routes
+    response.headers["X-Frame-Options"] = "SAMEORIGIN" if is_zoom_app else "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     # HSTS only in production
     if os.environ.get("ENVIRONMENT") == "production":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    # CSP allowing our CDN dependencies
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
-        "img-src 'self' data: https://*.kaltura.com https://*.cfvod.kaltura.com; "
-        "font-src 'self' https://fonts.gstatic.com; "
-        "connect-src 'self'"
-    )
+    # CSP — Zoom App route needs extra origins for the Zoom Apps SDK
+    if is_zoom_app:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
+            "https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://appssdk.zoom.us; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
+            "img-src 'self' data: blob: https://*.kaltura.com https://*.cfvod.kaltura.com https://*.zoom.us; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "connect-src 'self' https://api.zoom.us https://appssdk.zoom.us"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
+            "img-src 'self' data: https://*.kaltura.com https://*.cfvod.kaltura.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "connect-src 'self'"
+        )
     return response
 
 
@@ -471,7 +572,222 @@ async def architecture():
     return HTMLResponse("<h1>architecture.html not found</h1>", status_code=404)
 
 
+@app.get("/zoom-app", response_class=HTMLResponse)
+async def zoom_app_page():
+    """Serve the Zoom App 3-step wizard UI."""
+    html_path = _public_dir / "zoom-app.html"
+    if html_path.exists():
+        return HTMLResponse(html_path.read_text())
+    return HTMLResponse("<h1>zoom-app.html not found</h1>", status_code=404)
+
+
+# ── Zoom App OAuth ──
+
+ZOOM_APP_CLIENT_ID     = os.environ.get("ZOOM_APP_CLIENT_ID", "")
+ZOOM_APP_CLIENT_SECRET = os.environ.get("ZOOM_APP_CLIENT_SECRET", "")
+ZOOM_APP_REDIRECT_URI  = os.environ.get("ZOOM_APP_REDIRECT_URI", "")
+
+
+@app.get("/auth/zoom")
+async def zoom_oauth_start(request: Request):
+    """Redirect user to Zoom OAuth consent screen."""
+    from fastapi.responses import RedirectResponse
+    if not ZOOM_APP_CLIENT_ID:
+        raise HTTPException(status_code=501, detail="ZOOM_APP_CLIENT_ID not configured")
+    state = secrets.token_urlsafe(32)
+    _zoom_oauth_states[state] = time.time() + 600  # valid for 10 minutes
+    # Prune stale states (prevent unbounded growth)
+    stale = [k for k, exp in list(_zoom_oauth_states.items()) if time.time() > exp]
+    for k in stale:
+        _zoom_oauth_states.pop(k, None)
+    redirect_uri = ZOOM_APP_REDIRECT_URI or str(request.base_url).rstrip("/") + "/auth/zoom/callback"
+    url = (
+        f"https://zoom.us/oauth/authorize"
+        f"?response_type=code"
+        f"&client_id={ZOOM_APP_CLIENT_ID}"
+        f"&redirect_uri={redirect_uri}"
+        f"&state={state}"
+    )
+    return RedirectResponse(url)
+
+
+@app.get("/auth/zoom/callback")
+async def zoom_oauth_callback(request: Request, code: str, state: str = ""):
+    """Handle Zoom OAuth callback — exchange code for token, create project, issue JWT."""
+    from fastapi.responses import RedirectResponse
+    import requests as _req
+    if not ZOOM_APP_CLIENT_ID or not ZOOM_APP_CLIENT_SECRET:
+        raise HTTPException(status_code=501, detail="Zoom App credentials not configured")
+    # CSRF protection: verify state was issued by this server and hasn't expired
+    expiry = _zoom_oauth_states.pop(state, None)
+    if not state or expiry is None or time.time() > expiry:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state — possible CSRF attack")
+
+    # Must match redirect_uri used in zoom_oauth_start exactly
+    redirect_uri = ZOOM_APP_REDIRECT_URI or str(request.base_url).rstrip("/") + "/auth/zoom/callback"
+
+    # Exchange code for access token
+    tok = _req.post(
+        "https://zoom.us/oauth/token",
+        params={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
+        auth=(ZOOM_APP_CLIENT_ID, ZOOM_APP_CLIENT_SECRET),
+        timeout=15,
+    )
+    tok.raise_for_status()
+    zoom_token = tok.json().get("access_token", "")
+
+    # Fetch Zoom user profile
+    me = _req.get(
+        "https://api.zoom.us/v2/users/me",
+        headers={"Authorization": f"Bearer {zoom_token}"},
+        timeout=10,
+    )
+    me.raise_for_status()
+    zoom_user = me.json()
+    zoom_user_id = zoom_user.get("id", "unknown")
+    zoom_email   = zoom_user.get("email", zoom_user_id)
+
+    # Auto-create a project for this Zoom user
+    project_slug = f"zoom-{zoom_user_id[:12]}"
+    if _db.is_available():
+        try:
+            _db.execute(
+                """
+                INSERT INTO projects (name, slug, description, source_platform, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (slug) DO NOTHING
+                """,
+                (f"Zoom App — {zoom_email}", project_slug, f"Auto-created for Zoom user {zoom_email}", ""),
+            )
+        except Exception as e:
+            logger.warning("Could not auto-create zoom-app project: %s", e)
+
+    # Issue a short-lived auth code to avoid embedding long-lived JWT in redirect URL (server logs)
+    jwt_token = _create_jwt(zoom_user_id)
+    auth_code = secrets.token_urlsafe(32)
+    _zoom_auth_codes[auth_code] = (time.time() + 60, jwt_token, project_slug)
+    # Prune stale codes
+    stale = [k for k, (exp, _, _) in list(_zoom_auth_codes.items()) if time.time() > exp]
+    for k in stale:
+        _zoom_auth_codes.pop(k, None)
+    return RedirectResponse(f"/zoom-app?auth_code={auth_code}")
+
+
+@app.post("/api/zoom-app/exchange-code")
+@limiter.limit("10/minute")
+async def zoom_exchange_code(request: Request, code: str = Query(...)):
+    """Exchange a short-lived auth code (from OAuth redirect) for a JWT.
+    Code is single-use and expires in 60 seconds.
+    """
+    entry = _zoom_auth_codes.pop(code, None)
+    if not entry or time.time() > entry[0]:
+        raise HTTPException(status_code=401, detail="Invalid or expired auth code")
+    _, jwt_token, project_slug = entry
+    return {"token": jwt_token, "project": project_slug}
+
+
+# ── Zoom App session (SDK-based, no full OAuth needed) ──
+
+class ZoomAppSessionRequest(BaseModel):
+    zoom_user_id: str = Field(..., min_length=1, max_length=200)
+    email: str = Field(default="", max_length=200)
+
+
+@app.post("/api/zoom-app/session")
+@limiter.limit("10/minute")
+async def zoom_app_session(request: Request, body: ZoomAppSessionRequest):
+    """
+    Called by the Zoom App frontend after Zoom Apps SDK init.
+    Creates/retrieves a project for the Zoom user and returns a JWT.
+    Does NOT require prior authentication — the Zoom SDK provides user identity.
+    Rate-limited to 10/min per IP to prevent abuse.
+    """
+    project_slug = "zoom-" + re.sub(r"[^a-z0-9]", "", body.zoom_user_id.lower())[:20]
+    if not project_slug or project_slug == "zoom-":
+        project_slug = "zoom-" + secrets.token_hex(6)
+
+    if _db.is_available():
+        try:
+            _db.execute(
+                """
+                INSERT INTO projects (name, slug, description, source_platform, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (slug) DO NOTHING
+                """,
+                (
+                    f"Zoom App — {body.email or body.zoom_user_id}",
+                    project_slug,
+                    f"Auto-created for Zoom user: {body.email or body.zoom_user_id}",
+                    "",
+                ),
+            )
+        except Exception as e:
+            logger.warning("zoom_app_session: project insert error: %s", e)
+
+    jwt_token = _create_jwt(body.zoom_user_id)
+    return {"token": jwt_token, "project_slug": project_slug}
+
+
+# ── Zoom Marketplace webhooks ──
+
+@app.post("/auth/zoom/deauthorize")
+async def zoom_deauthorize(request: Request):
+    """Zoom Marketplace deauthorization webhook.
+    Called by Zoom when a user uninstalls the app. Required for Marketplace submission.
+    Verifies the request signature, then deletes all stored credentials for the user.
+    Zoom docs: https://developers.zoom.us/docs/integrations/oauth/#deauthorization
+    """
+    # Verify Zoom's webhook verification token (set ZOOM_WEBHOOK_SECRET_TOKEN in env)
+    webhook_token = os.environ.get("ZOOM_WEBHOOK_SECRET_TOKEN", "")
+    auth_header = request.headers.get("Authorization", "")
+    if webhook_token and auth_header != webhook_token:
+        raise HTTPException(status_code=401, detail="Invalid webhook token")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    # Zoom sends: {"event": "app_deauthorized", "payload": {"account_id": "...", "user_id": "...", ...}}
+    event = payload.get("event", "")
+    if event != "app_deauthorized":
+        return {"status": "ignored", "event": event}
+
+    event_payload = payload.get("payload", {})
+    zoom_user_id = event_payload.get("user_id", "")
+    account_id   = event_payload.get("account_id", "")
+
+    logger.info("Zoom deauthorization webhook: user_id=%s account_id=%s", zoom_user_id, account_id)
+
+    # Delete stored credentials for the auto-created project for this user
+    if zoom_user_id and _db.is_available():
+        project_slug = f"zoom-{zoom_user_id[:12]}"
+        try:
+            _db.execute(
+                "DELETE FROM credentials WHERE project_id = (SELECT id FROM projects WHERE slug = %s)",
+                (project_slug,),
+            )
+            logger.info("Deauthorization: deleted credentials for project %s", project_slug)
+        except Exception as e:
+            logger.warning("Deauthorization: failed to delete credentials for %s: %s", project_slug, e)
+
+    # Respond within 3 seconds as required by Zoom
+    return {"status": "ok"}
+
+
 # ── Authentication ──
+
+@app.get("/api/auth/security-status")
+async def security_status(user: dict = Depends(_verify_jwt)):
+    """Return security posture flags. Used by the dashboard to show warnings."""
+    return {
+        "using_default_password": _USING_DEFAULT_PASSWORD,
+        "warning": (
+            "⚠️  Using default admin credentials (admin/admin). "
+            "Set ADMIN_PASSWORD_HASH in your environment immediately!"
+        ) if _USING_DEFAULT_PASSWORD else None,
+    }
+
 
 @app.post("/api/auth/login")
 @limiter.limit("10/minute")
@@ -575,7 +891,7 @@ def _get_pipeline_for_project(slug: str):
             logger.info("Project %s missing creds: %s", slug, missing)
             return None
 
-        pipeline = MigrationPipeline(config, on_progress=_progress_callback)
+        pipeline = MigrationPipeline(config, on_progress=_progress_callback, project_slug=slug)
         _project_pipelines[slug] = pipeline
         return pipeline
     except Exception as e:
@@ -605,6 +921,10 @@ async def list_projects(include_archived: bool = False, user: dict = Depends(_ve
     projects = []
     for r in rows:
         cfg = r["config_json"] or {}
+        vc_row = _db.fetch_one(
+            "SELECT COUNT(*) AS cnt FROM video_migrations WHERE project_id = %s", (str(r["id"]),)
+        )
+        video_count = vc_row["cnt"] if vc_row else 0
         projects.append({
             "id": str(r["id"]),
             "name": r["name"],
@@ -616,6 +936,7 @@ async def list_projects(include_archived: bool = False, user: dict = Depends(_ve
             "config_json": cfg,
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
+            "video_count": int(video_count),
         })
     return {"projects": projects}
 
@@ -718,6 +1039,10 @@ async def update_project(slug: str, request: Request, user: dict = Depends(_veri
     body = await request.json()
     data = ProjectUpdate(**body)
 
+    # Renaming a project requires admin PIN
+    if data.name is not None:
+        _verify_admin_pin(request)
+
     sets = []
     params = []
     if data.name is not None:
@@ -751,20 +1076,46 @@ async def update_project(slug: str, request: Request, user: dict = Depends(_veri
 
     _db.execute(f"UPDATE projects SET {', '.join(sets)} WHERE slug = %s", tuple(params))
     _invalidate_project_pipeline(slug)
+    _clear_zoom_client_cache(slug)
     audit_log("project_updated", user=user["sub"], details={"slug": slug})
     return {"status": "updated"}
 
 
 @app.delete("/api/projects/{slug}")
-async def delete_project(slug: str, user: dict = Depends(_verify_jwt)):
+async def delete_project(slug: str, request: Request, user: dict = Depends(_verify_jwt)):
     """Hard-delete a project and all its child records."""
     if not _db.is_available():
         raise HTTPException(status_code=503, detail="Database not available")
+
+    _verify_admin_pin(request)
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    project_name_confirm = body.get("project_name", "")
+
+    project = _db.fetch_one("SELECT name FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project["name"] != project_name_confirm:
+        raise HTTPException(status_code=400, detail="Project name does not match")
 
     _db.execute("DELETE FROM projects WHERE slug = %s", (slug,))
     _invalidate_project_pipeline(slug)
     audit_log("project_deleted", user=user["sub"], details={"slug": slug})
     return {"status": "deleted"}
+
+
+def _verify_admin_pin(request: Request) -> None:
+    """Verify X-Admin-PIN header against ADMIN_PIN env var. Raises HTTPException on failure."""
+    expected = os.environ.get("ADMIN_PIN", "").strip()
+    if not expected:
+        raise HTTPException(status_code=500, detail="Admin PIN not configured")
+    pin = request.headers.get("X-Admin-PIN", "").strip()
+    if pin != expected:
+        raise HTTPException(status_code=403, detail="Invalid admin PIN")
 
 
 @app.post("/api/admin/verify-pin")
@@ -778,6 +1129,31 @@ async def admin_verify_pin(request: Request, user: dict = Depends(_verify_jwt)):
     if not pin or pin != expected:
         raise HTTPException(status_code=403, detail="Incorrect PIN")
     return {"status": "ok"}
+
+
+@app.post("/api/admin/reset-project-data")
+async def reset_project_data(request: Request, user: dict = Depends(_verify_jwt)):
+    """Wipe all credentials and migration history for a project — returns it to blank state."""
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+    _verify_admin_pin(request)
+    body = await request.json()
+    slug = str(body.get("project_slug", "")).strip()
+    if not slug:
+        raise HTTPException(status_code=400, detail="project_slug required")
+    project = _db.fetch_one("SELECT id, name FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    project_id = str(project["id"])
+    _db.execute("DELETE FROM credentials WHERE project_id = %s", (project_id,))
+    _db.execute("DELETE FROM video_migrations WHERE project_id = %s", (project_id,))
+    _db.execute(
+        "UPDATE projects SET source_platform = \'\', config_json = \'{}\', updated_at = NOW() WHERE id = %s",
+        (project_id,),
+    )
+    _invalidate_project_pipeline(slug)
+    audit_log("project_data_reset", user=user["sub"], details={"slug": slug, "project_id": project_id})
+    return {"status": "reset", "project_slug": slug, "project_name": project["name"]}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -796,6 +1172,54 @@ async def get_project_credentials(slug: str, user: dict = Depends(_verify_jwt)):
 
     masked = _db.get_all_credentials_masked(str(project["id"]))
     return {"credentials": masked}
+
+
+@app.get("/api/projects/{slug}/credential-status")
+async def get_credential_status(slug: str, user: dict = Depends(_verify_jwt)):
+    """Fast credential presence check — DB first, then env-var fallback. No external calls."""
+    if not _db.is_available():
+        return {
+            "source": {
+                "configured": bool(os.environ.get("KALTURA_PARTNER_ID")),
+                "platform": "kaltura" if os.environ.get("KALTURA_PARTNER_ID") else None,
+            },
+            "zoom": {"configured": bool(os.environ.get("ZOOM_CLIENT_ID"))},
+            "aws": {"configured": bool(os.environ.get("AWS_S3_BUCKET"))},
+        }
+
+    project = _db.fetch_one(
+        "SELECT id, source_platform FROM projects WHERE slug = %s", (slug,)
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_id = str(project["id"])
+    creds = _db.get_all_credentials(project_id)
+    platform = project["source_platform"] or ""
+
+    # Source: check per-project creds for the configured platform, no env fallback
+    source_creds = creds.get(platform, {})
+    source_configured = bool(
+        platform and (
+            source_creds.get("partner_id") or
+            source_creds.get("client_id") or
+            source_creds.get("app_token_id")
+        )
+    )
+
+    # Zoom: DB only — env var fallback is for API calls, not UI status
+    zm = creds.get("zoom", {})
+    zoom_configured = bool(zm.get("client_id"))
+
+    # AWS: DB only — configured if real S3 bucket set OR LocalStack endpoint set
+    aws = creds.get("aws", {})
+    aws_configured = bool(aws.get("s3_bucket")) or bool(aws.get("endpoint_url"))
+
+    return {
+        "source": {"configured": source_configured, "platform": platform or None},
+        "zoom": {"configured": zoom_configured},
+        "aws": {"configured": aws_configured},
+    }
 
 
 @app.put("/api/projects/{slug}/credentials")
@@ -822,10 +1246,24 @@ async def save_project_credentials(slug: str, request: Request, user: dict = Dep
         cred_defs = {}
 
     # Add zoom and aws credential definitions
-    zoom_secrets = {"client_id": False, "client_secret": True, "account_id": False}
-    aws_secrets = {"s3_bucket": False, "region": False, "state_table": False, "staging_prefix": False, "endpoint_url": False}
+    zoom_secrets = {"client_id": False, "client_secret": True, "account_id": False, "target_api": False, "hub_id": False, "vod_channel_id": False}
+    aws_secrets = {"s3_bucket": False, "region": False, "state_table": False, "staging_prefix": False, "endpoint_url": False, "use_localstack": False}
 
     mask = "\u2022" * 8
+
+    # Migrate legacy Kaltura key names to current ones (admin_secret → app_token_id, user_id → app_token)
+    if data.service == "kaltura":
+        creds = dict(data.credentials)
+        if "admin_secret" in creds and "app_token_id" not in creds:
+            creds["app_token_id"] = creds.pop("admin_secret")
+        elif "admin_secret" in creds:
+            creds.pop("admin_secret")
+        if "user_id" in creds and "app_token" not in creds:
+            creds["app_token"] = creds.pop("user_id")
+        elif "user_id" in creds:
+            creds.pop("user_id")
+        data = data.model_copy(update={"credentials": creds})
+
     saved_count = 0
     for key_name, value in data.credentials.items():
         if value == mask:
@@ -842,6 +1280,8 @@ async def save_project_credentials(slug: str, request: Request, user: dict = Dep
         saved_count += 1
 
     _invalidate_project_pipeline(slug)
+    _clear_zoom_client_cache(slug)  # evict cached ZoomClient so new creds take effect
+    _reach_licensed_cache.pop(slug, None)  # evict REACH cache so re-check happens with new creds
     audit_log("credentials_updated", user=user["sub"], details={"slug": slug, "service": data.service, "keys": saved_count})
     return {"status": "saved", "service": data.service, "keys_updated": saved_count}
 
@@ -1046,8 +1486,6 @@ async def list_migration_runs(slug: str, user: dict = Depends(_verify_jwt)):
 @app.post("/api/projects/{slug}/migration/start")
 async def start_project_migration(slug: str, request: Request, user: dict = Depends(_verify_jwt)):
     """Start a migration run for a project."""
-    global _migration_running
-
     body = await request.json()
     data = MigrationRunStart(**body)
 
@@ -1055,10 +1493,10 @@ async def start_project_migration(slug: str, request: Request, user: dict = Depe
     if pipeline is None:
         raise HTTPException(status_code=400, detail="Pipeline not configured — check project credentials")
 
-    with _migration_lock:
-        if _migration_running:
+    with _get_migration_lock(slug):
+        if _migration_running.get(slug, False):
             raise HTTPException(status_code=409, detail="A migration is already running")
-        _migration_running = True
+        _migration_running[slug] = True
 
     # Create run record
     run_row = None
@@ -1085,7 +1523,6 @@ async def start_project_migration(slug: str, request: Request, user: dict = Depe
 
     # Start migration in background thread
     def _run():
-        global _migration_running
         try:
             results = pipeline.run_migration(
                 batch_size=data.batch_size,
@@ -1142,7 +1579,7 @@ async def start_project_migration(slug: str, request: Request, user: dict = Depe
                 )
             _broadcast_sse({"type": "migration_failed", "error": str(e)})
         finally:
-            _migration_running = False
+            _migration_running[slug] = False
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
@@ -1497,16 +1934,36 @@ async def discover_videos(
                 status_code=400,
             )
     else:
-        # Use the pipeline's existing Kaltura client through the adapter
-        from migration.adapters.kaltura_adapter import KalturaAdapter
-        creds = {
-            "partner_id": pipeline.kaltura.config.partner_id,
-            "admin_secret": pipeline.kaltura.config.admin_secret,
-            "user_id": pipeline.kaltura.config.user_id,
-            "service_url": pipeline.kaltura.config.service_url,
-        }
-        adapter = KalturaAdapter(creds)
-        adapter._client = pipeline.kaltura  # reuse authenticated client
+        # Resolve adapter from DB — platform-agnostic, no hardcoded Kaltura
+        if not slug:
+            return JSONResponse({"error": "project_slug is required"}, status_code=400)
+        if not _db.is_available():
+            return JSONResponse({"error": "no_credentials", "message": "Database not available"}, status_code=503)
+        _disc_proj = _db.fetch_one("SELECT id, source_platform FROM projects WHERE slug = %s", (slug,))
+        if not _disc_proj:
+            return JSONResponse({"error": "not_found", "message": "Project not found"}, status_code=404)
+        _disc_platform = _disc_proj.get("source_platform") or ""
+        if not _disc_platform:
+            return JSONResponse(
+                {"error": "no_credentials", "message": "No source platform configured. Go to Settings to select a platform and enter credentials."},
+                status_code=400,
+            )
+        _disc_creds = _db.get_all_credentials(str(_disc_proj["id"]))
+        _disc_platform_creds = _disc_creds.get(_disc_platform, {})
+        from migration.adapters import get_adapter
+        try:
+            adapter_cls = get_adapter(_disc_platform)
+        except ValueError:
+            return JSONResponse(
+                {"error": "no_credentials", "message": f"Unsupported platform: {_disc_platform}"},
+                status_code=400,
+            )
+        adapter = adapter_cls(_disc_platform_creds)
+        if not adapter.authenticate():
+            return JSONResponse(
+                {"error": "no_credentials", "message": "Authentication failed. Check credentials in Settings."},
+                status_code=400,
+            )
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
     cat_list = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
@@ -1581,6 +2038,97 @@ async def discover_videos(
 
 # ── Content Analysis ──────────────────────────────────────────────────────────
 
+def _clear_zoom_client_cache(slug: str):
+    """Evict a cached ZoomClient (call after credential updates)."""
+    _zoom_client_cache.pop(slug, None)
+
+
+def _resolve_zoom_client(project_slug: str):
+    """Resolve a per-project ZoomClient from DB credentials, with fallback to global env vars.
+
+    Caches the ZoomClient instance per project slug so the OAuth token is reused
+    until it is within 5 minutes of expiry (Item 1 fix).
+
+    Returns (zoom_client, error_response) — exactly one will be None.
+    """
+    # Return cached instance if token still valid (>5 min remaining)
+    cached = _zoom_client_cache.get(project_slug)
+    if cached and cached._access_token and time.time() < cached._token_expiry - 300:
+        return cached, None
+
+    zm: dict = {}
+
+    if _db.is_available():
+        project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (project_slug,))
+        if not project:
+            return None, JSONResponse(
+                {"error": "not_found", "message": f"Project '{project_slug}' not found"},
+                status_code=404,
+            )
+        creds = _db.get_all_credentials(str(project["id"]))
+        zm = creds.get("zoom", {})
+        logger.info(
+            "zoom_hub_lookup: project_slug=%s project_id=%s per_project_creds_found=%s zoom_keys=%s",
+            project_slug, str(project["id"]),
+            bool(zm and zm.get("client_id")),
+            list(zm.keys()) if zm else [],
+        )
+
+    # Fall back to global env vars (credentials saved via Settings → Save Settings)
+    if not zm or not zm.get("client_id"):
+        env_client_id = os.environ.get("ZOOM_CLIENT_ID", "")
+        env_client_secret = os.environ.get("ZOOM_CLIENT_SECRET", "")
+        env_account_id = os.environ.get("ZOOM_ACCOUNT_ID", "")
+        logger.info(
+            "zoom_hub_lookup: project_slug=%s falling back to env vars, env_client_id_present=%s",
+            project_slug, bool(env_client_id),
+        )
+        if env_client_id:
+            zm = {"client_id": env_client_id, "client_secret": env_client_secret, "account_id": env_account_id}
+        else:
+            return None, JSONResponse(
+                {"error": "no_credentials", "message": "No Zoom credentials for this project. Add them in Settings."},
+                status_code=400,
+            )
+
+    try:
+        from migration.zoom_client import ZoomClient
+        from migration.config import ZoomConfig
+        zc = ZoomClient(ZoomConfig(
+            client_id=zm.get("client_id", ""),
+            client_secret=zm.get("client_secret", ""),
+            account_id=zm.get("account_id", ""),
+            target_api=zm.get("target_api", "clips"),
+            hub_id=zm.get("hub_id", ""),
+            vod_channel_id=zm.get("vod_channel_id", ""),
+        ))
+        # Eagerly authenticate so token expiry is set before caching
+        zc.authenticate()
+        _zoom_client_cache[project_slug] = zc
+        return zc, None
+    except Exception as e:
+        import traceback as _tb
+        tb_str = _tb.format_exc()
+        zoom_resp = getattr(e, "response", None)
+        zoom_body = ""
+        if zoom_resp is not None:
+            try:
+                zoom_body = zoom_resp.text
+            except Exception:
+                pass
+        logger.error(
+            "zoom_init_failed project=%s account_id_prefix=%s\ntraceback:\n%s\nzoom_response_body: %s",
+            project_slug,
+            zm.get("account_id", "")[:8],
+            tb_str,
+            zoom_body or "(none)",
+        )
+        return None, JSONResponse(
+            {"error": "zoom_init_failed", "message": str(e), "detail": zoom_body},
+            status_code=500,
+        )
+
+
 def _resolve_kaltura_client(slug: str):
     """Resolve a live KalturaClient for a given project slug.
     Returns (client, error_response) — exactly one will be None.
@@ -1611,6 +2159,8 @@ def _resolve_kaltura_client(slug: str):
         admin_secret=creds.get("admin_secret", ""),
         user_id=creds.get("user_id", ""),
         service_url=creds.get("service_url", "https://www.kaltura.com"),
+        app_token_id=creds.get("app_token_id", ""),
+        app_token=creds.get("app_token", ""),
     )
     client = KalturaClient(cfg)
     try:
@@ -1620,6 +2170,7 @@ def _resolve_kaltura_client(slug: str):
     return client, None
 
 
+# Kaltura-only — extend when ON24/Brightcove/Panopto adapters are built
 @app.get("/api/projects/{slug}/content-analysis")
 async def content_analysis_list(
     slug: str,
@@ -1672,14 +2223,25 @@ async def content_analysis_list(
             "thumbnail_count": len(thumbs_by_entry.get(eid, [])),
         })
 
+    # REACH availability (cached per slug — one API call per process lifetime)
+    reach_licensed = _reach_licensed_cache.get(slug)
+    if reach_licensed is None:
+        try:
+            reach_licensed = client.check_reach_available()
+            _reach_licensed_cache[slug] = reach_licensed
+        except Exception:
+            reach_licensed = False
+
     return {
         "videos": videos,
         "total": total,
         "page": page,
         "total_pages": max(1, math.ceil(total / page_size)),
+        "reach_licensed": reach_licensed,
     }
 
 
+# Kaltura-only — extend when ON24/Brightcove/Panopto adapters are built
 @app.get("/api/projects/{slug}/content-analysis/{entry_id}")
 async def content_analysis_detail(
     slug: str,
@@ -1790,6 +2352,87 @@ async def content_analysis_detail(
     }
 
 
+# ── Item 5 — Secrets Manager health endpoint ──────────────────────────────────
+
+@app.get("/api/admin/secrets-health")
+async def secrets_health(user: dict = Depends(_verify_jwt)):
+    """Check Secrets Manager ARN reachability for all active projects.
+
+    Returns list of {project_slug, service, status: ok|missing|error} dicts.
+    Only meaningful when USE_SECRETS_MANAGER=true.
+    """
+    use_sm = os.environ.get("USE_SECRETS_MANAGER", "").lower() in ("true", "1")
+    if not _db.is_available():
+        return {"use_secrets_manager": use_sm, "results": []}
+
+    projects = _db.fetch_all("SELECT id, slug FROM projects WHERE status = 'active'")
+    results = []
+    sm = _get_secrets_client() if use_sm else None
+
+    for proj in projects:
+        project_id = str(proj["id"])
+        slug = proj["slug"]
+        for service in ("kaltura", "zoom", "aws"):
+            arn = _db.get_secret_arn(project_id, service) if use_sm else None
+            if not use_sm:
+                status = "sm_disabled"
+            elif not arn:
+                status = "missing"
+            else:
+                try:
+                    sm.describe_secret(SecretId=arn)
+                    status = "ok"
+                except Exception as e:
+                    status = "error"
+                    logger.warning("SM health: project=%s service=%s arn=%s error=%s", slug, service, arn, e)
+            results.append({"project_slug": slug, "service": service, "status": status, "arn": arn or ""})
+
+    return {"use_secrets_manager": use_sm, "results": results}
+
+
+# ── Item 6 — Zoom Video SDK token endpoint ─────────────────────────────────────
+
+@app.get("/api/zoom/sdk-token")
+async def zoom_sdk_token(
+    video_id: str = Query(..., max_length=200),
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
+    """Generate a short-lived Zoom Video SDK JWT for embedded video preview.
+
+    Only available for videos with migration_status=completed.
+    Requires ZOOM_SDK_KEY and ZOOM_SDK_SECRET env vars.
+    """
+    sdk_key = os.environ.get("ZOOM_SDK_KEY", "")
+    sdk_secret = os.environ.get("ZOOM_SDK_SECRET", "")
+    if not sdk_key or not sdk_secret:
+        raise HTTPException(status_code=503, detail="Zoom Video SDK credentials not configured (ZOOM_SDK_KEY / ZOOM_SDK_SECRET)")
+
+    # Verify the video has been migrated (check DB migration record)
+    if _db.is_available():
+        mig = _db.fetch_one("SELECT status FROM video_migrations WHERE zoom_id = %s", (video_id,))
+        if not mig:
+            raise HTTPException(status_code=404, detail="Video not found in migration records")
+        if mig.get("status") != "completed":
+            raise HTTPException(status_code=400, detail="Video migration not completed yet")
+
+    try:
+        from migration.zoom_client import ZoomClient
+        from migration.config import ZoomConfig
+        # generate_sdk_token is a static-ish helper — we don't need a full client
+        zc = ZoomClient(ZoomConfig())
+        token = zc.generate_sdk_token(
+            video_id=video_id,
+            user_identity=user.get("sub", "preview"),
+            sdk_key=sdk_key,
+            sdk_secret=sdk_secret,
+        )
+        expires_at = int(time.time()) + 7200
+        return {"token": token, "expires_at": expires_at, "video_id": video_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=_safe_error(e, "SDK token generation"))
+
+
 def _parse_caption_to_lines(text: str, fmt_code: int) -> list[dict]:
     """Parse SRT or VTT caption text into a list of {start_ms, end_ms, text} dicts."""
     import re
@@ -1850,68 +2493,57 @@ async def admin_migrate_db(user: dict = Depends(_verify_jwt)):
 # ── Dashboard status ──
 
 @app.get("/api/status")
-async def get_status(user: dict = Depends(_verify_jwt)):
-    if _demo_mode:
-        # Even in demo mode, show which services have credentials configured
-        from migration.config import KalturaConfig, AWSConfig, ZoomConfig
-        kcfg = KalturaConfig.from_env()
-        acfg = AWSConfig.from_env()
-        zcfg = ZoomConfig.from_env()
-        skip_s3 = os.getenv("SKIP_S3", "").strip().lower() in ("true", "1", "yes")
-        return {
-            "total_videos": 0,
-            "status_counts": {},
-            "total_size_gb": 0,
-            "migrated_size_gb": 0,
-            "connections": {
-                "kaltura": bool(kcfg.partner_id and kcfg.admin_secret),
-                "s3": True if skip_s3 else bool(acfg.bucket_name),
-                "zoom": bool(zcfg.client_id and zcfg.client_secret and zcfg.account_id),
-            },
-            "skip_s3": skip_s3,
-            "demo_mode": True,
-            "db_available": _db.is_available(),
-            "costs": {"total_spent": 0, "projected_monthly": 0, "cost_per_video": 0},
-        }
+async def get_status(
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
+    if not _db.is_available():
+        return JSONResponse({"error": "Database not available"}, status_code=503)
 
-    # Real mode — prefer DB for persistent counts
+    proj = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (project_slug,))
+    if not proj:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+    project_id = str(proj["id"])
+
+    # Video counts — scoped to this project
     summary: dict = {}
-    total_mb = 0
-    migrated_mb = 0
-    if _db.is_available():
-        try:
-            db_migrations = _db.get_all_video_migrations()
-            for vid, rec in db_migrations.items():
-                st = rec.get("status", "completed")
-                summary[st] = summary.get(st, 0) + 1
-                size = rec.get("file_size_mb", 0) or 0
-                total_mb += size
-                if st == "completed":
-                    migrated_mb += size
-        except Exception:
-            pass
-
-    # Merge in-progress tracker state (for active migrations)
+    total_mb = 0.0
+    migrated_mb = 0.0
     try:
-        tracker_summary = _pipeline.tracker.get_summary() if _pipeline else {}
-        tracker_videos = _pipeline.tracker._load_local() if _pipeline else {}
-        for st, cnt in tracker_summary.items():
-            if st not in ("completed", "failed"):  # don't double-count finished ones
-                summary[st] = summary.get(st, 0) + cnt
-        for vid, info in tracker_videos.items():
-            size = info.get("metadata", {}).get("size_mb", 0) if isinstance(info.get("metadata"), dict) else 0
-            if info.get("status") not in ("completed", "failed"):
-                total_mb += size
+        db_migrations = _db.get_all_video_migrations(project_id=project_id)
+        for vid, rec in db_migrations.items():
+            st = rec.get("status", "completed")
+            summary[st] = summary.get(st, 0) + 1
+            size = rec.get("file_size_mb", 0) or 0
+            total_mb += size
+            if st == "completed":
+                migrated_mb += size
+    except Exception:
+        pass
+
+    # Merge in-progress tracker state from project-specific pipeline
+    proj_pipeline = _get_pipeline_for_project(project_slug)
+    try:
+        if proj_pipeline:
+            tracker_summary = proj_pipeline.tracker.get_summary()
+            tracker_videos = proj_pipeline.tracker._load_local()
+            for st, cnt in tracker_summary.items():
+                if st not in ("completed", "failed"):
+                    summary[st] = summary.get(st, 0) + cnt
+            for vid, info in tracker_videos.items():
+                size = info.get("metadata", {}).get("size_mb", 0) if isinstance(info.get("metadata"), dict) else 0
+                if info.get("status") not in ("completed", "failed"):
+                    total_mb += size
     except Exception:
         pass
 
     total = sum(summary.values())
-
-    cost_data = _cost_tracker.get_breakdown()
+    cost_data = _cost_tracker.get_breakdown(project_slug=project_slug)
 
     connections = {"kaltura": False, "s3": False, "zoom": False}
     try:
-        connections = {k: v for k, v in _pipeline.verify_connections().items()}
+        if proj_pipeline:
+            connections = {k: v for k, v in proj_pipeline.verify_connections().items()}
     except Exception:
         pass
 
@@ -1923,8 +2555,8 @@ async def get_status(user: dict = Depends(_verify_jwt)):
         "migrated_size_gb": round(migrated_mb / 1024, 1),
         "connections": connections,
         "skip_s3": skip_s3,
-        "demo_mode": False,
-        "db_available": _db.is_available(),
+        "demo_mode": _demo_mode,
+        "db_available": True,
         "costs": {
             "total_spent": cost_data["total_spent"],
             "projected_monthly": round(cost_data["cost_per_video"] * max(total, 0), 2),
@@ -1960,6 +2592,14 @@ async def list_videos(
                     _proj = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (project_slug,))
                     if _proj:
                         _project_id_filter = str(_proj["id"])
+                    else:
+                        # Project slug provided but not found in DB — return empty, never leak all videos
+                        logger.warning("list_videos: project_slug=%r not found in DB, returning empty", project_slug)
+                        return {
+                            "videos": [], "total": 0, "page": page, "total_pages": 1,
+                            "no_credentials": True,
+                            "message": "No source credentials configured for this project. Go to Settings to add them.",
+                        }
                 db_migrations = _db.get_all_video_migrations(project_id=_project_id_filter)
                 for vid, rec in db_migrations.items():
                     seen_ids.add(vid)
@@ -1988,8 +2628,14 @@ async def list_videos(
                 pass
 
         # 1. Load from state tracker (if available, for in-progress videos not yet in DB)
+        # When project_slug is given, only use THAT project's pipeline tracker — never
+        # fall back to the global pipeline, which would bleed another project's data.
         try:
-            state = _pipeline.tracker._load_local() if _pipeline else {}
+            if project_slug:
+                _tracker_pipeline = _get_pipeline_for_project(project_slug)
+            else:
+                _tracker_pipeline = _pipeline
+            state = _tracker_pipeline.tracker._load_local() if _tracker_pipeline else {}
             for vid, info in state.items():
                 meta = info.get("metadata", {})
                 if isinstance(meta, str):
@@ -2019,7 +2665,7 @@ async def list_videos(
             pass
 
         # 2. Also check audit events for completed/failed videos (survives Vercel cold starts)
-        for ev in _audit_store._read_all():
+        for ev in _audit_store._read_all(project_slug=project_slug):
             vid = ev.get("video_id")
             if not vid or vid in seen_ids:
                 continue
@@ -2090,35 +2736,33 @@ async def list_videos(
 async def list_zoom_clips(
     page_size: int = Query(50, ge=1, le=100),
     next_page_token: str = Query("", max_length=500),
+    project_slug: str = Query(..., max_length=100),
     user: dict = Depends(_verify_jwt),
 ):
     """List clips directly from Zoom API — shows what's actually in Zoom."""
-    if _demo_mode or _pipeline is None:
-        return {"clips": [], "total_records": 0, "next_page_token": ""}
+    zoom, err = _resolve_zoom_client(project_slug)
+    if err:
+        return err
     try:
-        result = _pipeline.zoom.list_clips(
-            page_size=page_size,
-            next_page_token=next_page_token or None,
-        )
-        return result
+        return zoom.list_clips(page_size=page_size, next_page_token=next_page_token or None)
     except Exception as e:
         logger.error("Failed to list Zoom clips: %s", e)
-        return JSONResponse(
-            {"error": "Failed to fetch clips from Zoom."},
-            status_code=500,
-        )
+        return JSONResponse({"error": "Failed to fetch clips from Zoom."}, status_code=500)
 
 
 # ── Zoom Events API endpoints ──
 
 @app.get("/api/zoom/hubs")
-async def list_zoom_hubs(user: dict = Depends(_verify_jwt)):
+async def list_zoom_hubs(
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     """List Zoom Events hubs."""
-    if _demo_mode or _pipeline is None:
-        return {"hubs": []}
+    zoom, err = _resolve_zoom_client(project_slug)
+    if err:
+        return err
     try:
-        hubs = _pipeline.zoom.list_hubs()
-        return {"hubs": hubs}
+        return {"hubs": zoom.list_hubs()}
     except Exception as e:
         logger.error("Failed to list Zoom hubs: %s", e)
         return JSONResponse({"error": _safe_error(e, "List hubs")}, status_code=500)
@@ -2129,30 +2773,32 @@ async def list_hub_videos(
     hub_id: str,
     page_size: int = Query(50, ge=1, le=300),
     next_page_token: str = Query("", max_length=500),
+    project_slug: str = Query(..., max_length=100),
     user: dict = Depends(_verify_jwt),
 ):
     """List videos in a Zoom Events hub."""
-    if _demo_mode or _pipeline is None:
-        return {"videos": [], "total_records": 0}
+    zoom, err = _resolve_zoom_client(project_slug)
+    if err:
+        return err
     try:
-        result = _pipeline.zoom.list_hub_videos(
-            hub_id, page_size=page_size,
-            next_page_token=next_page_token or None,
-        )
-        return result
+        return zoom.list_hub_videos(hub_id, page_size=page_size, next_page_token=next_page_token or None)
     except Exception as e:
         logger.error("Failed to list hub videos: %s", e)
         return JSONResponse({"error": _safe_error(e, "List hub videos")}, status_code=500)
 
 
 @app.get("/api/zoom/hubs/{hub_id}/vod_channels")
-async def list_vod_channels(hub_id: str, user: dict = Depends(_verify_jwt)):
+async def list_vod_channels(
+    hub_id: str,
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     """List VOD channels in a Zoom Events hub."""
-    if _demo_mode or _pipeline is None:
-        return {"vod_channels": []}
+    zoom, err = _resolve_zoom_client(project_slug)
+    if err:
+        return err
     try:
-        channels = _pipeline.zoom.list_vod_channels(hub_id)
-        return {"vod_channels": channels}
+        return {"vod_channels": zoom.list_vod_channels(hub_id)}
     except Exception as e:
         logger.error("Failed to list VOD channels: %s", e)
         return JSONResponse({"error": _safe_error(e, "List VOD channels")}, status_code=500)
@@ -2165,17 +2811,18 @@ class CreateVodChannelRequest(BaseModel):
 
 
 @app.post("/api/zoom/hubs/{hub_id}/vod_channels")
-async def create_vod_channel(hub_id: str, req: CreateVodChannelRequest, user: dict = Depends(_verify_jwt)):
+async def create_vod_channel(
+    hub_id: str,
+    req: CreateVodChannelRequest,
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     """Create a VOD channel on a Zoom Events hub."""
-    if _demo_mode or _pipeline is None:
-        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+    zoom, err = _resolve_zoom_client(project_slug)
+    if err:
+        return err
     try:
-        result = _pipeline.zoom.create_vod_channel(
-            hub_id, name=req.name,
-            channel_type=req.channel_type,
-            description=req.description,
-        )
-        return result
+        return zoom.create_vod_channel(hub_id, name=req.name, channel_type=req.channel_type, description=req.description)
     except Exception as e:
         logger.error("Failed to create VOD channel: %s", e)
         return JSONResponse({"error": _safe_error(e, "Create VOD channel")}, status_code=500)
@@ -2189,27 +2836,32 @@ class AddToVodChannelRequest(BaseModel):
 async def add_videos_to_vod_channel(
     hub_id: str, channel_id: str,
     req: AddToVodChannelRequest,
+    project_slug: str = Query(..., max_length=100),
     user: dict = Depends(_verify_jwt),
 ):
     """Add videos to a VOD channel."""
-    if _demo_mode or _pipeline is None:
-        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+    zoom, err = _resolve_zoom_client(project_slug)
+    if err:
+        return err
     try:
-        result = _pipeline.zoom.add_to_vod_channel(hub_id, channel_id, req.video_ids)
-        return result
+        return zoom.add_to_vod_channel(hub_id, channel_id, req.video_ids)
     except Exception as e:
         logger.error("Failed to add videos to VOD channel: %s", e)
         return JSONResponse({"error": _safe_error(e, "Add to VOD channel")}, status_code=500)
 
 
 @app.get("/api/zoom/events/video/{video_id}/metadata")
-async def get_events_video_metadata(video_id: str, user: dict = Depends(_verify_jwt)):
+async def get_events_video_metadata(
+    video_id: str,
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     """Get metadata for a Zoom Events video."""
-    if _demo_mode or _pipeline is None:
-        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+    zoom, err = _resolve_zoom_client(project_slug)
+    if err:
+        return err
     try:
-        result = _pipeline.zoom.get_events_metadata(video_id)
-        return result
+        return zoom.get_events_metadata(video_id)
     except Exception as e:
         logger.error("Failed to get Events video metadata: %s", e)
         return JSONResponse({"error": _safe_error(e, "Get metadata")}, status_code=500)
@@ -2235,18 +2887,23 @@ async def generate_source_manifest(request: Request, user: dict = Depends(_verif
     project_slug = body.get("project_slug", "")
     if not entry_ids:
         return JSONResponse({"error": "entry_ids required"}, status_code=400)
+    if not project_slug:
+        return JSONResponse({"error": "project_slug is required"}, status_code=400)
+
+    # Manifest generation is Kaltura-only — check source platform first
+    if _db.is_available():
+        _mfst_proj = _db.fetch_one("SELECT source_platform FROM projects WHERE slug = %s", (project_slug,))
+        if _mfst_proj and (_mfst_proj.get("source_platform") or "") != "kaltura":
+            return JSONResponse(
+                {"error": "Manifest generation is only supported for Kaltura projects."},
+                status_code=400,
+            )
 
     # Resolve Kaltura client for the correct project
-    kaltura_client = None
-    if project_slug:
-        client, err = _resolve_kaltura_client(project_slug)
-        if err:
-            return err
-        kaltura_client = client
-    elif not _demo_mode and _pipeline is not None:
-        kaltura_client = _pipeline.kaltura
-    else:
-        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+    client, err = _resolve_kaltura_client(project_slug)
+    if err:
+        return err
+    kaltura_client = client
 
     audit_log("manifest_generate", user=user["sub"], details={"entry_ids": entry_ids, "project": project_slug})
 
@@ -2269,7 +2926,7 @@ async def generate_source_manifest(request: Request, user: dict = Depends(_verif
 @app.get("/api/kaltura/caption-stats")
 async def get_caption_format_stats(
     max_videos: int = Query(None, ge=1, le=50000),
-    project_slug: str = Query("", max_length=100),
+    project_slug: str = Query(..., max_length=100),
     user: dict = Depends(_verify_jwt),
 ):
     """Count SRT vs VTT caption files across the Kaltura account.
@@ -2277,16 +2934,10 @@ async def get_caption_format_stats(
     This scans all videos and their caption assets. Can be slow for large accounts.
     Use max_videos to limit the scan scope.
     """
-    kaltura_client = None
-    if project_slug:
-        client, err = _resolve_kaltura_client(project_slug)
-        if err:
-            return err
-        kaltura_client = client
-    elif not _demo_mode and _pipeline is not None:
-        kaltura_client = _pipeline.kaltura
-    else:
-        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+    client, err = _resolve_kaltura_client(project_slug)
+    if err:
+        return err
+    kaltura_client = client
 
     try:
         stats = kaltura_client.count_caption_formats(max_videos=max_videos)
@@ -2297,15 +2948,21 @@ async def get_caption_format_stats(
 
 
 @app.get("/api/kaltura/entry/{entry_id}/captions")
-async def get_entry_captions(entry_id: str, user: dict = Depends(_verify_jwt)):
+async def get_entry_captions(
+    entry_id: str,
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     """List caption assets for a specific Kaltura entry."""
     if not _validate_entry_id(entry_id):
         return JSONResponse({"error": "Invalid entry ID format"}, status_code=400)
-    if _demo_mode or _pipeline is None:
-        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+
+    client, err = _resolve_kaltura_client(project_slug)
+    if err:
+        return err
 
     try:
-        captions = _pipeline.kaltura.list_captions(entry_id)
+        captions = client.list_captions(entry_id)
         return {
             "entry_id": entry_id,
             "captions": [
@@ -2313,7 +2970,7 @@ async def get_entry_captions(entry_id: str, user: dict = Depends(_verify_jwt)):
                     "id": c.get("id", ""),
                     "label": c.get("label", ""),
                     "language": c.get("language", ""),
-                    "format": _pipeline.kaltura.caption_format_name(c.get("format", 0)),
+                    "format": client.caption_format_name(c.get("format", 0)),
                     "format_code": c.get("format", 0),
                     "is_default": bool(c.get("isDefault", False)),
                     "status": c.get("status", 0),
@@ -2327,15 +2984,21 @@ async def get_entry_captions(entry_id: str, user: dict = Depends(_verify_jwt)):
 
 
 @app.get("/api/kaltura/entry/{entry_id}/thumbnails")
-async def get_entry_thumbnails(entry_id: str, user: dict = Depends(_verify_jwt)):
+async def get_entry_thumbnails(
+    entry_id: str,
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     """List thumbnail assets for a specific Kaltura entry."""
     if not _validate_entry_id(entry_id):
         return JSONResponse({"error": "Invalid entry ID format"}, status_code=400)
-    if _demo_mode or _pipeline is None:
-        return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
+
+    client, err = _resolve_kaltura_client(project_slug)
+    if err:
+        return err
 
     try:
-        thumbnails = _pipeline.kaltura.list_thumbnails(entry_id)
+        thumbnails = client.list_thumbnails(entry_id)
         return {
             "entry_id": entry_id,
             "thumbnails": [
@@ -2368,35 +3031,32 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
     3. Checkpoints after each video for restartability
     4. Returns a migration report with Kaltura ID → Zoom ID mapping
     """
-    global _migration_running
-
     body = await request.json()
     entry_ids = body.get("entry_ids", [])
     resumable = body.get("resumable", True)
-    project_slug = body.get("project_slug", "")
+    project_slug = body.get("project_slug", "") or "__dryrun__"
 
     if not entry_ids:
         return JSONResponse({"error": "entry_ids required"}, status_code=400)
 
-    with _migration_lock:
-        if _migration_running:
+    with _get_migration_lock(project_slug):
+        if _migration_running.get(project_slug, False):
             return JSONResponse({"error": "Migration already running"}, status_code=409)
-        _migration_running = True
-        _migration_cancel.clear()
+        _migration_running[project_slug] = True
+        _get_cancel_event(project_slug).clear()
 
     # Resolve project-specific pipeline (fall back to global if no slug)
-    pipeline = _get_pipeline_for_project(project_slug) if project_slug else _pipeline
+    raw_slug = body.get("project_slug", "")
+    pipeline = _get_pipeline_for_project(raw_slug) if raw_slug else _pipeline
     if _demo_mode or pipeline is None:
-        with _migration_lock:
-            _migration_running = False
+        _migration_running[project_slug] = False
         return JSONResponse({"error": "Pipeline not initialized for this project"}, status_code=400)
 
     audit_log("batch_migration_start", user=user["sub"], details={
         "entry_ids": entry_ids, "resumable": resumable, "count": len(entry_ids), "project": project_slug,
-    })
+    }, project_slug=project_slug or None)
 
     def _run_batch():
-        global _migration_running
         try:
             if resumable:
                 results = pipeline.run_migration_resumable(entry_ids)
@@ -2408,13 +3068,13 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
 
             # Save report to disk
             report_paths = pipeline.save_migration_report(
-                report, pipeline.config.pipeline.download_dir,
+                report, pipeline.config.pipeline.download_dir, project_slug=project_slug,
             )
 
             # Broadcast results + persist to DB
             for r in results:
                 if r.status == "completed":
-                    _cost_tracker.record_migration_cost(r.video_id, int(r.file_size_mb * 1024 * 1024))
+                    _cost_tracker.record_migration_cost(r.video_id, int(r.file_size_mb * 1024 * 1024), project_slug=project_slug)
                     if _db.is_available():
                         try:
                             langs = ",".join(
@@ -2454,6 +3114,7 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
                             "captions_migrated": r.captions_migrated,
                             "thumbnails_migrated": r.thumbnails_migrated,
                         },
+                        project_slug=project_slug or None,
                     )
                 else:
                     _broadcast_sse({
@@ -2476,6 +3137,7 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
                     "failed": len(results) - completed,
                     "report_paths": report_paths,
                 },
+                project_slug=project_slug or None,
             )
 
         except Exception as e:
@@ -2484,7 +3146,7 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
                 "message": _safe_error(e, "Batch migration"),
             })
         finally:
-            _migration_running = False
+            _migration_running[project_slug] = False
 
     threading.Thread(target=_run_batch, daemon=True).start()
     return {
@@ -2497,21 +3159,22 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
 
 @app.get("/api/migration/report")
 async def get_migration_report(
-    project_slug: str = Query("", max_length=100),
+    project_slug: str = Query(..., max_length=100),
     user: dict = Depends(_verify_jwt),
 ):
     """Get the latest migration report (Source ID → Zoom ID mapping).
 
     Returns CSV and JSON data for the most recent migration run.
     """
-    pipeline = _get_pipeline_for_project(project_slug) if project_slug else _pipeline
+    pipeline = _get_pipeline_for_project(project_slug)
     if _demo_mode or pipeline is None:
         return JSONResponse({"error": "Pipeline not initialized"}, status_code=400)
 
-    # Look for report files in the download directory
+    # Look for report files scoped to this project
     download_dir = Path(pipeline.config.pipeline.download_dir)
-    csv_files = sorted(download_dir.glob("migration_report_*.csv"), reverse=True)
-    json_files = sorted(download_dir.glob("migration_report_*.json"), reverse=True)
+    prefix = f"{project_slug}_" if project_slug else ""
+    csv_files = sorted(download_dir.glob(f"{prefix}migration_report_*.csv"), reverse=True)
+    json_files = sorted(download_dir.glob(f"{prefix}migration_report_*.json"), reverse=True)
 
     if not csv_files and not json_files:
         return JSONResponse({"error": "No migration reports found. Run a batch migration first."}, status_code=404)
@@ -2559,49 +3222,61 @@ async def get_migration_checkpoint(
 
 
 @app.get("/api/videos/{video_id}/assets")
-async def get_video_assets(video_id: str, user: dict = Depends(_verify_jwt)):
+async def get_video_assets(
+    video_id: str,
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     """Return per-asset details (captions, thumbnails) for a migrated video."""
     if not _validate_entry_id(video_id):
         return JSONResponse({"error": "Invalid video ID format"}, status_code=400)
 
-    if _db.is_available():
-        rec = _db.fetch_one("SELECT * FROM video_migrations WHERE kaltura_id = %s", (video_id,))
-        if rec:
-            assets = rec.get("assets_json") or {}
-            return {
-                "kaltura_id": video_id,
-                "zoom_id": rec.get("zoom_id"),
-                "title": rec.get("title", video_id),
-                "status": rec.get("status", "completed"),
-                "file_size_mb": rec.get("file_size_mb", 0),
-                "caption_count": rec.get("caption_count", 0),
-                "thumbnail_count": rec.get("thumbnail_count", 0),
-                "languages": [l for l in (rec.get("languages") or "").split(",") if l],
-                "migrated_at": str(rec.get("migrated_at", "")),
-                "assets": assets,
-            }
+    if not _db.is_available():
+        return JSONResponse({"error": "Database not available"}, status_code=503)
 
-    # Fallback to tracker
-    tracker_state = _pipeline.tracker.get_status(video_id) if _pipeline else None
-    if tracker_state:
+    proj_row = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (project_slug,))
+    if not proj_row:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+    project_id = str(proj_row["id"])
+
+    rec = _db.fetch_one(
+        "SELECT * FROM video_migrations WHERE kaltura_id = %s AND project_id = %s",
+        (video_id, project_id),
+    )
+    if rec:
+        assets = rec.get("assets_json") or {}
         return {
             "kaltura_id": video_id,
-            "zoom_id": (tracker_state.get("metadata") or {}).get("zoom_id"),
-            "title": (tracker_state.get("metadata") or {}).get("title", video_id),
-            "status": tracker_state.get("status", "unknown"),
-            "assets": {},
+            "zoom_id": rec.get("zoom_id"),
+            "title": rec.get("title", video_id),
+            "status": rec.get("status", "completed"),
+            "file_size_mb": rec.get("file_size_mb", 0),
+            "caption_count": rec.get("caption_count", 0),
+            "thumbnail_count": rec.get("thumbnail_count", 0),
+            "languages": [l for l in (rec.get("languages") or "").split(",") if l],
+            "migrated_at": str(rec.get("migrated_at", "")),
+            "assets": assets,
         }
+
     return JSONResponse({"error": "Video not found"}, status_code=404)
 
 
 @app.get("/api/videos/{video_id}")
-async def get_video(video_id: str, user: dict = Depends(_verify_jwt)):
+async def get_video(
+    video_id: str,
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     if not _validate_entry_id(video_id):
         return JSONResponse({"error": "Invalid video ID format"}, status_code=400)
     if _demo_mode:
         return JSONResponse({"error": "No videos — connect your services in Settings first"}, status_code=404)
 
-    status = _pipeline.tracker.get_status(video_id)
+    proj_pipeline = _get_pipeline_for_project(project_slug)
+    if proj_pipeline is None:
+        return JSONResponse({"error": "No credentials configured for this project"}, status_code=400)
+
+    status = proj_pipeline.tracker.get_status(video_id)
     if not status:
         return JSONResponse({"error": "Video not found"}, status_code=404)
     return status
@@ -2611,7 +3286,7 @@ async def get_video(video_id: str, user: dict = Depends(_verify_jwt)):
 
 class VerifyCleanupRequest(BaseModel):
     entry_ids: Optional[list[str]] = None   # None = all completed
-    project_slug: Optional[str] = Field(default=None, max_length=100)
+    project_slug: str = Field(..., min_length=1, max_length=100)
 
 
 @app.post("/api/verify-cleanup")
@@ -2619,14 +3294,10 @@ async def verify_cleanup(body: VerifyCleanupRequest, user: dict = Depends(_verif
     """Verify migrated videos exist on Zoom. Source content is never deleted."""
     from migration.verify_cleanup import run_verify_cleanup
 
-    pipeline = None
-    if body.project_slug and _db.is_available():
-        pipeline = _get_pipeline_for_project(body.project_slug)
-    if pipeline is None:
-        pipeline = _pipeline
+    pipeline = _get_pipeline_for_project(body.project_slug)
 
     if _demo_mode or pipeline is None:
-        return JSONResponse({"error": "Connect your services in Settings first."}, status_code=400)
+        return JSONResponse({"error": "No credentials configured for this project. Add them in Settings."}, status_code=400)
 
     # Validate entry IDs if provided
     if body.entry_ids:
@@ -2644,6 +3315,7 @@ async def verify_cleanup(body: VerifyCleanupRequest, user: dict = Depends(_verif
             "verified": report.verified,
             "missing": report.missing_on_zoom,
         },
+        project_slug=body.project_slug,
     )
 
     return {
@@ -2780,9 +3452,12 @@ async def browse_kaltura_videos(
 # ── Activity feed ──
 
 @app.get("/api/activity")
-async def get_activity(user: dict = Depends(_verify_jwt)):
-    """Return recent activity from the persistent audit trail."""
-    result = _audit_store.query(page=1, page_size=20)
+async def get_activity(
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
+    """Return recent activity from the persistent audit trail, scoped to a project."""
+    result = _audit_store.query(page=1, page_size=20, project_slug=project_slug)
     return {"activities": result["events"]}
 
 
@@ -2796,6 +3471,7 @@ async def get_audit_trail(
     video_id: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
+    project_slug: Optional[str] = Query(None, max_length=100),
     user: dict = Depends(_verify_jwt),
 ):
     """Paginated, filterable audit trail. IFRS-grade: immutable, timestamped."""
@@ -2806,11 +3482,16 @@ async def get_audit_trail(
         video_id=video_id,
         date_from=date_from,
         date_to=date_to,
+        project_slug=project_slug,
     )
 
 
 @app.get("/api/audit/video/{video_id}")
-async def get_video_journey(video_id: str, user: dict = Depends(_verify_jwt)):
+async def get_video_journey(
+    video_id: str,
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     """Per-video journey: complete lifecycle timeline with durations."""
     journey: dict = {
         "video_id": video_id,
@@ -2819,36 +3500,38 @@ async def get_video_journey(video_id: str, user: dict = Depends(_verify_jwt)):
         "metadata": {},
     }
 
-    # 1. State tracker history (embedded per-video timeline)
-    if not _demo_mode and _pipeline:
-        status_record = _pipeline.tracker.get_status(video_id)
-        if status_record:
-            journey["current_status"] = status_record.get("status")
-            meta = status_record.get("metadata", {})
-            if isinstance(meta, str):
-                try:
-                    meta = json.loads(meta)
-                except Exception:
-                    meta = {}
-            journey["metadata"] = meta
+    # 1. State tracker history — scoped to the project's pipeline
+    if not _demo_mode:
+        proj_pipeline = _get_pipeline_for_project(project_slug)
+        if proj_pipeline:
+            status_record = proj_pipeline.tracker.get_status(video_id)
+            if status_record:
+                journey["current_status"] = status_record.get("status")
+                meta = status_record.get("metadata", {})
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except Exception:
+                        meta = {}
+                journey["metadata"] = meta
 
-            history = status_record.get("history", [])
-            if isinstance(history, str):
-                try:
-                    history = json.loads(history)
-                except Exception:
-                    history = []
-            for h in history:
-                journey["timeline"].append({
-                    "ts": h.get("ts", ""),
-                    "type": "state_change",
-                    "from": h.get("from"),
-                    "to": h.get("to"),
-                    "error": h.get("error"),
-                })
+                history = status_record.get("history", [])
+                if isinstance(history, str):
+                    try:
+                        history = json.loads(history)
+                    except Exception:
+                        history = []
+                for h in history:
+                    journey["timeline"].append({
+                        "ts": h.get("ts", ""),
+                        "type": "state_change",
+                        "from": h.get("from"),
+                        "to": h.get("to"),
+                        "error": h.get("error"),
+                    })
 
-    # 2. Audit store events for this video
-    audit_events = _audit_store.get_video_events(video_id)
+    # 2. Audit store events for this video — filtered by project
+    audit_events = _audit_store.get_video_events(video_id, project_slug=project_slug)
     for evt in audit_events:
         journey["timeline"].append({
             "ts": evt.get("ts", ""),
@@ -2874,7 +3557,7 @@ async def get_video_journey(video_id: str, user: dict = Depends(_verify_jwt)):
 
 @app.get("/api/audit/reconciliation")
 async def get_reconciliation(
-    project_slug: Optional[str] = Query(None, max_length=100),
+    project_slug: str = Query(..., max_length=100),
     user: dict = Depends(_verify_jwt),
 ):
     """Cross-system reconciliation: where each video lives across Kaltura → S3 → Zoom.
@@ -2896,18 +3579,22 @@ async def get_reconciliation(
             "demo_mode": True,
         }
 
-    # Resolve pipeline for this project (scoped Kaltura/Zoom queries)
-    active_pipeline = _pipeline
+    # Resolve pipeline and source platform for this project
+    _recon_source_platform = ""
+    active_pipeline = None
     if project_slug and _db.is_available():
+        _recon_proj = _db.fetch_one("SELECT source_platform FROM projects WHERE slug = %s", (project_slug,))
+        if _recon_proj:
+            _recon_source_platform = _recon_proj.get("source_platform") or ""
         proj_pipeline = _get_pipeline_for_project(project_slug)
         if proj_pipeline:
             active_pipeline = proj_pipeline
 
-    # ── 1. Get Kaltura total from live API ──
+    # ── 1. Get source platform total from live API ──
     kaltura_total = 0
     kaltura_sample: list[dict] = []
     try:
-        if active_pipeline and hasattr(active_pipeline, "kaltura"):
+        if active_pipeline and _recon_source_platform == "kaltura":
             result = active_pipeline.kaltura.list_videos(page=1, page_size=50)
             kaltura_total = result.get("totalCount", 0)
             for entry in result.get("objects", []):
@@ -2937,11 +3624,10 @@ async def get_reconciliation(
 
     # Prefer DB-backed migrations (project-scoped)
     if _db.is_available():
-        project_id_filter = None
-        if project_slug:
-            proj_row = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (project_slug,))
-            if proj_row:
-                project_id_filter = str(proj_row["id"])
+        proj_row = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (project_slug,))
+        if not proj_row:
+            return JSONResponse({"error": "Project not found"}, status_code=404)
+        project_id_filter = str(proj_row["id"])
         db_migs = _db.get_all_video_migrations(project_id=project_id_filter)
         for vid, rec in db_migs.items():
             video_states[vid] = {
@@ -2953,7 +3639,7 @@ async def get_reconciliation(
                 "zoom_id": rec.get("zoom_id"),
             }
 
-    all_audit_events = _audit_store._read_all()
+    all_audit_events = _audit_store._read_all(project_slug=project_slug)
     for ev in all_audit_events:
         vid = ev.get("video_id")
         if not vid:
@@ -3163,7 +3849,6 @@ async def export_reconciliation_pdf(user: dict = Depends(_verify_jwt)):
 @app.post("/api/migration/start")
 @limiter.limit("5/minute")
 async def start_migration(request: Request, user: dict = Depends(_verify_jwt)):
-    global _migration_running
     body = {}
     try:
         body = await request.json()
@@ -3172,29 +3857,33 @@ async def start_migration(request: Request, user: dict = Depends(_verify_jwt)):
     req = MigrationStartRequest(**body)
     batch_size = req.batch_size
     video_ids = req.video_ids
+    resumable = req.resumable
+    raw_project_slug = req.project_slug or ""
+    project_slug = raw_project_slug or "__global__"
+
+    pipeline = _get_pipeline_for_project(raw_project_slug)
+    if pipeline is None:
+        return JSONResponse(
+            {"error": "No credentials configured for this project. Add them in Settings."},
+            status_code=400,
+        )
+
     audit_log("migration_start", user=user["sub"], details={
         "batch_size": batch_size,
         "video_ids": video_ids,
         "video_count": len(video_ids) if video_ids else batch_size,
-    })
+        "project": project_slug,
+    }, project_slug=raw_project_slug or None)
 
-    with _migration_lock:
-        if _migration_running:
+    with _get_migration_lock(project_slug):
+        if _migration_running.get(project_slug, False):
             return JSONResponse({"error": "Migration already running"}, status_code=409)
-        _migration_running = True
-        _migration_cancel.clear()
-
-    if _demo_mode:
-        with _migration_lock:
-            _migration_running = False
-        return JSONResponse(
-            {"error": "Connect your Kaltura, AWS, and Zoom accounts in Settings before starting a migration."},
-            status_code=400,
-        )
+        _migration_running[project_slug] = True
+        _get_cancel_event(project_slug).clear()
 
     threading.Thread(
         target=_run_real_migration, args=(batch_size,),
-        kwargs={"video_ids": video_ids}, daemon=True,
+        kwargs={"video_ids": video_ids, "pipeline": pipeline, "project_slug": project_slug, "resumable": resumable}, daemon=True,
     ).start()
     return {
         "status": "started",
@@ -3204,23 +3893,96 @@ async def start_migration(request: Request, user: dict = Depends(_verify_jwt)):
 
 
 @app.post("/api/migration/stop")
-async def stop_migration(user: dict = Depends(_verify_jwt)):
-    global _migration_running
-    _migration_cancel.set()
-    with _migration_lock:
-        _migration_running = False
+async def stop_migration(request: Request, user: dict = Depends(_verify_jwt)):
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    project_slug = body.get("project_slug") or ""
+
+    if project_slug:
+        # Stop a specific project's migration
+        _get_cancel_event(project_slug).set()
+        _migration_running[project_slug] = False
+    else:
+        # Stop all running migrations
+        for slug in list(_migration_running.keys()):
+            _get_cancel_event(slug).set()
+            _migration_running[slug] = False
+
     audit_log("migration_stop", user=user["sub"])
     _broadcast_sse({"type": "migration_stopped", "message": "Migration stopped by user"})
     return {"status": "stopped"}
 
 
+class PauseRequest(BaseModel):
+    project_slug: str = Field(..., min_length=1)
+
+
+@app.post("/api/migration/pause")
+async def pause_migration(body: PauseRequest, user: dict = Depends(_verify_jwt)):
+    """Pause a running migration after the current video completes."""
+    slug = body.project_slug
+    _get_pause_event(slug).set()
+    _broadcast_sse({"type": "migration_pausing", "project_slug": slug,
+                    "message": "Migration pausing after current video…"})
+    return {"status": "pausing"}
+
+
+@app.post("/api/migration/resume")
+async def resume_migration(request: Request, user: dict = Depends(_verify_jwt)):
+    """Resume a paused migration from checkpoint."""
+    body = await request.json()
+    project_slug = body.get("project_slug") or ""
+    if not project_slug:
+        return JSONResponse({"error": "project_slug required"}, status_code=400)
+    batch_size = int(body.get("batch_size", 10))
+
+    _get_pause_event(project_slug).clear()
+    pipeline = _get_pipeline_for_project(project_slug)
+    if pipeline is None:
+        return JSONResponse({"error": "No credentials configured for this project"}, status_code=400)
+
+    slug_key = project_slug
+    with _get_migration_lock(slug_key):
+        if _migration_running.get(slug_key, False):
+            return JSONResponse({"error": "Already running"}, status_code=409)
+        _migration_running[slug_key] = True
+        _get_cancel_event(slug_key).clear()
+
+    threading.Thread(
+        target=_run_real_migration, args=(batch_size,),
+        kwargs={"pipeline": pipeline, "project_slug": slug_key, "resumable": True}, daemon=True,
+    ).start()
+    audit_log("migration_resume", user=user["sub"], details={"project_slug": project_slug})
+    return {"status": "resumed"}
+
+
+@app.post("/api/migration/stream-token")
+async def get_sse_token(user: dict = Depends(_verify_jwt)):
+    """Issue a short-lived (60s) single-use token for SSE connection.
+
+    SSE uses EventSource which cannot set custom headers, so the JWT cannot be
+    passed via Authorization. Instead, clients call this endpoint first to get
+    a short-lived token that is safe to put in the URL (expires in 60 seconds,
+    single-use — it's removed from the store on first SSE connect).
+    """
+    token = secrets.token_urlsafe(32)
+    _sse_tokens[token] = (time.time() + 60, user["sub"])
+    # Prune tokens older than 120s to prevent unbounded growth
+    stale = [k for k, (exp, _) in list(_sse_tokens.items()) if time.time() > exp + 60]
+    for k in stale:
+        _sse_tokens.pop(k, None)
+    return {"token": token, "expires_in": 60}
+
+
 @app.get("/api/migration/stream")
-async def migration_stream(token: str = Query(..., description="JWT token for SSE auth")):
-    """SSE endpoint for real-time migration progress. Requires token query param."""
-    try:
-        pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    except pyjwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+async def migration_stream(sse_token: str = Query(..., description="Short-lived SSE token from /api/migration/stream-token")):
+    """SSE endpoint for real-time migration progress. Requires short-lived token from stream-token endpoint."""
+    entry = _sse_tokens.pop(sse_token, None)  # single-use: remove immediately
+    if not entry or time.time() > entry[0]:
+        raise HTTPException(status_code=401, detail="Invalid or expired SSE token — call /api/migration/stream-token first")
     queue: asyncio.Queue = asyncio.Queue()
     _sse_subscribers.append(queue)
 
@@ -3246,18 +4008,23 @@ async def migration_stream(token: str = Query(..., description="JWT token for SS
 
 
 @app.post("/api/migration/retry")
-async def retry_failed(user: dict = Depends(_verify_jwt)):
-    audit_log("migration_retry", user=user["sub"])
-    if _demo_mode:
+async def retry_failed(
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
+    pipeline = _get_pipeline_for_project(project_slug)
+    if pipeline is None:
         return JSONResponse(
-            {"error": "Connect all services in Settings before retrying migrations."},
+            {"error": "No credentials configured for this project. Add them in Settings."},
             status_code=400,
         )
 
-    if _migration_running:
+    slug_key = project_slug or "__global__"
+    if _migration_running.get(slug_key, False):
         return JSONResponse({"error": "Migration already running"}, status_code=409)
 
-    results = _pipeline.retry_failed()
+    audit_log("migration_retry", user=user["sub"], project_slug=project_slug)
+    results = pipeline.retry_failed()
     return {
         "status": "completed",
         "retried": len(results),
@@ -3275,7 +4042,7 @@ async def migration_poll(since: int = Query(0), user: dict = Depends(_verify_jwt
     return {
         "events": events[-50:],
         "next_index": len(_migration_events_store),
-        "migration_running": _migration_running,
+        "migration_running": any(_migration_running.values()),
     }
 
 
@@ -3323,6 +4090,7 @@ async def chat(request: Request, user: dict = Depends(_verify_jwt)):
         raise HTTPException(status_code=400, detail="Invalid JSON")
     chat_req = ChatRequest(**body)
     message = chat_req.message.strip()
+    chat_project_slug = chat_req.project_slug
 
     if not message:
         return JSONResponse({"error": "Empty message"}, status_code=400)
@@ -3336,7 +4104,7 @@ async def chat(request: Request, user: dict = Depends(_verify_jwt)):
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if api_key:
         try:
-            response = await _handle_claude_query(message, api_key)
+            response = await _handle_claude_query(message, api_key, project_slug=chat_project_slug)
             return {"response": response, "tier": 2}
         except Exception as e:
             logger.error("Claude API error: %s", e)
@@ -3358,7 +4126,7 @@ def _handle_structured_query(message: str) -> str | None:
     msg = message.lower().strip()
 
     if _demo_mode:
-        return "Connect your Kaltura, AWS, and Zoom accounts in **Settings** first — I'll have real data to work with once your services are connected."
+        return "Connect your source platform and Zoom accounts in **Settings** first — I'll have real data to work with once your services are connected."
 
     # Build real data from the pipeline state tracker
     videos = []
@@ -3491,30 +4259,51 @@ def _handle_structured_query(message: str) -> str | None:
     return None
 
 
-async def _handle_claude_query(message: str, api_key: str) -> str:
-    """Handle open-ended query via Claude API."""
+async def _handle_claude_query(message: str, api_key: str, project_slug: str = "") -> str:
+    """Handle open-ended query via Claude API with live project + Zoom context."""
     import anthropic
 
-    # Build context about current state
-    summary = {}
-    costs = _cost_tracker.get_breakdown()
-    if not _demo_mode and _pipeline:
-        try:
-            summary = _pipeline.tracker.get_summary()
-        except Exception:
-            pass
+    # Build context from per-project pipeline
+    summary: dict = {}
+    costs = _cost_tracker.get_breakdown(project_slug=project_slug)
+    zoom_context: dict = {}
 
-    context = json.dumps({"summary": summary, "costs": costs}, indent=2)
+    if not _demo_mode:
+        proj_pipeline = _get_pipeline_for_project(project_slug) if project_slug else _pipeline
+        if proj_pipeline:
+            try:
+                summary = proj_pipeline.tracker.get_summary()
+            except Exception:
+                pass
+            # Fetch live Zoom data for richer context
+            try:
+                zc = proj_pipeline.zoom_client
+                if hasattr(zc, "list_hubs"):
+                    hubs = zc.list_hubs()
+                    zoom_context["hubs"] = [{"id": h.get("hub_id"), "name": h.get("hub_name"), "videos": h.get("total_content_count", 0)} for h in hubs[:5]]
+                if hasattr(zc, "list_clips"):
+                    clips_resp = zc.list_clips(page_size=1)
+                    zoom_context["total_zoom_clips"] = clips_resp.get("total_records", 0)
+            except Exception:
+                pass  # Zoom context is best-effort
+
+    context = json.dumps({
+        "project": project_slug or "default",
+        "migration_summary": summary,
+        "costs": costs,
+        "zoom_live": zoom_context,
+    }, indent=2)
 
     client = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-6",
         max_tokens=1024,
         system=(
-            "You are an AI assistant for a video migration pipeline (Kaltura -> AWS S3 -> Zoom). "
-            "Answer questions about migration status, metadata, costs, and strategy. "
-            "Be concise and use markdown formatting. "
-            f"Current migration state:\n{context}"
+            "You are an AI assistant for VideoMigrate by OpenExchange — a pipeline that migrates "
+            "enterprise videos from Kaltura/ON24/Brightcove to Zoom Events or Zoom Clips via AWS S3 staging. "
+            "Answer questions about migration status, video counts, costs, Zoom hubs, and strategy. "
+            "Be concise and use markdown. When you have live data, cite it specifically. "
+            f"Live context for project '{project_slug}':\n{context}"
         ),
         messages=[{"role": "user", "content": message}],
     )
@@ -3523,6 +4312,7 @@ async def _handle_claude_query(message: str, api_key: str) -> str:
     _cost_tracker.record_ai_cost(
         input_tokens=resp.usage.input_tokens,
         output_tokens=resp.usage.output_tokens,
+        project_slug=project_slug,
     )
 
     return resp.content[0].text
@@ -3531,14 +4321,17 @@ async def _handle_claude_query(message: str, api_key: str) -> str:
 # ── Cost endpoints ──
 
 @app.get("/api/costs")
-async def get_costs(user: dict = Depends(_verify_jwt)):
+async def get_costs(
+    project_slug: str = Query("", max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     if _demo_mode:
         return {
             "breakdown": {"s3_storage": 0, "s3_transfer": 0, "dynamodb": 0, "lambda": 0, "ai_assistant": 0, "zoom_api": 0, "kaltura_api": 0},
             "total_spent": 0, "projected_monthly": 0, "cost_per_video": 0,
             "total_gb_transferred": 0, "timeline": [], "alert_threshold": 50.00,
         }
-    return _cost_tracker.get_breakdown()
+    return _cost_tracker.get_breakdown(project_slug=project_slug)
 
 
 @app.get("/api/costs/projection")
@@ -3551,10 +4344,13 @@ async def cost_projection(
 
 
 @app.get("/api/costs/timeline")
-async def cost_timeline(user: dict = Depends(_verify_jwt)):
+async def cost_timeline(
+    project_slug: str = Query("", max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     if _demo_mode:
         return {"timeline": []}
-    return {"timeline": _cost_tracker.get_timeline()}
+    return {"timeline": _cost_tracker.get_timeline(project_slug=project_slug)}
 
 
 @app.put("/api/costs/alert")
@@ -3570,15 +4366,19 @@ async def set_cost_alert(request: Request, user: dict = Depends(_verify_jwt)):
 
 
 @app.get("/api/costs/export")
-async def export_costs(user: dict = Depends(_verify_jwt)):
+async def export_costs(
+    project_slug: str = Query("", max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
     if _demo_mode:
         return JSONResponse({"message": "Cost export not available in demo mode"})
 
-    csv_content = _cost_tracker.export_csv()
+    csv_content = _cost_tracker.export_csv(project_slug=project_slug)
+    slug_prefix = f"{project_slug}-" if project_slug else ""
     return StreamingResponse(
         iter([csv_content]),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=migration-costs.csv"},
+        headers={"Content-Disposition": f"attachment; filename={slug_prefix}migration-costs.csv"},
     )
 
 
@@ -3591,91 +4391,74 @@ async def test_connections(request: Request, user: dict = Depends(_verify_jwt)):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
     service = body.get("service", "all")
-    audit_log("settings_test", user=user["sub"], details={"service": service})
+    project_slug = body.get("project_slug")
+    if not project_slug:
+        raise HTTPException(status_code=400, detail="project_slug is required")
 
-    # Test each service independently — don't require the full pipeline
-    from migration.config import KalturaConfig, AWSConfig, ZoomConfig
+    if not _db.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    project = _db.fetch_one("SELECT id, source_platform FROM projects WHERE slug = %s", (project_slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{project_slug}' not found")
+
+    creds = _db.get_all_credentials(str(project["id"]))
+    audit_log("settings_test", user=user["sub"], details={"service": service, "project": project_slug})
 
     results = {}
+    source_platform = project.get("source_platform") or ""
 
     if service in ("all", "kaltura"):
-        kcfg = KalturaConfig.from_env()
-        if not kcfg.partner_id or not kcfg.admin_secret:
-            results["kaltura"] = {"status": "not_configured", "message": "Add Partner ID and Admin Secret"}
-        elif _pipeline:
-            try:
-                _pipeline.kaltura.authenticate()
-                results["kaltura"] = {"status": "ok", "message": "Connected"}
-            except Exception as e:
-                logger.error("Kaltura test failed: %s", e)
-                results["kaltura"] = {"status": "error", "message": "Authentication failed — check Partner ID and Admin Secret"}
-        else:
-            try:
-                from migration.kaltura_client import KalturaClient
-                client = KalturaClient(kcfg)
-                client.authenticate()
-                results["kaltura"] = {"status": "ok", "message": "Connected"}
-            except Exception as e:
-                logger.error("Kaltura test failed: %s", e)
-                results["kaltura"] = {"status": "error", "message": "Authentication failed — check Partner ID and Admin Secret"}
-
-    if service in ("all", "s3"):
-        skip_s3 = os.getenv("SKIP_S3", "").strip().lower() in ("true", "1", "yes")
-        if skip_s3:
-            results["s3"] = {"status": "ok", "message": "S3 staging disabled (direct mode)"}
-        else:
-            acfg = AWSConfig.from_env()
-            if not acfg.bucket_name:
-                results["s3"] = {"status": "not_configured", "message": "Add S3 bucket name or set SKIP_S3=true"}
-            elif _pipeline and _pipeline.s3:
-                try:
-                    _pipeline.s3._s3.head_bucket(Bucket=acfg.bucket_name)
-                    msg = f"Connected — bucket: {acfg.bucket_name}"
-                    if acfg.endpoint_url:
-                        msg += f" (LocalStack: {acfg.endpoint_url})"
-                    results["s3"] = {"status": "ok", "message": msg}
-                except Exception as e:
-                    logger.error("S3 test failed: %s", e)
-                    results["s3"] = {"status": "error", "message": "Bucket access failed — check bucket name, region, and credentials"}
+        try:
+            from migration.adapters import get_adapter
+            platform_creds = creds.get(source_platform, creds.get("kaltura", {}))
+            if not platform_creds:
+                results["kaltura"] = {"status": "not_configured", "message": f"No {source_platform or 'source'} credentials configured"}
             else:
-                try:
-                    import boto3
-                    from botocore.config import Config as BotoConfig
-                    s3_kwargs = {"region_name": acfg.region, "config": BotoConfig(max_pool_connections=5)}
-                    if acfg.endpoint_url:
-                        s3_kwargs["endpoint_url"] = acfg.endpoint_url
-                        s3_kwargs["aws_access_key_id"] = "test"
-                        s3_kwargs["aws_secret_access_key"] = "test"
-                    s3 = boto3.client("s3", **s3_kwargs)
-                    s3.head_bucket(Bucket=acfg.bucket_name)
-                    msg = f"Connected — bucket: {acfg.bucket_name}"
-                    if acfg.endpoint_url:
-                        msg += f" (LocalStack: {acfg.endpoint_url})"
-                    results["s3"] = {"status": "ok", "message": msg}
-                except Exception as e:
-                    logger.error("S3 test failed: %s", e)
-                    results["s3"] = {"status": "error", "message": "Bucket access failed — check bucket name, region, and credentials"}
+                adapter_cls = get_adapter(source_platform or "kaltura")
+                adapter = adapter_cls(platform_creds)
+                ok = adapter.authenticate()
+                results["kaltura"] = {"status": "ok" if ok else "error", "message": "Connected" if ok else "Authentication failed"}
+        except Exception as e:
+            logger.error("Source platform test failed for %s: %s", project_slug, e)
+            results["kaltura"] = {"status": "error", "message": str(e)}
 
     if service in ("all", "zoom"):
-        zcfg = ZoomConfig.from_env()
-        if not zcfg.client_id or not zcfg.client_secret or not zcfg.account_id:
-            results["zoom"] = {"status": "not_configured", "message": "Add Client ID, Secret, and Account ID"}
-        elif _pipeline:
-            try:
-                _pipeline.zoom.authenticate()
+        try:
+            from migration.zoom_client import ZoomClient
+            from migration.config import ZoomConfig
+            zm = creds.get("zoom", {})
+            if not zm or not zm.get("client_id"):
+                results["zoom"] = {"status": "not_configured", "message": "No Zoom credentials configured"}
+            else:
+                zc = ZoomClient(ZoomConfig(
+                    client_id=zm.get("client_id", ""),
+                    client_secret=zm.get("client_secret", ""),
+                    account_id=zm.get("account_id", ""),
+                ))
+                zc.authenticate()
                 results["zoom"] = {"status": "ok", "message": "Connected"}
-            except Exception as e:
-                logger.error("Zoom test failed: %s", e)
-                results["zoom"] = {"status": "error", "message": "Authentication failed — check Client ID, Secret, and Account ID"}
-        else:
-            try:
-                from migration.zoom_client import ZoomClient
-                client = ZoomClient(zcfg)
-                client.authenticate()
-                results["zoom"] = {"status": "ok", "message": "Connected"}
-            except Exception as e:
-                logger.error("Zoom test failed: %s", e)
-                results["zoom"] = {"status": "error", "message": "Authentication failed — check Client ID, Secret, and Account ID"}
+        except Exception as e:
+            logger.error("Zoom test failed for %s: %s", project_slug, e)
+            results["zoom"] = {"status": "error", "message": str(e)}
+
+    if service in ("all", "s3"):
+        try:
+            import boto3
+            aws = creds.get("aws", {})
+            bucket = aws.get("s3_bucket", aws.get("bucket_name", ""))
+            skip_s3 = os.getenv("SKIP_S3", "").strip().lower() in ("true", "1", "yes")
+            if skip_s3:
+                results["s3"] = {"status": "ok", "message": "S3 staging disabled (direct mode)"}
+            elif not bucket:
+                results["s3"] = {"status": "not_configured", "message": "No S3 bucket configured"}
+            else:
+                s3 = boto3.client("s3", region_name=aws.get("region", "us-east-1"))
+                s3.head_bucket(Bucket=bucket)
+                results["s3"] = {"status": "ok", "message": f"Bucket '{bucket}' accessible"}
+        except Exception as e:
+            logger.error("S3 test failed for %s: %s", project_slug, e)
+            results["s3"] = {"status": "error", "message": str(e)}
 
     return results
 
@@ -3774,11 +4557,17 @@ async def update_settings(request: Request, user: dict = Depends(_verify_jwt)):
 
 
 @app.get("/api/report")
-async def get_report(user: dict = Depends(_verify_jwt)):
-    if _demo_mode:
-        return {"report": "Connect all services in Settings to generate a migration report."}
-
-    report = _pipeline.generate_report()
+async def get_report(
+    project_slug: str = Query(..., max_length=100),
+    user: dict = Depends(_verify_jwt),
+):
+    pipeline = _get_pipeline_for_project(project_slug)
+    if pipeline is None:
+        return JSONResponse(
+            {"error": "No credentials configured for this project. Add them in Settings."},
+            status_code=400,
+        )
+    report = pipeline.generate_report()
     return {"report": report}
 
 
@@ -3798,56 +4587,116 @@ def _broadcast_sse(data: dict):
             pass
 
 
-def _run_real_migration(batch_size: int, video_ids: Optional[List[str]] = None):
+def _run_real_migration(batch_size: int, video_ids: Optional[List[str]] = None, pipeline=None, project_slug: str = "", resumable: bool = False):
     """Run actual migration with real APIs. Accepts optional video_ids for cherry-pick mode."""
-    global _migration_running
+    slug = project_slug or "__global__"
+
+    if pipeline is None:
+        logger.error("_run_real_migration called without a project pipeline — refusing to use global")
+        _migration_running[slug] = False
+        return
+
+    stage_counts: dict[str, int] = {}
+
+    def _emit_video_result(r):
+        if r.status == "completed":
+            _cost_tracker.record_migration_cost(r.video_id, int(r.file_size_mb * 1024 * 1024), project_slug=project_slug)
+            _broadcast_sse({
+                "type": "video_completed",
+                "video_id": r.video_id,
+                "title": r.title,
+                "zoom_id": r.zoom_id,
+                "size_mb": r.file_size_mb,
+                "captions": r.captions_migrated,
+                "thumbnails": r.thumbnails_migrated,
+            })
+            _audit_store.append(
+                event="video_completed", video_id=r.video_id,
+                data={
+                    "title": r.title, "zoom_id": r.zoom_id,
+                    "duration_s": r.duration_seconds, "size_mb": r.file_size_mb,
+                    "captions_migrated": r.captions_migrated,
+                    "thumbnails_migrated": r.thumbnails_migrated,
+                },
+                project_slug=project_slug or None,
+            )
+        else:
+            _broadcast_sse({
+                "type": "video_failed",
+                "video_id": r.video_id,
+                "title": r.title,
+                "error": r.error,
+            })
+            _audit_store.append(
+                event="video_failed", video_id=r.video_id,
+                data={"title": r.title, "error": r.error},
+                project_slug=project_slug or None,
+            )
 
     try:
-        # Cherry-pick mode: register selected videos and broadcast initial state
-        if video_ids:
-            _pipeline.tracker.register_videos(video_ids)
-            for vid in video_ids:
-                _broadcast_sse({
-                    "type": "video_progress",
-                    "video_id": vid,
-                    "title": vid,
-                    "step": "pending",
-                })
-
-        results = _pipeline.run_migration(batch_size=batch_size, video_ids=video_ids)
-
-        for r in results:
-            if r.status == "completed":
-                _cost_tracker.record_migration_cost(r.video_id, int(r.file_size_mb * 1024 * 1024))
-                _broadcast_sse({
-                    "type": "video_completed",
-                    "video_id": r.video_id,
-                    "title": r.title,
-                    "zoom_id": r.zoom_id,
-                    "size_mb": r.file_size_mb,
-                    "captions": r.captions_migrated,
-                    "thumbnails": r.thumbnails_migrated,
-                })
-                _audit_store.append(
-                    event="video_completed", video_id=r.video_id,
-                    data={
-                        "title": r.title, "zoom_id": r.zoom_id,
-                        "duration_s": r.duration_seconds, "size_mb": r.file_size_mb,
-                        "captions_migrated": r.captions_migrated,
-                        "thumbnails_migrated": r.thumbnails_migrated,
-                    },
-                )
+        if resumable and not video_ids:
+            # Resumable all-videos path: process one at a time with pause/cancel checks
+            if pipeline._source_adapter:
+                all_assets = pipeline._source_adapter.list_all_assets()
+                all_ids = [a.id for a in all_assets]
             else:
-                _broadcast_sse({
-                    "type": "video_failed",
-                    "video_id": r.video_id,
-                    "title": r.title,
-                    "error": r.error,
-                })
-                _audit_store.append(
-                    event="video_failed", video_id=r.video_id,
-                    data={"title": r.title, "error": r.error},
-                )
+                all_videos = pipeline.kaltura.list_all_videos()
+                all_ids = [v["id"] for v in all_videos]
+            _broadcast_sse({"type": "migration_discovered", "total": len(all_ids), "project_slug": slug})
+
+            # Load checkpoint so we know which are already done
+            checkpoint = pipeline._load_checkpoint()
+            completed_ids = set(checkpoint.get("completed_ids", [])) if checkpoint else set()
+            remaining_ids = [vid for vid in all_ids if vid not in completed_ids]
+            results = []
+
+            for vid in remaining_ids:
+                # Check cancel first
+                if _get_cancel_event(slug).is_set():
+                    break
+                # Check pause
+                if _get_pause_event(slug).is_set():
+                    _broadcast_sse({"type": "migration_paused", "project_slug": slug,
+                                     "message": "Migration paused — will resume from checkpoint"})
+                    _migration_running[slug] = False
+                    return
+                r = pipeline._migrate_with_retry(vid)
+                results.append(r)
+                if r.status == "completed":
+                    completed_ids.add(vid)
+                    pipeline._save_checkpoint({
+                        "video_ids": all_ids,
+                        "completed_ids": list(completed_ids),
+                        "results": [
+                            {"video_id": x.video_id, "title": x.title, "status": x.status,
+                             "zoom_id": x.zoom_id, "error": x.error,
+                             "file_size_mb": x.file_size_mb,
+                             "captions_migrated": x.captions_migrated,
+                             "thumbnails_migrated": x.thumbnails_migrated}
+                            for x in results
+                        ],
+                        "last_updated": datetime.now(timezone.utc).isoformat(),
+                    })
+                _emit_video_result(r)
+
+            if _get_cancel_event(slug).is_set():
+                _broadcast_sse({"type": "migration_stopped", "message": "Migration cancelled", "project_slug": slug})
+                _migration_running[slug] = False
+                return
+        else:
+            # Cherry-pick / batch mode
+            if video_ids:
+                pipeline.tracker.register_videos(video_ids)
+                for vid in video_ids:
+                    _broadcast_sse({
+                        "type": "video_progress",
+                        "video_id": vid,
+                        "title": vid,
+                        "step": "pending",
+                    })
+            results = pipeline.run_migration(batch_size=batch_size, video_ids=video_ids)
+            for r in results:
+                _emit_video_result(r)
 
         completed = sum(1 for r in results if r.status == "completed")
         failed = len(results) - completed
@@ -3859,10 +4708,16 @@ def _run_real_migration(batch_size: int, video_ids: Optional[List[str]] = None):
                 "processed": len(results), "completed": completed, "failed": failed,
                 "captions_migrated": total_captions, "thumbnails_migrated": total_thumbs,
             },
+            project_slug=project_slug or None,
         )
         _broadcast_sse({
             "type": "migration_completed",
             "message": f"Migration batch complete: {len(results)} processed ({total_captions} captions, {total_thumbs} thumbnails)",
+            "total": len(results),
+            "completed": completed,
+            "failed": failed,
+            "total_captions": total_captions,
+            "total_thumbs": total_thumbs,
         })
     except Exception as e:
         _broadcast_sse({
@@ -3870,7 +4725,7 @@ def _run_real_migration(batch_size: int, video_ids: Optional[List[str]] = None):
             "message": _safe_error(e, "Migration"),
         })
     finally:
-        _migration_running = False
+        _migration_running[slug] = False
 
 
 # ── Pipeline Test ──
@@ -4041,7 +4896,7 @@ async def infra_test(user: dict = Depends(_verify_jwt)):
                 {"label": "No files were corrupted", "pass": False, "detail": "No data to check yet"},
                 {"label": "Videos play correctly", "pass": False, "detail": "No data to check yet"},
             ],
-            "message": "Connect your Kaltura, AWS, and Zoom accounts in Settings to run a real test.",
+            "message": "Connect your source platform and Zoom accounts in Settings to run a real test.",
         }
 
     # Real mode — attempt pilot run

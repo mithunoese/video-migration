@@ -41,13 +41,16 @@ class MigrationResult:
     file_size_mb: float = 0
     captions_migrated: int = 0
     thumbnails_migrated: int = 0
+    chapters_migrated: int = 0
+    reach_captions_migrated: bool = False
     caption_details: list = field(default_factory=list)   # [{lang, format, converted}]
     thumbnail_details: list = field(default_factory=list)  # [{id, is_default, width, height}]
 
 
 class MigrationPipeline:
-    def __init__(self, config: Config, on_progress=None, source_adapter=None, field_mappings=None):
+    def __init__(self, config: Config, on_progress=None, source_adapter=None, field_mappings=None, project_slug: str = ""):
         self.config = config
+        self.project_slug = project_slug
         self.skip_s3 = config.skip_s3
         self.kaltura = KalturaClient(config.kaltura)
         self.s3 = None if self.skip_s3 else S3Staging(config.aws)
@@ -130,6 +133,8 @@ class MigrationPipeline:
         s3_key = None  # track for cleanup
         captions_migrated = 0
         thumbnails_migrated = 0
+        chapters_migrated = 0
+        reach_captions_migrated = False
         caption_details = []
         thumbnail_details = []
 
@@ -202,6 +207,8 @@ class MigrationPipeline:
                 upload_kwargs["hub_id"] = hub_id
             if zoom_tags:
                 upload_kwargs["tags"] = zoom_tags
+            # Pass source ID for Events metadata (external_media_id → AEM embed mapping)
+            upload_kwargs["kaltura_id"] = entry_id
 
             zoom_result = self.zoom.upload_video(
                 local_path,
@@ -237,11 +244,13 @@ class MigrationPipeline:
                             cap_label = cap.get("label", cap_lang)
                             converted = False
 
-                            # DFXP (Timed Text XML) is not supported by Zoom — skip with warning
+                            # DFXP (Timed Text XML): Zoom only accepts WebVTT. SRT is converted
+                            # automatically. DFXP→VTT conversion is not yet implemented — log and skip.
+                            # Note: no burnt-in caption extraction is attempted; only sidecar files.
                             if cap_format == "dfxp":
                                 logger.warning(
                                     "[%s] Skipping DFXP caption %s (%s) — "
-                                    "Zoom only accepts VTT. DFXP→VTT conversion not yet supported.",
+                                    "Zoom only accepts WebVTT; DFXP→VTT conversion not implemented.",
                                     entry_id, cap_id, cap_label,
                                 )
                                 caption_details.append({
@@ -321,6 +330,58 @@ class MigrationPipeline:
                 except Exception as ce:
                     logger.warning("[%s] Caption migration failed (non-fatal): %s", entry_id, ce)
 
+                # REACH AI captions — fetch completed vendor tasks and download output captions
+                try:
+                    reach_tasks = self.kaltura.list_reach_tasks(entry_id)
+                    for task in reach_tasks:
+                        task_output = task.get("outputObjectId") or task.get("outputObject", {}).get("id", "")
+                        if not task_output:
+                            continue
+                        try:
+                            Path(caption_dir).mkdir(parents=True, exist_ok=True)
+                            reach_cap_path = os.path.join(caption_dir, f"reach_{task_output}.vtt")
+                            self.kaltura.download_caption(task_output, reach_cap_path)
+                            cap_lang = task.get("outputObject", {}).get("language", "en")
+                            if zoom_id and os.path.exists(reach_cap_path):
+                                self.zoom.upload_caption(zoom_id, reach_cap_path, language=cap_lang, label=f"{cap_lang} (REACH AI)")
+                                reach_captions_migrated = True
+                                logger.info("[%s] Migrated REACH caption: task=%s lang=%s", entry_id, task.get("id"), cap_lang)
+                        except Exception as rt_err:
+                            logger.warning("[%s] REACH task %s caption migration failed (non-fatal): %s",
+                                           entry_id, task.get("id"), rt_err)
+                except Exception as reach_err:
+                    logger.warning("[%s] REACH caption migration failed (non-fatal): %s", entry_id, reach_err)
+
+            # Step 5.5: Migrate cue point chapters → append to Zoom video description
+            if not self._source_adapter and zoom_id:
+                try:
+                    cuepoints = self.kaltura.list_cuepoints(entry_id)
+                    chapter_cues = [
+                        cp for cp in cuepoints
+                        if "chapter" in cp.get("cuePointType", "").lower()
+                    ]
+                    if chapter_cues:
+                        chapter_lines = ["", "--- Chapters ---"]
+                        for cp in sorted(chapter_cues, key=lambda c: c.get("startTime", 0)):
+                            ms = cp.get("startTime", 0)
+                            total_secs = ms // 1000
+                            mins, secs = divmod(total_secs, 60)
+                            name = cp.get("name") or cp.get("text") or f"Chapter at {mins}:{secs:02d}"
+                            chapter_lines.append(f"{mins:02d}:{secs:02d} {name}")
+                        chapters_text = "\n".join(chapter_lines)
+
+                        # Append to existing Zoom description
+                        current_desc = zoom_description if "zoom_description" in dir() else self._build_zoom_description(metadata)
+                        new_desc = current_desc + "\n" + chapters_text
+                        try:
+                            self.zoom.update_video_description(zoom_id, new_desc)
+                            chapters_migrated = len(chapter_cues)
+                            logger.info("[%s] Appended %d chapter markers to Zoom description", entry_id, chapters_migrated)
+                        except Exception as desc_err:
+                            logger.warning("[%s] Chapter description update failed (non-fatal): %s", entry_id, desc_err)
+                except Exception as cp_err:
+                    logger.warning("[%s] Cue point chapter migration failed (non-fatal): %s", entry_id, cp_err)
+
             # Step 6: Migrate thumbnails (download default + upload)
             self._notify(entry_id, "thumbnails", title)
             if not self._source_adapter:
@@ -382,6 +443,8 @@ class MigrationPipeline:
                     "zoom_id": zoom_id,
                     "captions_migrated": captions_migrated,
                     "thumbnails_migrated": thumbnails_migrated,
+                    "chapters_migrated": chapters_migrated,
+                    "reach_captions_migrated": reach_captions_migrated,
                 },
             )
 
@@ -421,6 +484,8 @@ class MigrationPipeline:
                 file_size_mb=file_size_mb,
                 captions_migrated=captions_migrated,
                 thumbnails_migrated=thumbnails_migrated,
+                chapters_migrated=chapters_migrated,
+                reach_captions_migrated=reach_captions_migrated,
                 caption_details=caption_details,
                 thumbnail_details=thumbnail_details,
             )
@@ -627,6 +692,8 @@ class MigrationPipeline:
                 "duration_seconds": round(r.duration_seconds, 1),
                 "captions_migrated": r.captions_migrated,
                 "thumbnails_migrated": r.thumbnails_migrated,
+                "chapters_migrated": r.chapters_migrated,
+                "reach_captions_migrated": r.reach_captions_migrated,
                 "caption_details": r.caption_details,
                 "thumbnail_details": r.thumbnail_details,
             })
@@ -643,6 +710,8 @@ class MigrationPipeline:
             "total_time_seconds": round(sum(r.duration_seconds for r in results), 1),
             "total_captions_migrated": sum(r.captions_migrated for r in completed),
             "total_thumbnails_migrated": sum(r.thumbnails_migrated for r in completed),
+            "total_chapters_migrated": sum(r.chapters_migrated for r in completed),
+            "videos_with_reach_captions": sum(1 for r in completed if r.reach_captions_migrated),
         }
 
         # Generate CSV
@@ -651,6 +720,7 @@ class MigrationPipeline:
             "kaltura_id", "zoom_id", "title", "status", "error",
             "file_size_mb", "duration_seconds",
             "captions_migrated", "thumbnails_migrated",
+            "chapters_migrated", "reach_captions_migrated",
         ]
         writer = csv.DictWriter(csv_output, fieldnames=csv_fields, extrasaction="ignore")
         writer.writeheader()
@@ -674,22 +744,23 @@ class MigrationPipeline:
         return report
 
     @staticmethod
-    def save_migration_report(report: dict, output_dir: str) -> dict[str, str]:
-        """Save migration report files to disk.
+    def save_migration_report(report: dict, output_dir: str, project_slug: str = "") -> dict[str, str]:
+        """Save migration report files to disk (scoped by project_slug).
 
         Returns dict of {format: file_path} for each saved file.
         """
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        prefix = f"{project_slug}_" if project_slug else ""
 
         paths = {}
 
-        csv_path = out / f"migration_report_{timestamp}.csv"
+        csv_path = out / f"{prefix}migration_report_{timestamp}.csv"
         csv_path.write_text(report["csv"], encoding="utf-8")
         paths["csv"] = str(csv_path)
 
-        json_path = out / f"migration_report_{timestamp}.json"
+        json_path = out / f"{prefix}migration_report_{timestamp}.json"
         json_path.write_text(report["json"], encoding="utf-8")
         paths["json"] = str(json_path)
 
@@ -705,8 +776,9 @@ class MigrationPipeline:
     # in the download directory as the checkpoint store.
 
     def _checkpoint_path(self) -> str:
-        """Path to the pipeline checkpoint file."""
-        return os.path.join(self.config.pipeline.download_dir, "_pipeline_checkpoint.json")
+        """Path to the pipeline checkpoint file (scoped by project_slug)."""
+        prefix = f"{self.project_slug}_" if self.project_slug else ""
+        return os.path.join(self.config.pipeline.download_dir, f"{prefix}pipeline_checkpoint.json")
 
     def _save_checkpoint(self, run_state: dict):
         """Save current pipeline state to checkpoint file."""

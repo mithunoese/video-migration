@@ -34,7 +34,17 @@ class KalturaClient:
         self._ks_expiry: float = 0
 
     def authenticate(self) -> str:
-        """Generate a Kaltura Session (KS) token via session.start."""
+        """Generate a Kaltura Session (KS) token.
+
+        Prefers App Token flow (enterprise) when app_token_id + app_token are configured.
+        Falls back to admin_secret (legacy) when app token fields are not set.
+        """
+        if self.config.app_token_id and self.config.app_token:
+            return self._authenticate_app_token()
+        return self._authenticate_admin_secret()
+
+    def _authenticate_admin_secret(self) -> str:
+        """Legacy auth via admin secret (session.start)."""
         url = f"{self.api_url}/service/session/action/start"
         payload = {
             "secret": self.config.admin_secret,
@@ -53,8 +63,59 @@ class KalturaClient:
             raise RuntimeError(f"Kaltura auth failed: {ks.get('message', ks)}")
 
         self._ks = ks
-        self._ks_expiry = time.time() + self.config.session_expiry - 60  # refresh 1 min early
-        logger.info("Kaltura session created (expires in %ds)", self.config.session_expiry)
+        self._ks_expiry = time.time() + self.config.session_expiry - 60
+        logger.info("Kaltura session created via admin secret (expires in %ds)", self.config.session_expiry)
+        return ks
+
+    def _authenticate_app_token(self) -> str:
+        """Enterprise auth via App Token (session.start → appToken.startSession).
+
+        Flow:
+        1. session.start with secret="" and type=0 (WIDGET) → anonymous KS
+        2. sha256(ks + appToken) → token_hash
+        3. appToken.startSession(id, tokenHash) → privileged KS
+        """
+        # Step 1: get anonymous (widget) KS
+        widget_url = f"{self.api_url}/service/session/action/start"
+        widget_payload = {
+            "secret": "",
+            "type": 0,  # WIDGET session
+            "partnerId": self.config.partner_id,
+            "format": 1,
+        }
+        resp = requests.post(widget_url, data=widget_payload, timeout=30)
+        resp.raise_for_status()
+        widget_ks = resp.json()
+        if isinstance(widget_ks, dict) and "Error" in widget_ks.get("objectType", ""):
+            raise RuntimeError(f"Kaltura widget session failed: {widget_ks.get('message', widget_ks)}")
+
+        # Step 2: compute token hash = sha256(widget_ks + appToken)
+        token_hash = hashlib.sha256(
+            (widget_ks + self.config.app_token).encode("utf-8")
+        ).hexdigest()
+
+        # Step 3: start privileged session via appToken.startSession
+        app_token_url = f"{self.api_url}/service/appToken/action/startSession"
+        app_token_payload = {
+            "ks": widget_ks,
+            "id": self.config.app_token_id,
+            "tokenHash": token_hash,
+            "expiry": self.config.session_expiry,
+            "format": 1,
+        }
+        resp2 = requests.post(app_token_url, data=app_token_payload, timeout=30)
+        resp2.raise_for_status()
+        result = resp2.json()
+        if isinstance(result, dict) and "Error" in result.get("objectType", ""):
+            raise RuntimeError(f"Kaltura App Token auth failed: {result.get('message', result)}")
+
+        ks = result.get("ks", "")
+        if not ks:
+            raise RuntimeError(f"Kaltura App Token auth returned no KS: {result}")
+
+        self._ks = ks
+        self._ks_expiry = time.time() + self.config.session_expiry - 60
+        logger.info("Kaltura session created via App Token (expires in %ds)", self.config.session_expiry)
         return ks
 
     @property
@@ -394,6 +455,42 @@ class KalturaClient:
             return cuepoints
         except RuntimeError as e:
             logger.debug("[%s] No cue points found: %s", entry_id, e)
+            return []
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  REACH (AI CAPTIONS / VENDOR TASKS)
+    # ═══════════════════════════════════════════════════════════════════
+    #
+    # REACH is Kaltura's licensed AI transcription/captioning service.
+    # Task status: 1=pending, 2=processing, 3=error, 4=complete, 5=aborted
+    # Requires the Kaltura account to have REACH licensed.
+    # The App Token privilege mask must include the entryVendorTask scope.
+
+    def check_reach_available(self) -> bool:
+        """Return True if the Kaltura account has REACH licensed (any vendor catalog items)."""
+        try:
+            result = self._api_call("vendorCatalogItem", "list", {"pager[pageSize]": 1})
+            return result.get("totalCount", 0) > 0
+        except Exception as e:
+            logger.debug("REACH availability check failed (likely not licensed): %s", e)
+            return False
+
+    def list_reach_tasks(self, entry_id: str) -> list[dict]:
+        """List completed REACH vendor tasks (AI captions) for a video entry.
+
+        Returns tasks with status=4 (complete) that have transcription output.
+        """
+        try:
+            result = self._api_call("entryVendorTask", "list", {
+                "filter[entryIdEqual]": entry_id,
+                "filter[statusEqual]": 4,  # complete
+                "pager[pageSize]": 50,
+            })
+            tasks = result.get("objects", [])
+            logger.debug("[%s] Found %d completed REACH tasks", entry_id, len(tasks))
+            return tasks
+        except Exception as e:
+            logger.debug("[%s] REACH task list failed: %s", entry_id, e)
             return []
 
     def get_access_control_name(self, policy_id) -> str:

@@ -10,8 +10,17 @@ Both use the same file-upload host: https://fileapi.zoom.us/v2
 
 Key limits (from Zoom docs):
  - Single upload: ≤ 2 GB, formats: .mp4 / .webm
- - Multipart upload: parts 5-100 MB each, numbers 1-100, completes in 7 days
- - Rate limit: 20 req/s, 50 uploads/user/24h
+ - Multipart upload: max 100 parts (1-100), completes within 7 days
+   - Default chunk: 200 MB (scales up for files > 20 GB to stay within 100-part cap)
+   - ETags returned per part (part_number_etag); sent back in CompleteMultipartUpload
+ - Rate limit (account-level, varies by plan):
+     Light APIs:    Free 4/s · Pro 30/s · Business+ 80/s
+     Medium APIs:   Free 2/s · Pro 20/s · Business+ 60/s
+     Heavy APIs:    Free 1/s · Pro 10/s · Business+ 40/s
+     Resource-intensive: Free 10/min · Pro 10/min · Business+ 20/min
+   File uploads are likely Heavy or Resource-intensive. The old "50 uploads/user/24h"
+   limit does NOT appear in the official Zoom rate-limit docs (https://developers.zoom.us/docs/api/rate-limits/).
+   The client already handles 429 with Retry-After backoff — no artificial cap needed.
 
 Required scopes:
  - Clips:  clip:write / clip:write:admin
@@ -73,7 +82,7 @@ class ZoomClient:
         data = resp.json()
 
         self._access_token = data["access_token"]
-        self._token_expiry = time.time() + data.get("expires_in", 3600) - 60
+        self._token_expiry = time.time() + data.get("expires_in", 3600) - 300
         scopes = data.get("scope", "none returned")
         logger.info("Zoom OAuth token acquired (expires in %ds, scopes: %s)", data.get("expires_in", 3600), scopes)
         return self._access_token
@@ -178,13 +187,19 @@ class ZoomClient:
         """
         Chunked multipart upload for files > 2 GB via Clips API.
 
-        Parts: 5-100 MB each (we use 50 MB), part numbers 1-100.
-        All part uploads also go to fileapi.zoom.us.
+        Parts: 5-100 MB each (minimum), part numbers 1-100 (API hard cap).
+        Default chunk 200 MB; scales up for files > 20 GB to stay within 100-part cap.
+        Per-part retry with exponential backoff (matches Events multipart behaviour).
         Metadata (title/description) set via PATCH after upload completes.
         """
         path = Path(file_path)
         file_size = path.stat().st_size
-        part_size = 50 * 1024 * 1024  # 50 MB parts
+
+        # API hard cap: max 100 parts. Default to 200 MB chunks; scale up for very large files.
+        MAX_PARTS = 100
+        DEFAULT_PART_SIZE = 200 * 1024 * 1024  # 200 MB
+        part_size = max(DEFAULT_PART_SIZE, -(-file_size // MAX_PARTS))  # ceiling division
+        total_parts = -(-file_size // part_size)
 
         # Initiate multipart upload
         init_url = f"{ZOOM_FILE_API}/clips/files/multipart/upload_events"
@@ -202,10 +217,9 @@ class ZoomClient:
         init_data = init_resp.json()
 
         upload_id = init_data.get("upload_id")
-        total_parts = -(-file_size // part_size)
-        logger.info("Initiated Clips multipart upload: %s (%d parts)", upload_id, total_parts)
+        logger.info("Initiated Clips multipart upload: %s (%d parts, %.0f MB chunks)", upload_id, total_parts, part_size / (1024 * 1024))
 
-        # Upload parts
+        # Upload parts with per-part retry (exponential backoff)
         parts = []
         part_num = 1
         with open(path, "rb") as f:
@@ -215,17 +229,37 @@ class ZoomClient:
                     break
 
                 part_url = f"{ZOOM_FILE_API}/clips/files/multipart"
-                part_resp = requests.post(
-                    part_url,
-                    headers={**self._headers(), "Content-Type": "application/octet-stream"},
-                    params={"upload_id": upload_id, "part_number": part_num},
-                    data=chunk,
-                    timeout=300,
-                )
-                part_resp.raise_for_status()
-                etag = part_resp.headers.get("ETag", part_resp.json().get("etag", ""))
-                parts.append({"part_number": part_num, "etag": etag})
-                logger.debug("Uploaded part %d/%d", part_num, total_parts)
+                last_exc: Exception | None = None
+                for attempt in range(3):
+                    try:
+                        part_resp = requests.post(
+                            part_url,
+                            headers={**self._headers(), "Content-Type": "application/octet-stream"},
+                            params={"upload_id": upload_id, "part_number": part_num},
+                            data=chunk,
+                            timeout=600,
+                        )
+                        part_resp.raise_for_status()
+                        etag = part_resp.headers.get("ETag", "")
+                        if not etag:
+                            try:
+                                etag = part_resp.json().get("etag", "")
+                            except Exception:
+                                pass
+                        parts.append({"part_number": part_num, "etag": etag})
+                        logger.debug("Uploaded Clips part %d/%d (attempt %d)", part_num, total_parts, attempt + 1)
+                        last_exc = None
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        if attempt < 2:
+                            wait = 5 * (2 ** attempt)
+                            logger.warning("Clips part %d upload failed (attempt %d/3): %s — retrying in %ds", part_num, attempt + 1, exc, wait)
+                            time.sleep(wait)
+                        else:
+                            logger.error("Clips part %d upload failed after 3 attempts: %s", part_num, exc)
+                if last_exc:
+                    raise last_exc
                 part_num += 1
 
         # Complete multipart upload
@@ -269,7 +303,8 @@ class ZoomClient:
     # Spec: ZoomEventsAPISpec.json — operationId: uploadEventFile
 
     def upload_video_events(self, file_path: str, title: str, description: str = "",
-                            hub_id: str = "", tags: list[str] | None = None) -> dict:
+                            hub_id: str = "", tags: list[str] | None = None,
+                            kaltura_id: str = "") -> dict:
         """
         Upload a video via the Zoom Events API.
 
@@ -277,7 +312,8 @@ class ZoomClient:
         Max 2 GB single upload. Formats: .mp4, .webm
 
         The upload returns { file_id, video_id }.  After upload, metadata
-        (title, description, tags) is set via PATCH /zoom_events/videos/{videoId}/metadata.
+        (title, description, tags, external_media_id) is set via
+        PATCH /zoom_events/videos/{videoId}/metadata.
 
         For files > 2 GB, automatically uses multipart upload.
 
@@ -293,18 +329,22 @@ class ZoomClient:
             Hub ID to associate the upload with (used in multipart initiation).
         tags : list[str], optional
             Tags to set on the video after upload.
+        kaltura_id : str, optional
+            Source Kaltura entry ID stored as external_media_id for AEM mapping.
         """
         path = Path(file_path)
         file_size = path.stat().st_size
 
         if file_size > 2 * 1024 * 1024 * 1024:  # 2 GB
             return self._upload_multipart_events(file_path, title, description,
-                                                  hub_id=hub_id, tags=tags)
+                                                  hub_id=hub_id, tags=tags,
+                                                  kaltura_id=kaltura_id)
 
         url = f"{ZOOM_FILE_API}/zoom_events/files"
 
         fields: dict = {
             "file": (path.name, open(path, "rb"), "video/mp4"),
+            "file_type": "recording",  # VOD content for Zoom Events video management
         }
         if hub_id:
             fields["hub_id"] = hub_id
@@ -338,20 +378,31 @@ class ZoomClient:
         video_id = result.get("video_id", "")
         logger.info("Uploaded to Zoom Events: file_id=%s, video_id=%s", file_id, video_id)
 
-        # Set metadata via Events API (title, description, tags)
-        if video_id and (title or description or tags):
+        # Set metadata via Events API (title, description, tags, external IDs)
+        if video_id and (title or description or tags or kaltura_id):
             try:
-                self.set_events_metadata(video_id, title=title, description=description, tags=tags)
-                logger.info("Set Events metadata on video %s: %s", video_id, title)
+                self.set_events_metadata(
+                    video_id, title=title, description=description, tags=tags,
+                    external_media_id=kaltura_id,
+                    external_source_name="Kaltura" if kaltura_id else "",
+                )
+                logger.info("Set Events metadata on video %s: %s (kaltura_id=%s)",
+                            video_id, title, kaltura_id or "none")
             except Exception as e:
                 logger.warning("Failed to set Events metadata on %s (non-fatal): %s", video_id, e)
 
         return result
 
     def _upload_multipart_events(self, file_path: str, title: str, description: str = "",
-                                  hub_id: str = "", tags: list[str] | None = None) -> dict:
+                                  hub_id: str = "", tags: list[str] | None = None,
+                                  kaltura_id: str = "") -> dict:
         """
         Chunked multipart upload for files > 2 GB via Events API.
+
+        Updated per Fan Wang / Zoom API docs (March 2025):
+          - ETags are now returned per-part and sent back in CompleteMultipartUpload
+          - Part count is capped at 100 (API hard limit); chunk size scales up accordingly
+          - Per-part retry logic with exponential backoff
 
         Flow:
         1. POST /zoom_events/files/multipart/upload  {"method": "CreateMultipartUpload", ...}
@@ -363,7 +414,13 @@ class ZoomClient:
         """
         path = Path(file_path)
         file_size = path.stat().st_size
-        part_size = 50 * 1024 * 1024  # 50 MB parts
+
+        # API hard cap: max 100 parts. Default to 200 MB chunks; scale up for very large files.
+        MAX_PARTS = 100
+        DEFAULT_PART_SIZE = 200 * 1024 * 1024  # 200 MB
+        # Ceiling division ensures we never exceed MAX_PARTS
+        part_size = max(DEFAULT_PART_SIZE, -(-file_size // MAX_PARTS))
+        total_parts = -(-file_size // part_size)
 
         # Step 1: Initiate multipart upload
         init_url = f"{ZOOM_FILE_API}/zoom_events/files/multipart/upload"
@@ -389,46 +446,79 @@ class ZoomClient:
         init_data = init_resp.json()
 
         upload_id = init_data.get("upload_id", "")
-        total_parts = -(-file_size // part_size)
-        logger.info("Initiated Events multipart upload: %s (%d parts)", upload_id, total_parts)
+        logger.info("Initiated Events multipart upload: %s (%d parts, %.0f MB/part)",
+                    upload_id, total_parts, part_size / (1024 * 1024))
 
-        # Step 2: Upload parts
+        # Step 2: Upload parts — collect ETags per updated API spec
+        etags: list[dict] = []
         part_num = 1
+        part_url = f"{ZOOM_FILE_API}/zoom_events/files/multipart"
+
         with open(path, "rb") as f:
             while True:
                 chunk = f.read(part_size)
                 if not chunk:
                     break
 
-                part_url = f"{ZOOM_FILE_API}/zoom_events/files/multipart"
-                with requests.post(
-                    part_url,
-                    files={"file": (f"part{part_num}", chunk, "application/octet-stream")},
-                    data={
-                        "upload_context": upload_id,
-                        "part_number": part_num,
-                    },
-                    headers=self._headers(),
-                    timeout=300,
-                ) as part_resp:
-                    if not part_resp.ok:
-                        logger.error("Events part %d upload failed: %d %s",
-                                     part_num, part_resp.status_code, part_resp.text[:500])
-                    part_resp.raise_for_status()
-                    logger.debug("Uploaded Events part %d/%d", part_num, total_parts)
+                # Per-part retry with exponential backoff (3 attempts)
+                last_exc: Exception | None = None
+                for attempt in range(3):
+                    try:
+                        part_resp = requests.post(
+                            part_url,
+                            files={"file": (f"part{part_num}", chunk, "application/octet-stream")},
+                            data={
+                                "upload_context": upload_id,
+                                "part_number": part_num,
+                            },
+                            headers=self._headers(),
+                            timeout=600,
+                        )
+                        if not part_resp.ok:
+                            logger.error("Events part %d upload failed: %d %s | %s",
+                                         part_num, part_resp.status_code, part_resp.reason,
+                                         part_resp.text[:500])
+                        part_resp.raise_for_status()
+
+                        # Capture ETag per updated API docs
+                        part_data = part_resp.json() if part_resp.content else {}
+                        etag_info = part_data.get("part_number_etag", {})
+                        if etag_info:
+                            etags.append(etag_info)
+                        logger.debug("Uploaded Events part %d/%d (etag=%s)",
+                                     part_num, total_parts, etag_info.get("etag", "n/a"))
+                        last_exc = None
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        if attempt < 2:
+                            wait = 5 * (2 ** attempt)  # 5s, 10s
+                            logger.warning(
+                                "Events part %d upload error (attempt %d/3), retrying in %ds: %s",
+                                part_num, attempt + 1, wait, exc,
+                            )
+                            time.sleep(wait)
+
+                if last_exc is not None:
+                    raise last_exc
+
                 part_num += 1
 
-        # Step 3: Complete multipart upload
+        # Step 3: Complete multipart upload — include ETags per updated API spec
         complete_url = f"{ZOOM_FILE_API}/zoom_events/files/multipart/upload"
+        complete_body: dict[str, Any] = {
+            "method": "CompleteMultipartUpload",
+            "upload_id": upload_id,
+            "part_count": str(part_num - 1),
+        }
+        if etags:
+            complete_body["part_number_etags"] = etags
+
         complete_resp = requests.post(
             complete_url,
             headers={**self._headers(), "Content-Type": "application/json"},
-            json={
-                "method": "CompleteMultipartUpload",
-                "upload_id": upload_id,
-                "part_count": str(part_num - 1),
-            },
-            timeout=60,
+            json=complete_body,
+            timeout=120,
         )
         if not complete_resp.ok:
             logger.error("Events multipart completion failed: %d %s | %s",
@@ -440,10 +530,16 @@ class ZoomClient:
         video_id = result.get("video_id", "")
         logger.info("Completed Events multipart upload: file_id=%s, video_id=%s", file_id, video_id)
 
-        # Set metadata
-        if video_id and (title or description or tags):
+        # Set metadata (including external source IDs for AEM mapping)
+        if video_id and (title or description or tags or kaltura_id):
             try:
-                self.set_events_metadata(video_id, title=title, description=description, tags=tags)
+                self.set_events_metadata(
+                    video_id, title=title, description=description, tags=tags,
+                    external_media_id=kaltura_id,
+                    external_source_name="Kaltura" if kaltura_id else "",
+                )
+                logger.info("Set Events metadata on multipart video %s: %s (kaltura_id=%s)",
+                            video_id, title, kaltura_id or "none")
             except Exception as e:
                 logger.warning("Failed to set Events metadata on %s (non-fatal): %s", video_id, e)
 
@@ -479,6 +575,7 @@ class ZoomClient:
                 file_path, title, description,
                 hub_id=kwargs.get("hub_id", ""),
                 tags=kwargs.get("tags"),
+                kaltura_id=kwargs.get("kaltura_id", ""),
             )
         else:
             if target not in ("clips", ""):
@@ -516,10 +613,20 @@ class ZoomClient:
     # Scopes: zoom_events_videos:write:admin, zoom_events_vod_channels:write:admin
 
     def set_events_metadata(self, video_id: str, title: str = "",
-                            description: str = "", tags: list[str] | None = None) -> dict:
+                            description: str = "", tags: list[str] | None = None,
+                            external_media_id: str = "",
+                            external_source_name: str = "") -> dict:
         """Update metadata on a Zoom Events video.
 
         PATCH /zoom_events/videos/{videoId}/metadata
+
+        Parameters
+        ----------
+        external_media_id : str
+            Source platform ID (e.g. Kaltura entry ID). Stored on the Zoom video
+            for AEM embed replacement mapping. Max 256 chars.
+        external_source_name : str
+            Human-readable source platform name (e.g. "Kaltura"). Max 256 chars.
         """
         payload: dict[str, Any] = {}
         if title:
@@ -528,6 +635,10 @@ class ZoomClient:
             payload["description"] = description
         if tags:
             payload["tags"] = tags[:20]  # API max 20 tags
+        if external_media_id:
+            payload["external_media_id"] = external_media_id[:256]
+        if external_source_name:
+            payload["external_source_name"] = external_source_name[:256]
 
         if not payload:
             return {}
@@ -868,6 +979,57 @@ class ZoomClient:
         return result.get("custom_fields", [])
 
     # ─── Utility ───
+
+    def update_video_description(self, video_id: str, description: str) -> dict:
+        """Update the description of a Zoom Events video.
+
+        PATCH /zoom_events/videos/{videoId}/metadata
+        Used to append chapter markers when Zoom has no dedicated chapter endpoint.
+        """
+        return self._api_call("PATCH", f"/zoom_events/videos/{video_id}/metadata",
+                              json={"description": description})
+
+    def generate_sdk_token(self, video_id: str, user_identity: str = "preview",
+                           sdk_key: str = "", sdk_secret: str = "") -> str:
+        """Generate a short-lived Zoom Video SDK JWT for embedded video preview.
+
+        Requires ZOOM_SDK_KEY and ZOOM_SDK_SECRET env vars (separate from S2S OAuth).
+        Token is valid for 2 hours.
+        """
+        import base64
+        import hmac
+        import hashlib
+        import os as _os
+
+        key = sdk_key or _os.environ.get("ZOOM_SDK_KEY", "")
+        secret = sdk_secret or _os.environ.get("ZOOM_SDK_SECRET", "")
+        if not key or not secret:
+            raise ValueError("ZOOM_SDK_KEY and ZOOM_SDK_SECRET must be set for Video SDK token generation")
+
+        now = int(time.time())
+        expire = now + 7200  # 2-hour max
+
+        header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').rstrip(b"=").decode()
+        payload_dict = {
+            "appKey": key,
+            "tpc": video_id,
+            "role_type": 0,
+            "user_identity": user_identity,
+            "iat": now,
+            "exp": expire,
+            "tokenExp": expire,
+        }
+        import json as _json
+        payload_bytes = base64.urlsafe_b64encode(
+            _json.dumps(payload_dict, separators=(",", ":")).encode()
+        ).rstrip(b"=").decode()
+
+        message = f"{header}.{payload_bytes}"
+        sig = base64.urlsafe_b64encode(
+            hmac.new(secret.encode(), message.encode(), hashlib.sha256).digest()
+        ).rstrip(b"=").decode()
+
+        return f"{message}.{sig}"
 
     def verify_credentials(self) -> bool:
         """Test that credentials work."""

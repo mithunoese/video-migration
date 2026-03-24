@@ -18,6 +18,14 @@
       "dest": "/api/index.py"
     },
     {
+      "src": "/auth/(.*)",
+      "dest": "/api/index.py"
+    },
+    {
+      "src": "/zoom-app",
+      "dest": "/public/zoom-app.html"
+    },
+    {
       "src": "/architecture.html",
       "dest": "/public/architecture.html"
     },

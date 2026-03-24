@@ -1,5 +1,16 @@
 # Video Migration Platform
 
+## Agent Usage — Always On
+You never need to specify which agent to use. The right agents fire automatically:
+- **Code written/edited** → `code-reviewer` runs automatically
+- **Bug reported** → `sleuth` investigates, `spark`/`kraken` fixes
+- **Feature requested** → `planner` plans first, `kraken` implements
+- **Task finished** → `verifier` runs quality gate before done
+- **Error occurs** → `self-learner` captures the lesson
+- **Big feature** → use `/swarm` to activate the full team
+
+Just describe what you want. Agents are dispatched without you asking.
+
 ## What This Is
 An autonomous video migration pipeline that moves enterprise video content from **Kaltura** to **Zoom** (via AWS S3 staging). Built for OpenExchange (OE), who partners with Zoom on video migrations.
 
@@ -171,6 +182,13 @@ See `.env.example` for full list. Key ones:
 
 ## Brand
 OpenExchange — Teal #008285, Dark #000000, White #FFFFFF, Font: Lora (Calibri in PPTX)
+
+## Work Tracking (Software Factory)
+- All bugs and features tracked in Software Factory (SF)
+- Use `mcp__software-factory-work__*` tools for work orders
+- Always check SF at session start: `list_work_orders(assignee_name="Mithun Manjunatha")`
+- Mark `in_progress` when starting a WO, ask before setting `in_review`
+- WO types: `build`, `fix`, `requirements`, `blueprint`, `artifact`, `other`
 
 ## Tech Stack
 Python 3.9+, FastAPI, Alpine.js, Chart.js, Tailwind CSS, boto3, PyJWT, slowapi, python-pptx

@@ -61,6 +61,7 @@ class AuditStore:
         video_id: str | None = None,
         data: dict | None = None,
         status: str = "success",
+        project_slug: str | None = None,
     ) -> dict:
         """
         Append a single audit event.
@@ -82,6 +83,8 @@ class AuditStore:
             entry["video_id"] = video_id
         if data:
             entry["data"] = data
+        if project_slug:
+            entry["project_slug"] = project_slug
 
         try:
             with open(self._path, "a+") as f:
@@ -108,7 +111,7 @@ class AuditStore:
 
     # ── Read ──
 
-    def _read_all(self) -> list[dict]:
+    def _read_all(self, project_slug: str | None = None) -> list[dict]:
         """Read all events from the JSONL file + in-memory buffer."""
         events = []
         # Read from file (if it exists)
@@ -131,6 +134,14 @@ class AuditStore:
                 events.append(mem_event)
         # Sort by timestamp
         events.sort(key=lambda e: e.get("ts", ""))
+        # Filter by project if requested.
+        # Events with no project_slug are legacy IFRS events.
+        if project_slug is not None:
+            events = [
+                e for e in events
+                if e.get("project_slug") == project_slug
+                or (e.get("project_slug") is None and project_slug == "ifrs")
+            ]
         return events
 
     def query(
@@ -141,13 +152,14 @@ class AuditStore:
         video_id: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
+        project_slug: str | None = None,
     ) -> dict:
         """
         Paginated, filterable query over the audit trail.
 
         Returns: {events: [...], total: int, page: int, total_pages: int}
         """
-        events = self._read_all()
+        events = self._read_all(project_slug=project_slug)
 
         # Apply filters
         if event_type:
@@ -175,9 +187,9 @@ class AuditStore:
             "total_pages": total_pages,
         }
 
-    def get_video_events(self, video_id: str) -> list[dict]:
+    def get_video_events(self, video_id: str, project_slug: str | None = None) -> list[dict]:
         """Get all events for a specific video, ordered chronologically."""
-        events = self._read_all()
+        events = self._read_all(project_slug=project_slug)
         return [e for e in events if e.get("video_id") == video_id]
 
     def count_by_type(self) -> dict[str, int]:

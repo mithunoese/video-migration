@@ -30,11 +30,14 @@ def _int_or_default(env_var: str, default: int) -> int:
 @dataclass
 class KalturaConfig:
     partner_id: str = ""
-    admin_secret: str = ""
-    user_id: str = ""
+    admin_secret: str = ""  # legacy; ignored when app_token_id is set
+    user_id: str = ""       # legacy; ignored when app_token_id is set
     service_url: str = "https://www.kaltura.com"
     session_type: int = 2  # 0=USER, 2=ADMIN
     session_expiry: int = 86400  # 24 hours
+    # App Token auth (enterprise standard) — takes priority over admin_secret
+    app_token_id: str = ""
+    app_token: str = ""
 
     @classmethod
     def from_env(cls):
@@ -43,6 +46,8 @@ class KalturaConfig:
             admin_secret=os.getenv("KALTURA_ADMIN_SECRET", ""),
             user_id=os.getenv("KALTURA_USER_ID", ""),
             service_url=os.getenv("KALTURA_SERVICE_URL", "https://www.kaltura.com"),
+            app_token_id=os.getenv("KALTURA_APP_TOKEN_ID", ""),
+            app_token=os.getenv("KALTURA_APP_TOKEN", ""),
         )
 
 
@@ -185,14 +190,17 @@ class Config:
         zm = credentials.get("zoom", {})
         cfg = config_json or {}
 
-        # Per-project creds take priority; fall back to global env vars so that
-        # projects with only Kaltura creds can still browse/migrate (Zoom/AWS are shared).
+        # Per-project creds only — no global env var fallback for Kaltura or Zoom.
+        # Env var fallbacks cause cross-project data bleed when multiple projects share
+        # a deployment. AWS infra (bucket/region) may still fall back as it can be shared.
         return cls(
             kaltura=KalturaConfig(
-                partner_id=kal.get("partner_id", "") or os.getenv("KALTURA_PARTNER_ID", ""),
-                admin_secret=kal.get("admin_secret", "") or os.getenv("KALTURA_ADMIN_SECRET", ""),
-                user_id=kal.get("user_id", "") or os.getenv("KALTURA_USER_ID", ""),
-                service_url=kal.get("service_url", "") or os.getenv("KALTURA_SERVICE_URL", "https://www.kaltura.com"),
+                partner_id=kal.get("partner_id", ""),
+                admin_secret=kal.get("admin_secret", ""),
+                user_id=kal.get("user_id", ""),
+                service_url=kal.get("service_url", "") or "https://www.kaltura.com",
+                app_token_id=kal.get("app_token_id", ""),
+                app_token=kal.get("app_token", ""),
             ),
             aws=AWSConfig(
                 bucket_name=aws.get("bucket_name", aws.get("s3_bucket", "")) or os.getenv("AWS_S3_BUCKET", ""),
@@ -202,10 +210,12 @@ class Config:
                 endpoint_url=aws.get("endpoint_url", "") or os.getenv("AWS_ENDPOINT_URL", ""),
             ),
             zoom=ZoomConfig(
-                client_id=zm.get("client_id", "") or os.getenv("ZOOM_CLIENT_ID", ""),
-                client_secret=zm.get("client_secret", "") or os.getenv("ZOOM_CLIENT_SECRET", ""),
-                account_id=zm.get("account_id", "") or os.getenv("ZOOM_ACCOUNT_ID", ""),
-                target_api=zm.get("target_api", "") or cfg.get("zoom_target_api", "") or os.getenv("ZOOM_TARGET_API", "clips"),
+                client_id=zm.get("client_id", ""),
+                client_secret=zm.get("client_secret", ""),
+                account_id=zm.get("account_id", ""),
+                target_api=zm.get("target_api", "") or cfg.get("zoom_target_api", "") or "clips",
+                hub_id=zm.get("hub_id", ""),
+                vod_channel_id=zm.get("vod_channel_id", ""),
             ),
             pipeline=PipelineConfig(
                 batch_size=min(int(cfg.get("batch_size", 10)), 500),
@@ -222,8 +232,10 @@ class Config:
         missing = []
         if not self.kaltura.partner_id:
             missing.append("KALTURA_PARTNER_ID")
-        if not self.kaltura.admin_secret:
-            missing.append("KALTURA_ADMIN_SECRET")
+        # App Token auth takes priority; admin_secret only required for legacy mode
+        has_app_token = self.kaltura.app_token_id and self.kaltura.app_token
+        if not has_app_token and not self.kaltura.admin_secret:
+            missing.append("KALTURA_ADMIN_SECRET (or KALTURA_APP_TOKEN_ID + KALTURA_APP_TOKEN)")
         # S3 is only required when not skipping
         if not self.skip_s3 and not self.aws.bucket_name:
             missing.append("AWS_S3_BUCKET")

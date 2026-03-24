@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>VideoMigrate — Zoom App</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50:  '#f0fafa', 100: '#d0f0f0', 200: '#a0e0e0',
+              300: '#60c8c8', 400: '#20b0b0', 500: '#008285',
+              600: '#007075', 700: '#005e63', 800: '#004c50', 900: '#003a3d'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .video-list::-webkit-scrollbar { width: 4px; }
+    .video-list::-webkit-scrollbar-track { background: #f8fafc; }
+    .video-list::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+    .progress-bar { transition: width 0.4s ease; }
+  </style>
+</head>
+<body class="h-full bg-gray-50 text-gray-900" x-data="videoMigrate()" x-cloak>
+
+  <div class="flex flex-col h-screen max-w-xl mx-auto">
+
+    <!-- ── Header ── -->
+    <header class="bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-3 flex-shrink-0 shadow-sm">
+      <div class="w-8 h-8 rounded-lg bg-brand-500 flex items-center justify-center flex-shrink-0">
+        <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+        </svg>
+      </div>
+      <div class="flex-1 min-w-0">
+        <p class="text-[10px] font-bold text-brand-600 uppercase tracking-widest leading-none">OpenExchange</p>
+        <p class="text-sm font-bold text-gray-900 leading-snug">VideoMigrate</p>
+      </div>
+      <!-- Step pills -->
+      <div class="flex items-center gap-1" x-show="step >= 1">
+        <template x-for="s in [1,2,3]" :key="s">
+          <div class="flex items-center">
+            <button @click="step > s ? step = s : null"
+                    :class="step === s ? 'bg-brand-500 text-white shadow-sm' : step > s ? 'bg-brand-100 text-brand-600 cursor-pointer hover:bg-brand-200' : 'bg-gray-100 text-gray-400'"
+                    class="w-6 h-6 rounded-full text-[10px] font-bold flex items-center justify-center transition-all"
+                    x-text="s"></button>
+            <div x-show="s < 3" :class="step > s ? 'bg-brand-300' : 'bg-gray-200'" class="w-3 h-px mx-0.5 transition-colors"></div>
+          </div>
+        </template>
+      </div>
+    </header>
+
+    <!-- ════════════════════════════════════════════
+         STEP 1 — Connect source
+         ════════════════════════════════════════════ -->
+    <div x-show="step === 1" class="flex-1 flex flex-col overflow-y-auto p-4 gap-5">
+
+      <div>
+        <h1 class="text-lg font-bold text-gray-900">Connect your video source</h1>
+        <p class="text-sm text-gray-500 mt-0.5">Enter credentials for the platform you're migrating from</p>
+      </div>
+
+      <!-- Platform picker -->
+      <div>
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Source platform</p>
+        <div class="grid grid-cols-2 gap-2">
+          <template x-for="p in platforms" :key="p.value">
+            <button @click="platform = p.value; connectError = ''"
+                    :class="platform === p.value
+                      ? 'border-brand-500 bg-brand-50 text-brand-700 shadow-sm'
+                      : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50'"
+                    class="flex items-center gap-2.5 px-3 py-2.5 rounded-xl border-2 text-sm font-semibold transition-all">
+              <span x-text="p.icon" class="text-lg leading-none"></span>
+              <span x-text="p.label"></span>
+            </button>
+          </template>
+        </div>
+      </div>
+
+      <!-- Kaltura credentials -->
+      <div x-show="platform === 'kaltura'" class="space-y-3">
+        <div>
+          <label class="text-xs font-semibold text-gray-600">Partner ID</label>
+          <input x-model="creds.kaltura.partner_id" type="text" placeholder="e.g. 1234567"
+                 class="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-brand-400 focus:ring-2 focus:ring-brand-100 outline-none bg-white">
+        </div>
+        <div>
+          <label class="text-xs font-semibold text-gray-600">Admin Secret</label>
+          <input x-model="creds.kaltura.admin_secret" type="password" placeholder="Your Kaltura admin secret"
+                 class="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-brand-400 focus:ring-2 focus:ring-brand-100 outline-none bg-white">
+        </div>
+        <div>
+          <label class="text-xs font-semibold text-gray-600">
+            Service URL <span class="font-normal text-gray-400">(optional)</span>
+          </label>
+          <input x-model="creds.kaltura.service_url" type="text" placeholder="https://www.kaltura.com"
+                 class="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-brand-400 focus:ring-2 focus:ring-brand-100 outline-none bg-white">
+        </div>
+      </div>
+
+      <!-- ON24 credentials -->
+      <div x-show="platform === 'on24'" class="space-y-3">
+        <div>
+          <label class="text-xs font-semibold text-gray-600">Client ID</label>
+          <input x-model="creds.on24.client_id" type="text"
+                 class="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-brand-400 focus:ring-2 focus:ring-brand-100 outline-none bg-white">
+        </div>
+        <div>
+          <label class="text-xs font-semibold text-gray-600">Client Secret</label>
+          <input x-model="creds.on24.client_secret" type="password"
+                 class="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-brand-400 focus:ring-2 focus:ring-brand-100 outline-none bg-white">
+        </div>
+      </div>
+
+      <!-- Brightcove credentials -->
+      <div x-show="platform === 'brightcove'" class="space-y-3">
+        <div>
+          <label class="text-xs font-semibold text-gray-600">Account ID</label>
+          <input x-model="creds.brightcove.account_id" type="text"
+                 class="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-brand-400 focus:ring-2 focus:ring-brand-100 outline-none bg-white">
+        </div>
+        <div>
+          <label class="text-xs font-semibold text-gray-600">Client ID</label>
+          <input x-model="creds.brightcove.client_id" type="text"
+                 class="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-brand-400 focus:ring-2 focus:ring-brand-100 outline-none bg-white">
+        </div>
+        <div>
+          <label class="text-xs font-semibold text-gray-600">Client Secret</label>
+          <input x-model="creds.brightcove.client_secret" type="password"
+                 class="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-brand-400 focus:ring-2 focus:ring-brand-100 outline-none bg-white">
+        </div>
+      </div>
+
+      <!-- Panopto credentials -->
+      <div x-show="platform === 'panopto'" class="space-y-3">
+        <div>
+          <label class="text-xs font-semibold text-gray-600">Server URL</label>
+          <input x-model="creds.panopto.server_url" type="text" placeholder="https://yourcompany.hosted.panopto.com"
+                 class="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-brand-400 focus:ring-2 focus:ring-brand-100 outline-none bg-white">
+        </div>
+        <div>
+          <label class="text-xs font-semibold text-gray-600">Client ID</label>
+          <input x-model="creds.panopto.client_id" type="text"
+                 class="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-brand-400 focus:ring-2 focus:ring-brand-100 outline-none bg-white">
+        </div>
+        <div>
+          <label class="text-xs font-semibold text-gray-600">Client Secret</label>
+          <input x-model="creds.panopto.client_secret" type="password"
+                 class="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-brand-400 focus:ring-2 focus:ring-brand-100 outline-none bg-white">
+        </div>
+      </div>
+
+      <!-- Error -->
+      <div x-show="connectError" class="flex items-start gap-2 bg-red-50 border border-red-200 rounded-xl p-3">
+        <svg class="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <p class="text-sm text-red-700" x-text="connectError"></p>
+      </div>
+
+      <div class="mt-auto pt-2">
+        <button @click="connectSource()"
+                :disabled="connecting || !hasCredentials"
+                :class="(!connecting && hasCredentials)
+                  ? 'bg-brand-500 hover:bg-brand-600 active:bg-brand-700 text-white shadow-md shadow-brand-200'
+                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'"
+                class="w-full py-3.5 rounded-2xl font-bold text-sm transition-all flex items-center justify-center gap-2">
+          <svg x-show="connecting" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+          <span x-text="connecting ? 'Connecting…' : 'Connect & Load Videos →'"></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════
+         STEP 2 — Select videos
+         ════════════════════════════════════════════ -->
+    <div x-show="step === 2" class="flex-1 flex flex-col overflow-hidden">
+
+      <!-- Top bar -->
+      <div class="px-4 pt-3 pb-2 bg-white border-b border-gray-100 flex-shrink-0">
+        <div class="flex items-center justify-between mb-2">
+          <div>
+            <h1 class="text-sm font-bold text-gray-900"
+                x-text="platform.charAt(0).toUpperCase() + platform.slice(1) + ' Library'"></h1>
+            <p class="text-[11px] text-gray-400 mt-0.5"
+               x-text="totalVideos + ' videos' + (selectedIds.size ? ' · ' + selectedIds.size + ' selected' : '')"></p>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <button @click="selectAll()"
+                    class="text-xs px-2.5 py-1 rounded-lg bg-brand-50 text-brand-600 hover:bg-brand-100 font-semibold transition-colors">
+              All
+            </button>
+            <button @click="clearSelection()"
+                    class="text-xs px-2.5 py-1 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 font-semibold transition-colors">
+              None
+            </button>
+          </div>
+        </div>
+        <!-- Search -->
+        <div class="relative">
+          <svg class="absolute left-2.5 top-2 w-3.5 h-3.5 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+          <input x-model.debounce.400ms="search" type="search" placeholder="Search videos…"
+                 class="w-full pl-8 pr-3 py-1.5 text-sm rounded-xl border border-gray-200 focus:border-brand-400 focus:ring-2 focus:ring-brand-100 outline-none bg-white">
+        </div>
+      </div>
+
+      <!-- Video list -->
+      <div class="flex-1 overflow-y-auto video-list px-3 py-2" x-ref="videoList"
+           @scroll="onScroll($event)">
+
+        <!-- Loading -->
+        <div x-show="loadingVideos && videos.length === 0"
+             class="flex flex-col items-center justify-center py-16 gap-2 text-gray-400">
+          <svg class="w-6 h-6 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+          <p class="text-sm">Loading videos…</p>
+        </div>
+
+        <!-- Empty -->
+        <div x-show="!loadingVideos && videos.length === 0"
+             class="flex flex-col items-center justify-center py-16 gap-2 text-center">
+          <div class="w-12 h-12 rounded-2xl bg-gray-100 flex items-center justify-center mb-1">
+            <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M7 4v16M17 4v16M3 8h4m10 0h4M3 16h4m10 0h4"/>
+            </svg>
+          </div>
+          <p class="text-sm font-semibold text-gray-600">No videos found</p>
+          <p x-show="search" class="text-xs text-gray-400">Try a different search term</p>
+        </div>
+
+        <!-- Video rows -->
+        <template x-for="v in videos" :key="v.id">
+          <div @click="toggleVideo(v.id)"
+               :class="selectedIds.has(v.id)
+                 ? 'border-brand-300 bg-brand-50'
+                 : 'border-gray-100 bg-white hover:border-gray-200 hover:bg-gray-50'"
+               class="flex items-center gap-3 p-2.5 rounded-2xl border mb-1.5 cursor-pointer transition-all select-none">
+
+            <!-- Checkbox -->
+            <div :class="selectedIds.has(v.id)
+                           ? 'bg-brand-500 border-brand-500'
+                           : 'bg-white border-gray-300 group-hover:border-gray-400'"
+                 class="w-4 h-4 rounded border-2 flex-shrink-0 flex items-center justify-center transition-colors">
+              <svg x-show="selectedIds.has(v.id)" class="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+              </svg>
+            </div>
+
+            <!-- Thumbnail -->
+            <div class="w-14 h-9 rounded-lg bg-gray-100 overflow-hidden flex-shrink-0 relative">
+              <img x-show="v.thumbnail_url" :src="v.thumbnail_url"
+                   class="w-full h-full object-cover" loading="lazy">
+              <div x-show="!v.thumbnail_url"
+                   class="w-full h-full bg-gradient-to-br from-gray-200 to-gray-300 flex items-center justify-center">
+                <svg class="w-4 h-4 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z"/>
+                </svg>
+              </div>
+              <!-- Duration badge -->
+              <div x-show="v.duration"
+                   class="absolute bottom-0.5 right-0.5 bg-black/70 text-white text-[9px] font-medium px-1 rounded leading-tight"
+                   x-text="formatDuration(v.duration)"></div>
+            </div>
+
+            <!-- Info -->
+            <div class="flex-1 min-w-0">
+              <p class="text-xs font-semibold text-gray-800 truncate leading-tight"
+                 x-text="v.name || v.title || v.id"></p>
+              <p class="text-[10px] text-gray-400 mt-0.5">
+                <span x-show="v.file_size_bytes" x-text="formatSize(v.file_size_bytes)"></span>
+                <span x-show="v.file_size_bytes && (v.tags || v.categories)" class="mx-1">·</span>
+                <span x-show="v.file_size_bytes && v.file_size_bytes > 2147483648"
+                      class="text-amber-500 font-semibold">multipart</span>
+              </p>
+            </div>
+          </div>
+        </template>
+
+        <!-- Infinite scroll trigger / load more -->
+        <div x-show="hasMore" class="py-3 text-center">
+          <button x-show="!loadingVideos" @click="loadMore()"
+                  class="text-xs text-brand-600 hover:text-brand-700 font-semibold">
+            Load more
+          </button>
+          <svg x-show="loadingVideos" class="w-4 h-4 animate-spin text-gray-400 mx-auto" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Selection footer -->
+      <div class="border-t border-gray-100 bg-white px-4 py-3 flex-shrink-0">
+        <div x-show="selectedIds.size === 0"
+             class="text-center text-sm text-gray-400 py-1">
+          Select videos above to begin
+        </div>
+        <div x-show="selectedIds.size > 0">
+          <!-- Stats row -->
+          <div class="flex items-center justify-between text-[11px] text-gray-500 mb-2.5">
+            <span>
+              <span class="font-bold text-gray-800" x-text="selectedIds.size"></span> videos
+            </span>
+            <span>
+              <span class="font-bold text-gray-800" x-text="formatSize(totalSelectedBytes)"></span> total
+            </span>
+            <span>
+              Est. <span class="font-bold text-brand-600" x-text="estTime"></span>
+            </span>
+          </div>
+          <!-- Migrate button -->
+          <button @click="startMigration()"
+                  class="w-full py-3.5 bg-brand-500 hover:bg-brand-600 active:bg-brand-700 text-white rounded-2xl font-bold text-sm transition-all shadow-md shadow-brand-200 flex items-center justify-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+            </svg>
+            Migrate to Zoom
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════
+         STEP 3 — Migration progress
+         ════════════════════════════════════════════ -->
+    <div x-show="step === 3" class="flex-1 flex flex-col overflow-hidden">
+
+      <!-- Progress header -->
+      <div class="px-4 pt-4 pb-3 bg-white border-b border-gray-100 flex-shrink-0">
+        <div class="flex items-center justify-between mb-2">
+          <div>
+            <h1 class="text-sm font-bold text-gray-900">
+              <span x-show="!migrationDone">Migrating to Zoom</span>
+              <span x-show="migrationDone && failedCount === 0" class="text-green-700">Migration complete!</span>
+              <span x-show="migrationDone && failedCount > 0" class="text-amber-700">Migration finished</span>
+            </h1>
+            <p class="text-[11px] text-gray-400 mt-0.5"
+               x-text="`${doneCount + failedCount} of ${migrationQueue.length} videos processed`"></p>
+          </div>
+          <span class="text-lg font-black text-brand-600"
+                x-text="Math.round(migrationProgress) + '%'"></span>
+        </div>
+
+        <!-- Overall progress bar -->
+        <div class="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden">
+          <div class="h-full bg-brand-500 rounded-full progress-bar"
+               :style="`width: ${migrationProgress}%`"></div>
+        </div>
+
+        <!-- Time row -->
+        <div class="flex items-center justify-between mt-2 text-[10px] text-gray-400">
+          <span x-show="!migrationDone">
+            <span class="text-green-600 font-semibold" x-text="doneCount"></span> done
+            <span x-show="failedCount > 0" class="ml-2 text-red-500 font-semibold" x-text="failedCount + ' failed'"></span>
+          </span>
+          <span x-show="migrationDone && failedCount === 0" class="text-green-600 font-semibold">
+            ✓ All videos are now live on Zoom
+          </span>
+          <span x-show="migrationDone && failedCount > 0" class="text-amber-600 font-semibold"
+                x-text="`${doneCount} succeeded · ${failedCount} failed`"></span>
+          <span x-show="!migrationDone && migrationProgress > 0"
+                x-text="`~${timeRemaining} remaining`"></span>
+        </div>
+      </div>
+
+      <!-- Per-video list -->
+      <div class="flex-1 overflow-y-auto video-list px-3 py-2">
+        <template x-for="item in migrationQueue" :key="item.id">
+          <div class="flex items-center gap-3 px-3 py-2.5 rounded-2xl bg-white border border-gray-100 mb-1.5">
+
+            <!-- Status icon -->
+            <div class="w-6 h-6 flex-shrink-0 flex items-center justify-center">
+              <!-- Done -->
+              <svg x-show="item.status === 'done'" class="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <!-- Uploading -->
+              <svg x-show="item.status === 'uploading'" class="w-4 h-4 text-brand-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              <!-- Failed -->
+              <svg x-show="item.status === 'failed'" class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <!-- Pending -->
+              <div x-show="item.status === 'pending'" class="w-4 h-4 rounded-full border-2 border-gray-200"></div>
+            </div>
+
+            <!-- Content -->
+            <div class="flex-1 min-w-0">
+              <p class="text-xs font-semibold text-gray-800 truncate" x-text="item.title"></p>
+              <!-- Upload progress bar -->
+              <div x-show="item.status === 'uploading'" class="mt-1 w-full h-1 bg-gray-100 rounded-full overflow-hidden">
+                <div class="h-full bg-brand-400 rounded-full progress-bar" :style="`width: ${item.progress || 5}%`"></div>
+              </div>
+              <!-- Size info -->
+              <p x-show="item.status === 'pending'" class="text-[10px] text-gray-400 mt-0.5" x-text="formatSize(item.file_size_bytes)"></p>
+              <!-- Error -->
+              <p x-show="item.status === 'failed'" class="text-[10px] text-red-400 mt-0.5 truncate" x-text="item.error || 'Upload failed'"></p>
+            </div>
+
+            <!-- Zoom link -->
+            <a x-show="item.status === 'done' && item.zoom_url"
+               :href="item.zoom_url" target="_blank"
+               @click.stop
+               class="text-[10px] font-bold text-brand-600 hover:text-brand-700 flex-shrink-0 flex items-center gap-0.5">
+              View
+              <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+              </svg>
+            </a>
+
+            <!-- File size (for large files show multipart indicator) -->
+            <span x-show="item.status === 'uploading' && item.is_multipart"
+                  class="text-[9px] font-bold text-amber-500 flex-shrink-0">MP</span>
+          </div>
+        </template>
+      </div>
+
+      <!-- Done CTA -->
+      <div x-show="migrationDone" class="border-t border-gray-100 bg-white px-4 py-3 flex-shrink-0">
+        <button @click="goBack()"
+                class="w-full py-2.5 rounded-2xl border-2 border-gray-200 hover:bg-gray-50 text-sm font-semibold text-gray-700 transition-colors">
+          ← Migrate more videos
+        </button>
+      </div>
+    </div>
+
+  </div><!-- /app shell -->
+
+  <!-- Alpine.js -->
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+  <!-- Zoom Apps SDK (no-op outside Zoom) -->
+  <script src="https://appssdk.zoom.us/sdk.min.js" onerror="console.log('[VideoMigrate] Running outside Zoom client')"></script>
+
+  <script>
+    // ─────────────────────────────────────────────────────────────────────────
+    // Zoom Apps SDK initialisation
+    // Gracefully no-ops when loaded outside the Zoom client.
+    // ─────────────────────────────────────────────────────────────────────────
+    let _zoomCtx = null;
+
+    (async function initZoom() {
+      if (typeof ZoomAppsSdk === 'undefined') return;
+      try {
+        const sdk = ZoomAppsSdk.zoomSdk;
+        await sdk.config({ capabilities: [], popoutSize: { width: 400, height: 700 } });
+        _zoomCtx = await sdk.getUserContext();
+        console.log('[VideoMigrate] Zoom user context:', _zoomCtx);
+      } catch (e) {
+        console.warn('[VideoMigrate] Zoom SDK init failed:', e.message);
+      }
+    })();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Alpine component
+    // ─────────────────────────────────────────────────────────────────────────
+    function videoMigrate() {
+      return {
+
+        // ── State ──────────────────────────────────────────────────────────
+        step: 1,
+        platform: 'kaltura',
+        creds: {
+          kaltura:    { partner_id: '', admin_secret: '', service_url: '' },
+          on24:       { client_id: '', client_secret: '' },
+          brightcove: { account_id: '', client_id: '', client_secret: '' },
+          panopto:    { server_url: '', client_id: '', client_secret: '' },
+        },
+        platforms: [
+          { value: 'kaltura',    label: 'Kaltura',     icon: '🎬' },
+          { value: 'on24',       label: 'ON24',        icon: '📡' },
+          { value: 'brightcove', label: 'Brightcove',  icon: '☁️' },
+          { value: 'panopto',    label: 'Panopto',     icon: '🎥' },
+        ],
+
+        // Step 1
+        connecting: false,
+        connectError: '',
+        authToken: '',
+        projectSlug: '',
+
+        // Step 2
+        videos: [],
+        totalVideos: 0,
+        loadingVideos: false,
+        search: '',
+        page: 1,
+        hasMore: false,
+        selectedIds: new Set(),
+
+        // Step 3
+        migrationQueue: [],
+        migrationRunning: false,
+        migrationDone: false,
+        migStartTime: null,
+        _sse: null,
+
+        // ── Init ───────────────────────────────────────────────────────────
+        async init() {
+          // Restore session from OAuth redirect or previous visit
+          const params = new URLSearchParams(window.location.search);
+          const authCode = params.get('auth_code');
+          if (authCode) {
+            // Exchange short-lived auth code for JWT (avoids JWT in URL/server logs)
+            window.history.replaceState({}, '', '/zoom-app');
+            try {
+              const ex = await fetch(`/api/zoom-app/exchange-code?code=${encodeURIComponent(authCode)}`, { method: 'POST' });
+              if (ex.ok) {
+                const { token, project } = await ex.json();
+                this.authToken   = token;
+                this.projectSlug = project || '';
+                sessionStorage.setItem('vm_zoom_token',   token);
+                sessionStorage.setItem('vm_zoom_project', project || '');
+                this.step = 2;
+                await this.loadVideos();
+              }
+            } catch {}
+          } else {
+            this.authToken   = sessionStorage.getItem('vm_zoom_token')   || '';
+            this.projectSlug = sessionStorage.getItem('vm_zoom_project') || '';
+            if (this.authToken && this.projectSlug) {
+              this.step = 2;
+              await this.loadVideos();
+            }
+          }
+
+          this.$watch('search', () => { this.page = 1; this.videos = []; this.loadVideos(); });
+        },
+
+        // ── Step 1 ─────────────────────────────────────────────────────────
+
+        get hasCredentials() {
+          const c = this.creds[this.platform] || {};
+          if (this.platform === 'kaltura')    return !!c.partner_id && !!c.admin_secret;
+          if (this.platform === 'on24')       return !!c.client_id && !!c.client_secret;
+          if (this.platform === 'brightcove') return !!c.account_id;
+          if (this.platform === 'panopto')    return !!c.server_url && !!c.client_id;
+          return false;
+        },
+
+        async connectSource() {
+          this.connecting = true;
+          this.connectError = '';
+          try {
+            // Derive a stable zoom user ID
+            const zoomUserId = (_zoomCtx?.participantUUID || _zoomCtx?.screenName)
+              ?? ('browser-' + (Math.random().toString(36).slice(2, 10)));
+
+            // Create/get a project session for this Zoom user
+            const sessionRes = await fetch('/api/zoom-app/session', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                zoom_user_id: zoomUserId,
+                email: _zoomCtx?.screenName || zoomUserId,
+              }),
+            });
+            if (!sessionRes.ok) throw new Error(await sessionRes.text());
+            const { token, project_slug } = await sessionRes.json();
+            this.authToken   = token;
+            this.projectSlug = project_slug;
+            sessionStorage.setItem('vm_zoom_token',   token);
+            sessionStorage.setItem('vm_zoom_project', project_slug);
+
+            // Save credentials to project
+            const credRes = await fetch(`/api/projects/${project_slug}/credentials`, {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`,
+              },
+              body: JSON.stringify({
+                service: this.platform,
+                credentials: this.creds[this.platform],
+              }),
+            });
+            if (!credRes.ok) {
+              const err = await credRes.json().catch(() => ({}));
+              throw new Error(err.detail || 'Failed to save credentials');
+            }
+
+            // Set platform on project
+            await fetch(`/api/projects/${project_slug}`, {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`,
+              },
+              body: JSON.stringify({ source_platform: this.platform }),
+            });
+
+            // Proceed to video selection
+            this.step = 2;
+            await this.loadVideos();
+
+          } catch (e) {
+            this.connectError = e.message || 'Connection failed. Please check your credentials.';
+          } finally {
+            this.connecting = false;
+          }
+        },
+
+        // ── Step 2 ─────────────────────────────────────────────────────────
+
+        async loadVideos() {
+          if (!this.authToken || !this.projectSlug) return;
+          this.loadingVideos = true;
+          try {
+            const qs = new URLSearchParams({
+              page:      this.page,
+              page_size: 50,
+              search:    this.search,
+            });
+            const r = await fetch(`/api/projects/${this.projectSlug}/discover?${qs}`, {
+              headers: { Authorization: `Bearer ${this.authToken}` },
+            });
+            const data = await r.json();
+            if (!r.ok) throw new Error(data.message || data.detail || 'Failed to load videos');
+
+            const incoming = data.videos || [];
+            this.videos      = this.page === 1 ? incoming : [...this.videos, ...incoming];
+            this.totalVideos = data.total ?? this.videos.length;
+            this.hasMore     = this.videos.length < this.totalVideos;
+          } catch (e) {
+            console.error('[VideoMigrate] loadVideos:', e);
+          } finally {
+            this.loadingVideos = false;
+          }
+        },
+
+        async loadMore() {
+          if (this.loadingVideos || !this.hasMore) return;
+          this.page++;
+          await this.loadVideos();
+        },
+
+        onScroll(e) {
+          const el = e.target;
+          if (el.scrollHeight - el.scrollTop < el.clientHeight + 120) this.loadMore();
+        },
+
+        toggleVideo(id) {
+          const s = new Set(this.selectedIds);
+          s.has(id) ? s.delete(id) : s.add(id);
+          this.selectedIds = s;
+        },
+
+        selectAll()      { this.selectedIds = new Set(this.videos.map(v => v.id)); },
+        clearSelection() { this.selectedIds = new Set(); },
+
+        get totalSelectedBytes() {
+          return this.videos
+            .filter(v => this.selectedIds.has(v.id))
+            .reduce((sum, v) => sum + (v.file_size_bytes || 0), 0);
+        },
+
+        get estTime() {
+          const mb = this.totalSelectedBytes / (1024 * 1024);
+          if (!mb) return '—';
+          const mins = Math.max(1, Math.ceil(mb / 300)); // conservative 300 MB/min
+          if (mins >= 60) {
+            const h = Math.floor(mins / 60), m = mins % 60;
+            return m ? `${h}h ${m}m` : `${h}h`;
+          }
+          return `~${mins}m`;
+        },
+
+        // ── Step 3 ─────────────────────────────────────────────────────────
+
+        async startMigration() {
+          const selected = this.videos.filter(v => this.selectedIds.has(v.id));
+          this.migrationQueue = selected.map(v => ({
+            id:             v.id,
+            title:          v.name || v.title || v.id,
+            file_size_bytes: v.file_size_bytes || 0,
+            is_multipart:   (v.file_size_bytes || 0) > 2 * 1024 * 1024 * 1024,
+            status:         'pending',
+            progress:       0,
+            zoom_url:       null,
+            error:          null,
+          }));
+          this.migrationDone    = false;
+          this.migrationRunning = true;
+          this.migStartTime     = Date.now();
+          this.step = 3;
+
+          try {
+            const r = await fetch(`/api/projects/${this.projectSlug}/migration/start`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${this.authToken}`,
+              },
+              body: JSON.stringify({
+                video_ids:  Array.from(this.selectedIds),
+                batch_size: 5,
+              }),
+            });
+            if (!r.ok) throw new Error('Failed to start migration');
+            this._subscribeSSE();
+          } catch (e) {
+            console.error('[VideoMigrate] startMigration:', e);
+            this.migrationDone = true;
+          }
+        },
+
+        async _subscribeSSE() {
+          if (this._sse) this._sse.close();
+          // Use short-lived SSE token to avoid long-lived JWT in server logs
+          let sseToken = null;
+          try {
+            const r = await fetch('/api/migration/stream-token', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${this.authToken}` }
+            });
+            if (r.ok) { const d = await r.json(); sseToken = d.token; }
+          } catch {}
+          if (!sseToken) {
+            // Fallback: poll for completion instead of SSE
+            if (!this.migrationDone) this.migrationDone = true;
+            return;
+          }
+          this._sse = new EventSource(
+            `/api/migration/stream?sse_token=${encodeURIComponent(sseToken)}`
+          );
+          this._sse.onmessage = (e) => {
+            try { this._onSSE(JSON.parse(e.data)); } catch {}
+          };
+          this._sse.onerror = () => {
+            this._sse?.close();
+            if (!this.migrationDone) this.migrationDone = true;
+          };
+        },
+
+        _onSSE(data) {
+          const type  = data.type || '';
+          const id    = data.entry_id || data.video_id || '';
+          const item  = id ? this.migrationQueue.find(i => i.id === id) : null;
+
+          if (type === 'video_start' && item)    { item.status = 'uploading'; }
+          if (type === 'video_progress' && item) { item.status = 'uploading'; item.progress = data.progress ?? 0; }
+          if (type === 'video_done' && item)     { item.status = 'done'; item.zoom_url = data.zoom_url || null; item.progress = 100; }
+          if (type === 'video_error' && item)    { item.status = 'failed'; item.error = data.error || 'Upload failed'; }
+
+          if (type === 'complete' || type === 'migration_complete') {
+            // Mark any still-pending items as done
+            this.migrationQueue.forEach(i => { if (i.status === 'pending') i.status = 'done'; });
+            this.migrationDone    = true;
+            this.migrationRunning = false;
+            this._sse?.close();
+          }
+        },
+
+        get migrationProgress() {
+          if (!this.migrationQueue.length) return 0;
+          const finished = this.migrationQueue.filter(i => i.status === 'done' || i.status === 'failed').length;
+          return (finished / this.migrationQueue.length) * 100;
+        },
+
+        get doneCount()   { return this.migrationQueue.filter(i => i.status === 'done').length; },
+        get failedCount() { return this.migrationQueue.filter(i => i.status === 'failed').length; },
+
+        get timeRemaining() {
+          if (!this.migStartTime || this.migrationProgress <= 0) return '…';
+          const elapsed = (Date.now() - this.migStartTime) / 1000;
+          const total   = elapsed / (this.migrationProgress / 100);
+          const left    = Math.max(0, Math.ceil(total - elapsed));
+          if (left >= 3600) return `${Math.round(left / 3600)}h`;
+          if (left >= 60)   return `${Math.round(left / 60)}m`;
+          return `${left}s`;
+        },
+
+        goBack() {
+          this._sse?.close();
+          this.selectedIds     = new Set();
+          this.migrationQueue  = [];
+          this.migrationDone   = false;
+          this.step = 2;
+        },
+
+        // ── Formatters ─────────────────────────────────────────────────────
+
+        formatDuration(seconds) {
+          if (!seconds) return '';
+          const h = Math.floor(seconds / 3600);
+          const m = Math.floor((seconds % 3600) / 60);
+          const s = Math.floor(seconds % 60);
+          if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+          return `${m}:${String(s).padStart(2,'0')}`;
+        },
+
+        formatSize(bytes) {
+          if (!bytes) return '';
+          if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+          if (bytes >= 1e6) return Math.round(bytes / 1e6) + ' MB';
+          return Math.round(bytes / 1e3) + ' KB';
+        },
+
+      }; // end return
+    } // end videoMigrate()
+  </script>
+</body>
+</html>

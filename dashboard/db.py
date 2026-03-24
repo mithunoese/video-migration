@@ -28,10 +28,15 @@ _ENCRYPTION_KEY: str = ""
 def _get_encryption_key() -> str:
     global _ENCRYPTION_KEY
     if not _ENCRYPTION_KEY:
-        _ENCRYPTION_KEY = os.environ.get(
-            "POSTGRES_ENCRYPTION_KEY",
-            os.environ.get("JWT_SECRET_KEY", "video-migration-default-key"),
-        )
+        key = os.environ.get("POSTGRES_ENCRYPTION_KEY") or os.environ.get("JWT_SECRET_KEY")
+        if not key:
+            raise RuntimeError(
+                "POSTGRES_ENCRYPTION_KEY is not set and JWT_SECRET_KEY is also missing. "
+                "Credentials cannot be encrypted/decrypted — refusing to use a random fallback key "
+                "which would silently corrupt all stored credentials on restart. "
+                "Set POSTGRES_ENCRYPTION_KEY in your environment."
+            )
+        _ENCRYPTION_KEY = key
     return _ENCRYPTION_KEY
 
 
@@ -505,6 +510,22 @@ def get_all_video_migrations(project_id: str | None = None) -> dict[str, dict]:
     else:
         rows = fetch_all("SELECT * FROM video_migrations ORDER BY migrated_at DESC")
     return {r["kaltura_id"]: r for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# Secrets Manager ARN helpers (Item 5)
+# Stores only the ARN reference in Postgres; actual secret values live in AWS SM.
+# ---------------------------------------------------------------------------
+
+def store_secret_arn(project_id: str, service: str, arn: str):
+    """Upsert the Secrets Manager ARN for a project+service combination."""
+    store_credential(project_id, service, "sm_arn", arn, is_secret=False)
+
+
+def get_secret_arn(project_id: str, service: str) -> str | None:
+    """Return the Secrets Manager ARN for a project+service, or None if not set."""
+    creds = get_credentials(project_id, service)
+    return creds.get("sm_arn") or None
 
 
 def create_default_mappings(project_id: str, source_platform: str = "kaltura"):

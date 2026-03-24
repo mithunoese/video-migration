@@ -79,7 +79,7 @@ class CostTracker:
         with open(self._cost_file, "w") as f:
             json.dump(self._data, f, indent=2)
 
-    def record_migration_cost(self, video_id: str, size_bytes: int):
+    def record_migration_cost(self, video_id: str, size_bytes: int, project_slug: str = ""):
         """
         Record costs for a single video migration.
 
@@ -119,6 +119,7 @@ class CostTracker:
             "size_gb": round(size_gb, 4),
             "costs": costs,
             "total": round(total, 6),
+            "project_slug": project_slug or "",
         }
 
         self._data["entries"].append(entry)
@@ -128,7 +129,7 @@ class CostTracker:
         self._save()
         return entry
 
-    def record_ai_cost(self, input_tokens: int, output_tokens: int):
+    def record_ai_cost(self, input_tokens: int, output_tokens: int, project_slug: str = ""):
         """Record cost for an AI assistant interaction."""
         cost = round(
             (input_tokens / 1000) * COST_RATES["claude_input_per_1k_tokens"] +
@@ -142,6 +143,7 @@ class CostTracker:
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total": cost,
+            "project_slug": project_slug or "",
         }
 
         self._data["entries"].append(entry)
@@ -152,11 +154,24 @@ class CostTracker:
         self._save()
         return entry
 
-    def get_breakdown(self) -> dict:
+    def _filter_entries(self, project_slug: str = "") -> list:
+        """Return entries filtered by project_slug (empty string = all projects)."""
+        entries = self._data["entries"]
+        if project_slug:
+            entries = [e for e in entries if e.get("project_slug", "") == project_slug]
+        return entries
+
+    def get_breakdown(self, project_slug: str = "") -> dict:
         """Get cost breakdown by service."""
-        totals = self._data["totals"]
+        entries = self._filter_entries(project_slug)
+        totals: dict = {}
+        for e in entries:
+            for k, v in e.get("costs", {}).items():
+                totals[k] = round(totals.get(k, 0) + v, 6)
+            if e.get("type") == "ai_assistant":
+                totals["ai_assistant"] = round(totals.get("ai_assistant", 0) + e.get("total", 0), 6)
         grand_total = round(sum(totals.values()), 2)
-        video_entries = [e for e in self._data["entries"] if "video_id" in e]
+        video_entries = [e for e in entries if "video_id" in e]
         num_videos = len(video_entries)
 
         return {
@@ -176,10 +191,10 @@ class CostTracker:
             "alert_threshold": self._data.get("alert_threshold", 50.0),
         }
 
-    def get_timeline(self, days: int = 14) -> list[dict]:
+    def get_timeline(self, days: int = 14, project_slug: str = "") -> list[dict]:
         """Get daily cost aggregation for the timeline chart."""
         daily = {}
-        for entry in self._data["entries"]:
+        for entry in self._filter_entries(project_slug):
             date = entry["timestamp"][:10]  # YYYY-MM-DD
             if date not in daily:
                 daily[date] = {"cost": 0.0, "videos": 0, "gb": 0.0}
@@ -244,7 +259,7 @@ class CostTracker:
             }
         return None
 
-    def export_csv(self) -> str:
+    def export_csv(self, project_slug: str = "") -> str:
         """Export cost entries as CSV string."""
         output = io.StringIO()
         writer = csv.writer(output)
@@ -255,7 +270,7 @@ class CostTracker:
             "dynamodb", "lambda", "ai_cost", "total",
         ])
 
-        for entry in self._data["entries"]:
+        for entry in self._filter_entries(project_slug):
             costs = entry.get("costs", {})
             writer.writerow([
                 entry.get("timestamp", ""),

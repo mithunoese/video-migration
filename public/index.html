@@ -30,6 +30,7 @@
     .dot-green { background: #16a34a; box-shadow: 0 0 0 2px rgba(22,163,106,0.15); }
     .dot-red { background: #dc2626; box-shadow: 0 0 0 2px rgba(220,38,38,0.15); }
     .dot-yellow { background: #ca8a04; box-shadow: 0 0 0 2px rgba(202,138,4,0.15); }
+    .dot-orange { background: #f97316; box-shadow: 0 0 0 2px rgba(249,115,22,0.15); }
     .dot-blue { background: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.15); }
     .dot-purple { background: #7c3aed; box-shadow: 0 0 0 2px rgba(124,58,237,0.15); }
     .chat-msg { max-width: 85%; }
@@ -178,12 +179,29 @@
           <!-- Kaltura fields -->
           <div x-show="newProject.source_platform === 'kaltura'" class="grid grid-cols-1 gap-2.5">
             <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Partner ID</label><input type="text" x-model="newProject.creds.partner_id" placeholder="12345" class="input-field mt-1"></div>
-            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Admin Secret</label><input type="password" x-model="newProject.creds.admin_secret" placeholder="*************" class="input-field mt-1"></div>
-            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">User ID</label><input type="text" x-model="newProject.creds.user_id" placeholder="admin@company.com" class="input-field mt-1"></div>
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">App Token ID</label><input type="text" x-model="newProject.creds.app_token_id" placeholder="App token ID" class="input-field mt-1"></div>
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">App Token</label><input type="password" x-model="newProject.creds.app_token" placeholder="*************" class="input-field mt-1"></div>
           </div>
-          <!-- No platform or non-Kaltura placeholder -->
+          <!-- ON24 fields -->
+          <div x-show="newProject.source_platform === 'on24'" class="grid grid-cols-1 gap-2.5">
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Client Token</label><input type="password" x-model="newProject.creds.client_token" placeholder="*************" class="input-field mt-1"></div>
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Account ID</label><input type="text" x-model="newProject.creds.account_id" placeholder="Account ID" class="input-field mt-1"></div>
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Client Key</label><input type="text" x-model="newProject.creds.client_key" placeholder="Client key" class="input-field mt-1"></div>
+          </div>
+          <!-- Brightcove fields -->
+          <div x-show="newProject.source_platform === 'brightcove'" class="grid grid-cols-1 gap-2.5">
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Account ID</label><input type="text" x-model="newProject.creds.account_id" placeholder="Account ID" class="input-field mt-1"></div>
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Client ID</label><input type="text" x-model="newProject.creds.client_id" placeholder="Client ID" class="input-field mt-1"></div>
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Client Secret</label><input type="password" x-model="newProject.creds.client_secret" placeholder="*************" class="input-field mt-1"></div>
+          </div>
+          <!-- Panopto fields -->
+          <div x-show="newProject.source_platform === 'panopto'" class="grid grid-cols-1 gap-2.5">
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Server URL</label><input type="text" x-model="newProject.creds.server_url" placeholder="https://yoursite.hosted.panopto.com" class="input-field mt-1"></div>
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Client ID</label><input type="text" x-model="newProject.creds.client_id" placeholder="Client ID" class="input-field mt-1"></div>
+            <div><label class="text-[10px] text-gray-500 font-semibold uppercase">Client Secret</label><input type="password" x-model="newProject.creds.client_secret" placeholder="*************" class="input-field mt-1"></div>
+          </div>
+          <!-- No platform selected -->
           <div x-show="newProject.source_platform === ''" class="text-xs text-amber-600 py-2">Select a source platform above first.</div>
-          <div x-show="newProject.source_platform !== '' && newProject.source_platform !== 'kaltura'" class="text-xs text-gray-400 py-2">Add credentials after creating the project in Settings.</div>
         </div>
 
         <div x-show="newProjectError" class="text-sm text-red-600 bg-red-50 rounded-xl px-4 py-2" x-text="newProjectError"></div>
@@ -293,6 +311,32 @@
     </div>
   </div>
 
+  <!-- Zoom Video SDK Preview Modal (Item 6) -->
+  <div x-show="showZoomPreviewModal" x-cloak class="fixed inset-0 z-[96] flex items-center justify-center bg-black/60" @click.self="showZoomPreviewModal = false">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl" @click.stop>
+      <div class="px-6 pt-5 pb-4 flex items-center justify-between border-b border-gray-100">
+        <h2 class="text-sm font-semibold text-gray-900 flex items-center gap-2">
+          <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Zoom Video Preview
+        </h2>
+        <button @click="showZoomPreviewModal = false" class="text-gray-400 hover:text-gray-600">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="p-6">
+        <div x-show="zoomPreviewLoading" class="flex flex-col items-center justify-center py-12 gap-3">
+          <div class="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+          <p class="text-sm text-gray-500">Loading SDK token…</p>
+        </div>
+        <div x-show="zoomPreviewError && !zoomPreviewLoading" class="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700" x-text="zoomPreviewError"></div>
+        <div x-show="zoomPreviewToken && !zoomPreviewLoading" id="zoom-preview-sdk" class="w-full aspect-video bg-black rounded-xl overflow-hidden">
+          <p class="text-white text-xs p-4 opacity-50">Zoom Video SDK player initialises here. Token ready — integrate Zoom Video SDK CDN script to render the embedded player.</p>
+        </div>
+        <p class="text-[10px] text-gray-400 mt-3" x-show="zoomPreviewToken">Video ID: <span class="font-mono" x-text="zoomPreviewVideoId"></span> · Token valid for 2 hours</p>
+      </div>
+    </div>
+  </div>
+
   <!-- Batch Migrate Confirmation Modal -->
   <div x-show="showBatchMigrateModal" x-cloak class="fixed inset-0 z-[95] flex items-center justify-center bg-black/50" @click.self="showBatchMigrateModal = false">
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md" @click.stop>
@@ -386,13 +430,15 @@
                 <div class="flex items-center gap-2">
                   <p class="text-sm font-semibold text-gray-800 truncate" x-text="proj.name"></p>
                   <span class="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-gray-100 text-gray-500" x-text="proj.source_platform || 'unknown'"></span>
+                  <span x-show="proj.video_count > 0" class="text-[9px] px-1.5 py-0.5 rounded bg-brand-50 text-brand-600" x-text="(proj.video_count || 0) + ' videos'"></span>
                 </div>
                 <p class="text-xs text-gray-400 font-mono mt-0.5" x-text="proj.slug"></p>
               </div>
               <!-- Rename inline -->
               <div class="flex items-center gap-1.5" x-show="adminEditSlug !== proj.slug">
                 <button @click="adminEditSlug = proj.slug; adminEditName = proj.name" class="text-[10px] text-brand-600 hover:text-brand-700 px-2 py-1 rounded-lg bg-brand-50 hover:bg-brand-100 transition-colors">Rename</button>
-                <button @click="adminDeleteProject(proj.slug)" class="text-[10px] text-red-600 hover:text-red-700 px-2 py-1 rounded-lg bg-red-50 hover:bg-red-100 transition-colors">Delete</button>
+                <button @click="adminResetProjectData(proj)" class="text-[10px] text-amber-600 hover:text-amber-700 px-2 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 transition-colors" title="Wipe credentials + migration history (keep project)">Reset Data</button>
+                <button @click="adminConfirmDelete(proj)" class="text-[10px] text-red-600 hover:text-red-700 px-2 py-1 rounded-lg bg-red-50 hover:bg-red-100 transition-colors">Delete</button>
               </div>
               <div x-show="adminEditSlug === proj.slug" class="flex items-center gap-1.5">
                 <input x-model="adminEditName" type="text" class="text-xs px-2 py-1 rounded-lg border border-gray-200 focus:border-brand-400 outline-none w-36" @keydown.enter="adminSaveRename(proj.slug)" @keydown.escape="adminEditSlug = ''">
@@ -403,7 +449,110 @@
           </template>
           <div x-show="adminProjects.length === 0" class="px-6 py-8 text-center text-sm text-gray-400">No projects found</div>
         </div>
+        <!-- Delete confirm inline -->
+        <div x-show="adminDeleteTarget" class="px-6 py-4 border-t border-red-100 bg-red-50">
+          <p class="text-xs font-semibold text-red-700 mb-2">Type project name to confirm deletion:</p>
+          <p class="text-[10px] font-mono text-red-600 bg-red-100 px-2 py-1 rounded mb-2" x-text="adminDeleteTarget?.name"></p>
+          <div class="flex gap-2">
+            <input type="text" x-model="adminDeleteConfirmName" @keydown.enter="adminDeleteProject()" placeholder="Type project name…" class="flex-1 text-xs px-2 py-1.5 rounded-lg border border-red-200 focus:border-red-400 outline-none">
+            <button @click="adminDeleteProject()" :disabled="adminDeleteConfirmName !== adminDeleteTarget?.name" class="text-[10px] bg-red-600 text-white px-3 py-1.5 rounded-lg disabled:opacity-40 hover:bg-red-700 transition-colors">Delete</button>
+            <button @click="adminDeleteTarget = null; adminDeleteConfirmName = ''" class="text-[10px] text-gray-500 px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 transition-colors">Cancel</button>
+          </div>
+        </div>
         <div x-show="adminMessage" class="px-6 py-3 border-t border-gray-100 text-xs font-medium" :class="adminMessage?.startsWith('Error') ? 'text-red-600 bg-red-50' : 'text-green-600 bg-green-50'" x-text="adminMessage"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Migrate All Confirmation Modal -->
+  <div x-show="migrateAllModalOpen" x-cloak class="fixed inset-0 z-[95] flex items-center justify-center bg-black/50" @click.self="migrateAllModalOpen = false">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md" @click.stop>
+      <div class="px-6 pt-6 pb-4">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-10 h-10 rounded-xl bg-brand-50 flex items-center justify-center flex-shrink-0">
+            <svg class="w-5 h-5 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-gray-900">Migrate All Videos</h3>
+            <p class="text-xs text-gray-400 mt-0.5">Full 5-stage pipeline with resume support</p>
+          </div>
+        </div>
+
+        <div class="bg-gray-50 rounded-xl p-4 mb-4 space-y-2">
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-gray-500">Project</span>
+            <span class="font-semibold text-gray-800" x-text="projects.find(p=>p.slug===currentProjectSlug)?.name || currentProjectSlug"></span>
+          </div>
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-gray-500">Total videos</span>
+            <span x-show="migrateAllTotal === null" class="text-gray-400">Loading…</span>
+            <span x-show="migrateAllTotal !== null" class="font-semibold text-gray-800" x-text="(migrateAllTotal || 0).toLocaleString()"></span>
+          </div>
+          <div class="flex items-center justify-between text-xs" x-show="migrateAllEstimatedMins">
+            <span class="text-gray-500">Estimated time</span>
+            <span class="font-semibold text-gray-800" x-text="migrateAllEstimatedMins < 60 ? migrateAllEstimatedMins + ' min' : Math.round(migrateAllEstimatedMins/60) + ' hr'"></span>
+          </div>
+        </div>
+
+        <div class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4">
+          <p class="text-xs text-amber-700 font-medium">Migration is resumable — if it stops, restart and it will continue from the last checkpoint. Previously completed videos are skipped automatically.</p>
+        </div>
+
+        <div class="flex gap-3">
+          <button @click="migrateAllModalOpen = false" class="flex-1 py-2.5 text-sm font-medium text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200 transition-colors">Cancel</button>
+          <button @click="startMigrateAll()" :disabled="migrationRunning || migrateAllTotal === null" class="flex-1 py-2.5 btn-primary text-sm">
+            <span x-show="!migrationRunning">Start Migration</span>
+            <span x-show="migrationRunning">Starting…</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Migration Completion Summary Modal -->
+  <div x-show="completionSummaryOpen" x-cloak class="fixed inset-0 z-[95] flex items-center justify-center bg-black/50" @click.self="completionSummaryOpen = false">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col" @click.stop>
+      <div class="px-6 py-5 border-b border-gray-100 flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-bold text-gray-900">Migration Complete</h2>
+          <p class="text-xs text-gray-400 mt-0.5" x-text="projects.find(p=>p.slug===currentProjectSlug)?.name || currentProjectSlug"></p>
+        </div>
+        <button @click="completionSummaryOpen = false" class="text-gray-400 hover:text-gray-600">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="flex-1 overflow-y-auto p-6">
+        <div class="grid grid-cols-3 gap-4 mb-6">
+          <div class="text-center p-4 rounded-xl bg-green-50 border border-green-100">
+            <p class="text-2xl font-bold text-green-700" x-text="completionSummary?.completed || 0"></p>
+            <p class="text-[10px] font-semibold text-green-600 uppercase tracking-wide mt-1">Migrated</p>
+          </div>
+          <div class="text-center p-4 rounded-xl bg-red-50 border border-red-100">
+            <p class="text-2xl font-bold text-red-600" x-text="completionSummary?.failed || 0"></p>
+            <p class="text-[10px] font-semibold text-red-500 uppercase tracking-wide mt-1">Failed</p>
+          </div>
+          <div class="text-center p-4 rounded-xl bg-gray-50 border border-gray-100">
+            <p class="text-2xl font-bold text-gray-700" x-text="completionSummary?.total || 0"></p>
+            <p class="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mt-1">Total</p>
+          </div>
+        </div>
+        <template x-if="completionSummary?.failedVideos?.length > 0">
+          <div>
+            <h3 class="text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">Failed Videos</h3>
+            <div class="space-y-1.5 max-h-48 overflow-y-auto">
+              <template x-for="fv in completionSummary.failedVideos" :key="fv.video_id">
+                <div class="flex items-start gap-3 px-3 py-2 rounded-lg bg-red-50 border border-red-100">
+                  <span class="text-[10px] font-mono text-red-600 font-semibold flex-shrink-0 mt-0.5" x-text="fv.video_id"></span>
+                  <span class="text-[10px] text-red-700 flex-1" x-text="fv.error || 'Unknown error'"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+      <div class="px-6 py-4 border-t border-gray-100 flex gap-3">
+        <button @click="completionSummaryOpen = false" class="flex-1 py-2 text-sm text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200 transition-colors">Close</button>
+        <a :href="'/api/migration/report?project_slug=' + currentProjectSlug" target="_blank" class="flex-1 py-2 btn-primary text-sm text-center">Download Report</a>
       </div>
     </div>
   </div>
@@ -423,15 +572,25 @@
     </div>
 
     <!-- Project Selector -->
-    <div class="px-3 mb-3" x-show="status.db_available">
+    <div class="px-3 mb-3" x-show="authenticated && projects.length > 0">
       <label class="text-[10px] font-semibold text-gray-400 uppercase tracking-widest px-1 mb-1 block">Project</label>
+      <!-- Projects load error -->
+      <div x-show="projectsLoadError" class="mb-1.5 px-2.5 py-1.5 rounded-lg bg-red-50 border border-red-200 text-[11px] text-red-700 flex items-center gap-1.5">
+        <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+        <span x-text="projectsLoadError"></span>
+        <button @click="loadProjects()" class="ml-auto text-red-600 hover:text-red-800 font-semibold underline">Retry</button>
+      </div>
       <div class="relative" x-show="projects.length > 0">
-        <select x-model="currentProjectSlug" @change="switchProject()" class="w-full text-xs pl-3 pr-8 py-2 rounded-lg border border-gray-200 bg-white focus:border-brand-400 focus:ring-1 focus:ring-brand-200 outline-none appearance-none font-medium text-gray-700 cursor-pointer">
+        <select x-model="currentProjectSlug" @change="switchProject()" :disabled="projectSwitching"
+                :class="projectSwitching ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'"
+                class="w-full text-xs pl-3 pr-8 py-2 rounded-lg border border-gray-200 bg-white focus:border-brand-400 focus:ring-1 focus:ring-brand-200 outline-none appearance-none font-medium text-gray-700">
           <template x-for="p in projects" :key="p.slug">
             <option :value="p.slug" x-text="p.name"></option>
           </template>
         </select>
-        <svg class="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        <!-- spinner while switching -->
+        <svg x-show="projectSwitching" class="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-brand-500 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+        <svg x-show="!projectSwitching" class="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
       </div>
       <button @click="showNewProjectModal = true" class="w-full mt-1.5 text-[11px] font-medium py-1 rounded-lg transition-colors text-brand-600 hover:text-brand-700 hover:bg-brand-50" title="Create a new project">+ New Project</button>
     </div>
@@ -462,14 +621,48 @@
     </div>
   </div>
 
+  <!-- Security warning banner (default credentials) -->
+  <div x-show="securityWarning" x-cloak
+       class="fixed top-0 left-0 right-0 z-[9998] bg-red-600 text-white text-xs font-semibold text-center py-2 px-4 flex items-center justify-center gap-3">
+    <svg class="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+    <span x-text="securityWarning"></span>
+    <button @click="securityWarning = null" class="ml-2 opacity-75 hover:opacity-100 text-white font-bold">✕</button>
+  </div>
+
   <!-- Main -->
-  <main class="ml-60 p-8 min-h-screen max-w-[1400px]">
+  <main class="ml-60 p-8 min-h-screen max-w-[1400px]" :class="securityWarning ? 'pt-16' : ''">
 
     <!-- ═══ DASHBOARD ═══ -->
     <div x-show="currentTab === 'dashboard'" x-cloak class="fade-in">
       <div class="mb-8">
+        <!-- Project context breadcrumb -->
+        <div x-show="currentProjectSlug" class="flex items-center gap-2 mb-2">
+          <span class="text-xs font-semibold text-brand-600 bg-brand-50 border border-brand-100 px-2.5 py-1 rounded-full" x-text="projects.find(p => p.slug === currentProjectSlug)?.name || currentProjectSlug"></span>
+          <span x-show="currentProjectPlatform" class="text-xs text-gray-400 capitalize" x-text="'· ' + (currentProjectPlatform || '')"></span>
+          <span x-show="currentProjectDataRegion" class="text-xs text-gray-300" x-text="'· ' + (currentProjectDataRegion || '')"></span>
+        </div>
         <h2 class="section-title">Dashboard</h2>
         <p class="section-subtitle">Overview of your video migration progress</p>
+      </div>
+
+      <!-- Credential warning banner -->
+      <div x-show="projectCredStatus && !projectCredStatus?.source?.configured && !projectCredStatus?.zoom?.configured"
+           class="mb-6 flex items-start gap-3 px-4 py-3.5 rounded-xl bg-amber-50 border border-amber-200">
+        <svg class="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+        <div class="flex-1 min-w-0">
+          <p class="text-xs font-semibold text-amber-800">No credentials configured for this project</p>
+          <p class="text-xs text-amber-600 mt-0.5">Set up your source platform and Zoom destination in Settings to start migrating.</p>
+        </div>
+        <button @click="switchTab('settings')" class="text-xs font-semibold text-amber-700 hover:text-amber-900 whitespace-nowrap">Go to Settings →</button>
+      </div>
+      <div x-show="projectCredStatus && projectCredStatus?.source?.configured && !projectCredStatus?.zoom?.configured"
+           class="mb-6 flex items-start gap-3 px-4 py-3.5 rounded-xl bg-amber-50 border border-amber-200">
+        <svg class="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+        <div class="flex-1 min-w-0">
+          <p class="text-xs font-semibold text-amber-800">Zoom destination not configured</p>
+          <p class="text-xs text-amber-600 mt-0.5">Source platform is connected. Add Zoom credentials in Settings to enable migration.</p>
+        </div>
+        <button @click="switchTab('settings')" class="text-xs font-semibold text-amber-700 hover:text-amber-900 whitespace-nowrap">Go to Settings →</button>
       </div>
 
 
@@ -570,13 +763,27 @@
           <p class="text-sm text-gray-400 mt-2">See your video library across all three platforms — select and migrate in real time</p>
         </div>
         <div class="flex items-center gap-2">
-          <button x-show="migrationRunning" @click="if(confirm('Stop the current migration? Videos in progress will finish.')) stopMigration()" class="px-4 py-2 btn-danger text-xs">Stop Migration</button>
+          <button x-show="migrationRunning && !migrationPaused && !migrationStalled" @click="pauseMigration()" class="px-4 py-2 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded-xl text-xs font-medium transition-colors border border-amber-200">Pause</button>
+          <button x-show="migrationRunning && migrationPaused" @click="resumeMigration()" class="px-4 py-2 btn-primary text-xs">Resume</button>
+          <button x-show="migrationRunning" @click="if(confirm('Stop the current migration? Videos in progress will finish.')) stopMigration()" class="px-4 py-2 btn-danger text-xs">Stop</button>
           <button @click="retryFailed()" x-show="failedCount > 0 && !migrationRunning" class="px-4 py-2 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded-xl text-xs font-medium transition-colors border border-amber-200">Retry Failed</button>
-          <button x-show="!migrationRunning" @click="openBatchMigrate()" class="px-4 py-2 btn-primary text-xs flex items-center gap-1.5">
+          <button x-show="!migrationRunning" @click="openMigrateAllModal()" class="px-4 py-2 btn-primary text-xs flex items-center gap-1.5">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
             Migrate All Videos
           </button>
         </div>
+      </div>
+
+      <!-- Stalled migration warning -->
+      <div x-show="migrationStalled" x-transition class="mb-4 p-4 rounded-xl border border-amber-300 bg-amber-50 flex items-start gap-3">
+        <svg class="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-semibold text-amber-800">Migration appears stalled</p>
+          <p class="text-xs text-amber-700 mt-0.5">No progress in 90 seconds — large files (&gt;2 GB) exceed Vercel's timeout. Run locally for reliable large-file migrations:</p>
+          <code class="mt-2 block text-xs bg-amber-100 border border-amber-200 rounded-lg px-3 py-2 font-mono text-amber-900">python3 run_dashboard.py</code>
+          <p class="text-[11px] text-amber-600 mt-1">Also start LocalStack for S3: <span class="font-mono">docker compose --profile testing up -d localstack</span></p>
+        </div>
+        <button @click="stopMigration(); migrationStalled = false" class="text-xs text-amber-700 hover:text-amber-900 underline flex-shrink-0">Reset</button>
       </div>
 
       <!-- Pipeline Stage Tracker -->
@@ -634,7 +841,7 @@
                   <svg class="w-4 h-4 text-brand-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
                 </div>
                 <div>
-                  <p class="text-sm font-bold text-gray-800" x-text="({'kaltura':'Kaltura','on24':'ON24','brightcove':'Brightcove','panopto':'Panopto','':'Source'}[currentProjectPlatform] || 'Source')"></p>
+                  <p class="text-sm font-bold text-gray-800" x-text="({'kaltura':'Kaltura','on24':'ON24','brightcove':'Brightcove','panopto':'Panopto','vimeo':'Vimeo'}[currentProjectPlatform] || (currentProjectPlatform ? (currentProjectPlatform.charAt(0).toUpperCase() + currentProjectPlatform.slice(1)) : 'Source'))"></p>
                   <p class="text-[10px] text-gray-400">Source Library</p>
                 </div>
               </div>
@@ -675,10 +882,11 @@
                        class="w-3.5 h-3.5 rounded border-gray-300 text-brand-500 focus:ring-brand-400 cursor-pointer flex-shrink-0">
                 <svg x-show="v.migration_status === 'completed'" class="w-3.5 h-3.5 text-green-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                 <svg x-show="v.migration_status === 'downloading' || v.migration_status === 'uploading' || v.migration_status === 'staged'" class="w-3.5 h-3.5 text-brand-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                <!-- Thumbnail -->
-                <div class="w-10 h-7 rounded overflow-hidden bg-gray-100 flex-shrink-0 relative">
-                  <img x-show="v.thumbnail_url" :src="v.thumbnail_url" class="w-full h-full object-cover" loading="lazy" @error="$el.style.display='none'">
-                  <svg x-show="!v.thumbnail_url" class="w-4 h-4 text-gray-300 absolute inset-0 m-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                <!-- Thumbnail — uses Kaltura CDN fallback URL when thumbnail_url unavailable (Item 6) -->
+                <div class="w-10 h-7 rounded overflow-hidden bg-gray-100 flex-shrink-0 relative group">
+                  <img :src="v.thumbnail_url || (currentProjectKalturaPartnerId && v.id ? `https://cfvod.kaltura.com/p/${currentProjectKalturaPartnerId}/sp/${currentProjectKalturaPartnerId}00/thumbnail/entry_id/${v.id}/width/80` : '')"
+                    class="w-full h-full object-cover" loading="lazy" @error="$el.style.display='none'">
+                  <svg x-show="!v.thumbnail_url && !currentProjectKalturaPartnerId" class="w-4 h-4 text-gray-300 absolute inset-0 m-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
                 </div>
                 <!-- Title + info -->
                 <div class="flex-1 min-w-0">
@@ -720,15 +928,15 @@
               </div>
             </template>
             <!-- No credentials configured for this project -->
-            <div x-show="!migKalturaLoading && migKalturaNoCredentials" class="px-4 py-10 text-center">
+            <div x-show="!migKalturaLoading && !projectCredStatus?.source?.configured" class="px-4 py-10 text-center">
               <div class="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center mx-auto mb-3">
                 <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
               </div>
-              <p class="text-xs font-semibold text-gray-700 mb-1">No source credentials</p>
-              <p class="text-[11px] text-gray-400 mb-3" x-text="'Add ' + ({'kaltura':'Kaltura','on24':'ON24','brightcove':'Brightcove','panopto':'Panopto','':'source'}[currentProjectPlatform] || 'source') + ' credentials for this project in Settings.'"></p>
+              <p class="text-xs font-semibold text-gray-700 mb-1" x-text="!projectCredStatus?.source?.platform ? 'No source platform configured' : 'No source credentials'"></p>
+              <p class="text-[11px] text-gray-400 mb-3" x-text="projectCredStatus?.source?.platform ? ('Add ' + ({'kaltura':'Kaltura','on24':'ON24','brightcove':'Brightcove','panopto':'Panopto'}[projectCredStatus.source.platform] || 'source') + ' credentials for this project in Settings.') : 'Select a source platform in Settings.'"></p>
               <a href="#settings" @click.prevent="switchTab('settings')" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100 transition-colors">Go to Settings</a>
             </div>
-            <div x-show="!migKalturaLoading && !migKalturaNoCredentials && migKalturaVideos.length === 0" class="text-xs text-gray-300 text-center py-12">No videos found</div>
+            <div x-show="!migKalturaLoading && projectCredStatus?.source?.configured && migKalturaVideos.length === 0" class="text-xs text-gray-300 text-center py-12">No videos found</div>
           </div>
 
           <!-- Pagination + Migrate button -->
@@ -925,7 +1133,16 @@
                 </div>
               </div>
             </div>
-            <div x-show="zoomCompletedTotal === 0 && zoomLiveClipsTotal === 0 && zoomLiveClips.length === 0 && doneCount === 0 && failedCount === 0" class="flex flex-col items-center justify-center py-16 text-center px-6">
+            <!-- No Zoom credentials configured for this project -->
+            <div x-show="!projectCredStatus?.zoom?.configured" class="flex flex-col items-center justify-center py-12 text-center px-6">
+              <div class="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center mb-3">
+                <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+              </div>
+              <p class="text-xs font-semibold text-gray-700 mb-1">No Zoom credentials configured</p>
+              <p class="text-[11px] text-gray-400 mb-3">Add Zoom credentials for this project to see migrated videos and live Zoom data.</p>
+              <a href="#settings" @click.prevent="switchTab('settings')" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100 transition-colors">Go to Settings</a>
+            </div>
+            <div x-show="projectCredStatus?.zoom?.configured && zoomCompletedTotal === 0 && zoomLiveClipsTotal === 0 && zoomLiveClips.length === 0 && doneCount === 0 && failedCount === 0" class="flex flex-col items-center justify-center py-16 text-center px-6">
               <div class="w-12 h-12 rounded-xl bg-green-50 flex items-center justify-center mb-3">
                 <svg class="w-6 h-6 text-green-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
               </div>
@@ -1226,19 +1443,12 @@
             </select>
           </div>
 
-          <!-- Data Region -->
+          <!-- Data Region (read-only — set at project creation) -->
           <div class="mb-5">
             <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Required for data sovereignty clients (e.g. Singapore). Media stages in this AWS region only.">Data Region</label>
-            <select x-model="currentProjectDataRegion" class="input-field mt-1.5 max-w-xs">
-              <option value="">— Global default —</option>
-              <option value="us-east-1">us-east-1 (US East — Virginia)</option>
-              <option value="us-west-2">us-west-2 (US West — Oregon)</option>
-              <option value="eu-west-1">eu-west-1 (Europe — Ireland)</option>
-              <option value="eu-central-1">eu-central-1 (Europe — Frankfurt)</option>
-              <option value="ap-southeast-1">ap-southeast-1 (Singapore)</option>
-              <option value="ap-southeast-2">ap-southeast-2 (Sydney)</option>
-              <option value="ap-northeast-1">ap-northeast-1 (Tokyo)</option>
-            </select>
+            <p class="input-field mt-1.5 max-w-xs bg-gray-50 text-gray-600 cursor-default select-none"
+               x-text="currentProjectDataRegion || '— Global default —'"></p>
+            <p class="text-[10px] text-gray-400 mt-1">Set at project creation — not editable after.</p>
             <template x-if="currentProjectDataRegion === 'ap-southeast-1'">
               <p class="text-[11px] text-amber-600 mt-1.5 flex items-center gap-1">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
@@ -1254,8 +1464,8 @@
           <!-- Kaltura fields -->
           <div x-show="currentProjectPlatform === 'kaltura'" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Partner ID</label><input type="text" x-model="projectCreds.kaltura.partner_id" placeholder="12345" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Admin Secret</label><input type="password" x-model="projectCreds.kaltura.admin_secret" placeholder="*************" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">User ID</label><input type="text" x-model="projectCreds.kaltura.user_id" placeholder="admin@company.com" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">App Token ID</label><input type="text" x-model="projectCreds.kaltura.app_token_id" placeholder="App Token ID" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">App Token</label><input type="password" x-model="projectCreds.kaltura.app_token" placeholder="*************" class="input-field mt-1.5"></div>
           </div>
           <!-- ON24 fields -->
           <div x-show="currentProjectPlatform === 'on24'" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -1285,87 +1495,177 @@
           </div>
         </div>
 
+        <!-- Per-project Zoom credentials (Fix 2) -->
         <div class="card-static p-6">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-sm font-bold text-gray-800 flex items-center gap-2.5">
-              <span class="dot" :class="(status.connections || {}).s3 ? 'dot-green' : 'dot-yellow'"></span> AWS S3 Staging
+              <span class="dot" :class="projectCredStatus?.zoom?.configured ? 'dot-green' : 'dot-yellow'"></span> Zoom Destination
             </h3>
-            <button @click="testConnection('s3')" class="text-xs text-brand-600 hover:text-brand-700 font-semibold px-3 py-1 rounded-lg hover:bg-brand-50 transition-colors">Test Connection</button>
+            <button @click="testProjectConnection('zoom')" class="text-xs text-brand-600 hover:text-brand-700 font-semibold px-3 py-1 rounded-lg hover:bg-brand-50 transition-colors">Test</button>
           </div>
-          <div class="space-y-4">
-            <p class="text-xs text-gray-400 leading-relaxed">Required staging layer. All media and metadata land in S3 first, then upload to Zoom. Enables fault recovery and restartable pipelines for large migrations.</p>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Your AWS IAM access key ID. Found in AWS Console > IAM > Security Credentials.">Access Key ID</label><input type="text" x-model="settings.aws_access_key_id" placeholder="AKIA..." class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Your AWS IAM secret access key. Treat this like a password.">Secret Access Key</label><input type="password" x-model="settings.aws_secret_access_key" placeholder="••••••••" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="The name of the Amazon cloud storage container where videos are temporarily held during transfer.">Cloud Storage Bucket</label><input type="text" x-model="settings.aws_s3_bucket" placeholder="my-migration-bucket" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="The Amazon data center location, e.g. us-east-1 (Virginia). Use the same region as your storage bucket.">Region</label><input type="text" x-model="settings.aws_region" placeholder="us-east-1" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="A cloud database that tracks the progress of each video. Created automatically during setup.">Progress Database</label><input type="text" x-model="settings.aws_state_table" placeholder="video-migration-state" class="input-field mt-1.5"></div>
+          <p class="text-xs text-gray-400 mb-4 leading-relaxed">Destination Zoom account for this project. Each project can upload to a different Zoom account. Create a Server-to-Server OAuth app at marketplace.zoom.us.</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">App ID</label><input type="text" x-model="projectCreds.zoom.client_id" placeholder="Zoom App ID" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">App Secret</label><input type="password" x-model="projectCreds.zoom.client_secret" placeholder="*************" class="input-field mt-1.5"></div>
+            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Account ID</label><input type="text" x-model="projectCreds.zoom.account_id" placeholder="Zoom Account ID" class="input-field mt-1.5"></div>
             <div>
-              <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="For local testing with LocalStack or MinIO. Leave blank for real AWS. Example: http://localhost:4566">Endpoint URL <span class="text-[10px] font-normal text-gray-400 normal-case">(LocalStack / dev only)</span></label>
-              <input type="text" x-model="settings.aws_endpoint_url" placeholder="http://localhost:4566" class="input-field mt-1.5">
-              <p x-show="settings.aws_endpoint_url" class="text-[10px] text-indigo-500 mt-1 flex items-center gap-1">
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                Using local AWS emulator — not real AWS
-              </p>
+              <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Upload Target</label>
+              <select x-model="projectCreds.zoom.target_api" class="input-field mt-1.5">
+                <option value="clips">Zoom Clips</option>
+                <option value="events">Zoom Events (VOD Channels)</option>
+                <option value="vm">Zoom Video Management</option>
+              </select>
+            </div>
+          </div>
+          <!-- Hub / VOD Channel selection (Events mode only) -->
+          <div x-show="projectCreds.zoom.target_api === 'events'" x-transition class="bg-blue-50 rounded-xl p-4 space-y-3 border border-blue-100 mb-4">
+            <div class="flex items-center gap-2 mb-1">
+              <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+              <span class="text-xs font-bold text-blue-700">Events Hub & Channel</span>
+            </div>
+            <button @click="loadZoomHubs()" class="text-xs text-blue-600 hover:text-blue-700 font-semibold px-3 py-1.5 rounded-lg bg-white border border-blue-200 hover:bg-blue-50 transition-colors">Load Hubs</button>
+            <div x-show="zoomHubs.length > 0">
+              <label class="text-[10px] text-gray-500 font-semibold uppercase">Hub</label>
+              <select x-model="selectedHubId" @change="loadVodChannels(); projectCreds.zoom.hub_id = selectedHubId" class="input-field mt-1 text-xs">
+                <option value="">— Select Hub —</option>
+                <template x-for="h in zoomHubs" :key="h.hub_id">
+                  <option :value="h.hub_id" x-text="h.name || h.hub_id"></option>
+                </template>
+              </select>
+            </div>
+            <div x-show="selectedHubId && zoomVodChannels.length > 0">
+              <label class="text-[10px] text-gray-500 font-semibold uppercase">VOD Channel</label>
+              <select x-model="selectedVodChannelId" @change="projectCreds.zoom.vod_channel_id = selectedVodChannelId" class="input-field mt-1 text-xs">
+                <option value="">— Select Channel —</option>
+                <template x-for="ch in zoomVodChannels" :key="ch.channel_id">
+                  <option :value="ch.channel_id" x-text="ch.name || ch.channel_id"></option>
+                </template>
+              </select>
+            </div>
+          </div>
+          <div class="mt-4 flex items-center gap-3">
+            <button @click="saveProjectZoomCreds()" :disabled="projectZoomCredsSaving" class="btn-primary text-xs px-4 py-2" x-text="projectZoomCredsSaving ? 'Saving…' : 'Save Zoom'"></button>
+            <div x-show="projectZoomCredsMessage" x-transition class="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg"
+                 :class="projectZoomCredsMessageType==='success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'">
+              <span x-text="projectZoomCredsMessage"></span>
             </div>
           </div>
         </div>
 
+        <!-- Per-project AWS Staging -->
         <div class="card-static p-6">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-sm font-bold text-gray-800 flex items-center gap-2.5">
-              <span class="dot" :class="(status.connections || {}).zoom ? 'dot-green' : 'dot-yellow'"></span> Zoom
+              <span class="dot"
+                :class="!projectCredStatus?.aws?.configured ? 'dot-yellow'
+                       : projectCreds.aws.endpoint_url ? 'dot-orange'
+                       : 'dot-green'"></span>
+              AWS Staging
+              <span x-show="projectCredStatus?.aws?.configured && projectCreds.aws.endpoint_url"
+                    class="text-[10px] font-normal text-amber-600 ml-1">— LocalStack (dev)</span>
             </h3>
-            <button @click="testConnection('zoom')" class="text-xs text-brand-600 hover:text-brand-700 font-semibold px-3 py-1 rounded-lg hover:bg-brand-50 transition-colors">Test Connection</button>
           </div>
-          <p class="text-xs text-gray-400 mb-5 leading-relaxed">Destination for your videos. Create a Server-to-Server app at marketplace.zoom.us.</p>
-          <div class="space-y-4">
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="The app ID from your Zoom Server-to-Server app. Find it in Zoom Marketplace under your app.">App ID</label><input type="text" x-model="settings.zoom_client_id" placeholder="Zoom App ID" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="The app secret from your Zoom app. Keep this private.">App Secret</label><input type="password" x-model="settings.zoom_client_secret" placeholder="*************" class="input-field mt-1.5"></div>
-            <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Your Zoom organization's account ID. Found in Zoom Admin > Account Profile.">Account ID</label><input type="text" x-model="settings.zoom_account_id" placeholder="Zoom Account ID" class="input-field mt-1.5"></div>
-            <div>
-              <label class="text-xs text-gray-500 font-semibold uppercase tracking-wide help-tip" data-tip="Choose where videos are uploaded. Clips uses /clips/files. Events uses /zoom_events/files and supports VOD channels & hubs.">Upload Target</label>
-              <select x-model="settings.zoom_target_api" class="input-field mt-1.5">
-                <option value="clips">Zoom Clips</option>
-                <option value="events">Zoom Events (VOD Channels)</option>
-              </select>
-              <p class="text-[10px] text-gray-400 mt-1" x-show="settings.zoom_target_api === 'clips'">Uploads to Zoom Clips API. Videos appear in Zoom Clips library.</p>
-              <p class="text-[10px] text-gray-400 mt-1" x-show="settings.zoom_target_api === 'events'">Uploads to Zoom Events API. Videos can be organized into VOD channels on hubs. <strong>Requires zoom_events_file:write scope.</strong></p>
+
+          <!-- EMPTY STATE: not configured -->
+          <div x-show="!projectCredStatus?.aws?.configured && !awsConfigExpanded">
+            <div class="flex flex-col items-center py-8 text-center">
+              <div class="w-10 h-10 rounded-xl bg-gray-50 flex items-center justify-center mb-3 border border-gray-100">
+                <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/>
+                </svg>
+              </div>
+              <p class="text-xs font-semibold text-gray-700 mb-1">No AWS staging configured</p>
+              <p class="text-[11px] text-gray-400 mb-4">Videos are staged through AWS S3 before uploading to Zoom.</p>
+              <div class="flex gap-2 justify-center">
+                <button @click="awsConfigExpanded = true"
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100 transition-colors">
+                  Configure AWS
+                </button>
+                <button @click="saveLocalStackImmediate()"
+                  :disabled="projectAwsCredsSaving"
+                  class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-colors"
+                  x-text="projectAwsCredsSaving ? 'Saving…' : 'Use LocalStack (dev only)'">
+                </button>
+              </div>
+              <div x-show="projectAwsCredsMessage" x-transition
+                   class="mt-3 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg"
+                   :class="projectAwsCredsMessageType==='success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'">
+                <span x-text="projectAwsCredsMessage"></span>
+              </div>
             </div>
-            <!-- Hub / VOD Channel selection (Events mode only) -->
-            <div x-show="settings.zoom_target_api === 'events'" x-transition class="bg-blue-50 rounded-xl p-4 space-y-3 border border-blue-100">
+          </div>
+
+          <!-- LOCALSTACK STATE: endpoint_url set -->
+          <div x-show="projectCredStatus?.aws?.configured && projectCreds.aws.endpoint_url && !awsConfigExpanded">
+            <div class="bg-amber-50 rounded-xl p-4 border border-amber-100 mb-3">
               <div class="flex items-center gap-2 mb-1">
-                <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
-                <span class="text-xs font-bold text-blue-700">Events Hub & Channel</span>
+                <svg class="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <span class="text-xs font-bold text-amber-700">Using LocalStack — dev mode</span>
               </div>
-              <button @click="loadZoomHubs()" class="text-xs text-blue-600 hover:text-blue-700 font-semibold px-3 py-1.5 rounded-lg bg-white border border-blue-200 hover:bg-blue-50 transition-colors">
-                Load Hubs
-              </button>
-              <div x-show="zoomHubs.length > 0">
-                <label class="text-[10px] text-gray-500 font-semibold uppercase">Hub</label>
-                <select x-model="selectedHubId" @change="loadVodChannels(); settings.zoom_hub_id = selectedHubId" class="input-field mt-1 text-xs">
-                  <option value="">— Select Hub —</option>
-                  <template x-for="h in zoomHubs" :key="h.hub_id">
-                    <option :value="h.hub_id" x-text="h.name || h.hub_id"></option>
-                  </template>
-                </select>
+              <p class="text-[11px] text-amber-600">S3 bucket: <span class="font-mono" x-text="projectCreds.aws.s3_bucket || 'local'"></span></p>
+              <p class="text-[10px] text-amber-500 mt-0.5">endpoint_url: http://localhost:4566</p>
+            </div>
+            <button @click="clearLocalStack()"
+              class="text-[11px] text-gray-500 hover:text-gray-700 hover:underline">
+              Switch to real AWS
+            </button>
+          </div>
+
+          <!-- REAL AWS STATE: configured, no endpoint_url -->
+          <div x-show="projectCredStatus?.aws?.configured && !projectCreds.aws.endpoint_url && !awsConfigExpanded">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+              <div>
+                <p class="text-[10px] text-gray-400 font-semibold uppercase">S3 Bucket</p>
+                <p class="text-xs text-gray-700 font-mono mt-0.5" x-text="projectCreds.aws.s3_bucket || '—'"></p>
               </div>
-              <div x-show="selectedHubId && zoomVodChannels.length > 0">
-                <label class="text-[10px] text-gray-500 font-semibold uppercase">VOD Channel</label>
-                <select x-model="selectedVodChannelId" @change="settings.zoom_vod_channel_id = selectedVodChannelId" class="input-field mt-1 text-xs">
-                  <option value="">— Select Channel —</option>
-                  <template x-for="ch in zoomVodChannels" :key="ch.channel_id">
-                    <option :value="ch.channel_id" x-text="ch.name || ch.channel_id"></option>
-                  </template>
-                </select>
+              <div>
+                <p class="text-[10px] text-gray-400 font-semibold uppercase">Region</p>
+                <p class="text-xs text-gray-700 font-mono mt-0.5" x-text="projectCreds.aws.region || '—'"></p>
               </div>
-              <div x-show="selectedHubId" class="flex gap-2">
-                <button @click="loadHubVideos()" class="text-[10px] text-blue-600 hover:underline">View Hub Videos</button>
-                <span class="text-[10px] text-gray-300">|</span>
-                <span x-show="hubVideoCount >= 0" class="text-[10px] text-gray-500" x-text="hubVideoCount + ' videos in hub'"></span>
+            </div>
+            <button @click="awsConfigExpanded = true"
+              class="text-[11px] text-brand-600 hover:text-brand-700 hover:underline">
+              Edit AWS settings
+            </button>
+          </div>
+
+          <!-- CONFIGURE FORM: awsConfigExpanded = true -->
+          <div x-show="awsConfigExpanded" x-transition>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+              <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">S3 Bucket</label>
+                <input type="text" x-model="projectCreds.aws.s3_bucket" placeholder="my-migration-bucket" class="input-field mt-1.5"></div>
+              <div><label class="text-xs text-gray-500 font-semibold uppercase tracking-wide">Region</label>
+                <input type="text" x-model="projectCreds.aws.region" placeholder="us-east-1" class="input-field mt-1.5"></div>
+            </div>
+            <div class="mt-3 flex items-center gap-3">
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" x-model="projectCreds.aws.use_localstack"
+                  @change="projectCreds.aws.endpoint_url = projectCreds.aws.use_localstack ? 'http://localhost:4566' : ''"
+                  class="sr-only peer">
+                <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+              </label>
+              <span class="text-xs text-gray-500">Use LocalStack <code class="text-[10px] bg-gray-100 px-1 py-0.5 rounded">http://localhost:4566</code></span>
+            </div>
+            <div class="mt-4 flex items-center gap-3">
+              <button @click="saveProjectAwsCreds(); awsConfigExpanded = false"
+                :disabled="projectAwsCredsSaving"
+                class="btn-primary text-xs px-4 py-2"
+                x-text="projectAwsCredsSaving ? 'Saving…' : 'Save AWS'"></button>
+              <button x-show="projectCredStatus?.aws?.configured" @click="awsConfigExpanded = false"
+                class="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+              <div x-show="projectAwsCredsMessage" x-transition
+                   class="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg"
+                   :class="projectAwsCredsMessageType==='success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'">
+                <span x-text="projectAwsCredsMessage"></span>
               </div>
             </div>
           </div>
         </div>
+
 
       </div>
 
@@ -2190,6 +2490,18 @@
     <!-- ══════════════════════════════════════════════════════════════════ -->
     <div x-show="currentTab === 'content-analysis'" x-cloak class="fade-in">
 
+      <!-- Non-Kaltura platform warning -->
+      <div x-show="currentProjectPlatform && currentProjectPlatform !== 'kaltura'" class="mb-6 bg-amber-50 border border-amber-200 rounded-xl px-5 py-4 flex items-start gap-3">
+        <svg class="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+        <div>
+          <p class="text-sm font-semibold text-amber-800">Content Analysis is currently supported for Kaltura projects only.</p>
+          <p class="text-xs text-amber-700 mt-0.5">Support for <span class="font-semibold capitalize" x-text="currentProjectPlatform"></span> is coming soon.</p>
+        </div>
+      </div>
+
+      <!-- Kaltura-only content -->
+      <div x-show="!currentProjectPlatform || currentProjectPlatform === 'kaltura'">
+
       <!-- Header -->
       <div class="flex items-center justify-between mb-6">
         <div>
@@ -2198,6 +2510,16 @@
         </div>
         <div class="flex items-center gap-2">
           <span class="text-xs text-gray-400 bg-gray-100 px-3 py-1.5 rounded-lg font-medium" x-text="caTotal + ' videos'"></span>
+          <!-- REACH badge (Item 3) -->
+          <template x-if="caReachLicensed === true">
+            <span class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-green-50 text-green-700 border border-green-200 flex items-center gap-1">
+              <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+              REACH Licensed
+            </span>
+          </template>
+          <template x-if="caReachLicensed === false">
+            <span class="text-xs font-medium px-3 py-1.5 rounded-lg bg-gray-100 text-gray-400 border border-gray-200">No REACH</span>
+          </template>
           <span class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-violet-50 text-violet-700 border border-violet-100" x-text="(currentProjectPlatform || 'Source').charAt(0).toUpperCase() + (currentProjectPlatform || 'source').slice(1) + ' Source'"></span>
         </div>
       </div>
@@ -2344,6 +2666,14 @@
                     <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500" x-text="tag.trim()"></span>
                   </template>
                 </div>
+                <!-- Preview button (Item 6) — only for migrated videos -->
+                <div class="mt-3" x-show="caSelected?.migration_status === 'completed' && caSelected?.zoom_id">
+                  <button @click="openZoomPreview(caSelected.zoom_id)"
+                    class="px-3 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors flex items-center gap-1.5">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    Preview on Zoom
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2381,13 +2711,6 @@
                     <a :href="caDetail.metadata.download_url" target="_blank" rel="noopener" class="text-[10px] text-brand-600 hover:underline truncate">Download original</a>
                   </div>
                 </template>
-                <!-- File size -->
-                <template x-if="caDetail.metadata?.size_bytes > 0">
-                  <div class="col-span-2 flex gap-2 py-1 border-b border-gray-50">
-                    <span class="text-[10px] font-semibold text-gray-400 w-28 flex-shrink-0">File Size</span>
-                    <span class="text-[10px] text-gray-600" x-text="((caDetail.metadata.size_bytes || 0) / 1048576).toFixed(1) + ' MB'"></span>
-                  </div>
-                </template>
                 <!-- Tags as pills -->
                 <template x-if="caDetail.metadata?.tags">
                   <div class="col-span-2 flex gap-2 py-1 border-b border-gray-50 items-start">
@@ -2422,6 +2745,18 @@
                     </template>
                   </div>
                 </div>
+                <!-- Source ID -->
+                <div class="col-span-2 flex gap-2 py-1 border-b border-gray-50">
+                  <span class="text-[10px] font-semibold text-gray-400 w-28 flex-shrink-0">Source ID</span>
+                  <span class="text-[10px] text-gray-600 font-mono" x-text="caDetail?.entry_id || caSelected?.id || '—'"></span>
+                </div>
+                <!-- File size (MB or GB) -->
+                <template x-if="caDetail.metadata?.size_bytes > 0">
+                  <div class="col-span-2 flex gap-2 py-1 border-b border-gray-50">
+                    <span class="text-[10px] font-semibold text-gray-400 w-28 flex-shrink-0">File Size</span>
+                    <span class="text-[10px] text-gray-600" x-text="caDetail.metadata.size_bytes >= 1073741824 ? (caDetail.metadata.size_bytes/1073741824).toFixed(2)+' GB' : (caDetail.metadata.size_bytes/1048576).toFixed(1)+' MB'"></span>
+                  </div>
+                </template>
                 <!-- Custom metadata -->
                 <template x-if="caDetail.metadata?.custom_metadata && Object.keys(caDetail.metadata.custom_metadata).length > 0">
                   <div class="col-span-2 mt-1">
@@ -2544,6 +2879,7 @@
           </div> <!-- /detail content -->
         </div> <!-- /right panel -->
       </div> <!-- /two-column -->
+      </div> <!-- /kaltura-only gate -->
     </div> <!-- /content-analysis tab -->
 
   </main>
@@ -2573,30 +2909,44 @@
           { id: 'audit', label: 'Audit & Recon', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>' },
           { id: 'content-analysis', label: 'Content Analysis', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.876V15.12a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>' },
         ],
+        // Security warnings
+        securityWarning: null,
+
         // Multi-project state
         projects: [],
+        projectsLoadError: '',
         currentProjectSlug: '',
+        _projectCache: {},   // keyed by slug → { status, projectRecord, projectCreds, credStatus }
         showNewProjectModal: false,
-        newProject: { name: '', slug: '', source_platform: '', description: '', data_region: '', creds: { partner_id: '', admin_secret: '', user_id: '', api_key: '', client_id: '', client_secret: '' } },
+        newProject: { name: '', slug: '', source_platform: '', description: '', data_region: '', creds: { partner_id: '', app_token_id: '', app_token: '', client_token: '', account_id: '', client_key: '', client_id: '', client_secret: '', server_url: '' } },
         newProjectError: '',
 
         // Project credentials (per-project)
         projectCreds: {
-          kaltura: { partner_id: '', admin_secret: '', user_id: '' },
+          kaltura: { partner_id: '', app_token_id: '', app_token: '' },
           on24: { client_id: '', client_token: '', account_id: '' },
           brightcove: { account_id: '', client_id: '', client_secret: '' },
           panopto: { server_url: '', client_id: '', client_secret: '' },
+          zoom: { client_id: '', client_secret: '', account_id: '', target_api: 'clips', hub_id: '', vod_channel_id: '' },
+          aws: { s3_bucket: '', region: '', endpoint_url: '', use_localstack: false },
         },
         currentProjectPlatform: '',
         currentProjectDataRegion: '',
-        migKalturaNoCredentials: false,
+        currentProjectKalturaPartnerId: '',  // for Kaltura CDN thumbnail URL (Item 6)
+        projectCredStatus: null,
         videoAssetsModal: false,
         videoAssetsData: null,
         videoAssetsLoading: false,
         projectCredsSaving: false,
         projectCredsMessage: '',
         projectCredsMessageType: '',
-
+        projectZoomCredsSaving: false,
+        projectZoomCredsMessage: '',
+        projectZoomCredsMessageType: '',
+        projectAwsCredsSaving: false,
+        projectAwsCredsMessage: '',
+        projectAwsCredsMessageType: '',
+        awsConfigExpanded: false,
         // Field mapping state
         fieldMappings: [],
         fieldMappingSaving: false,
@@ -2619,6 +2969,8 @@
         status: {}, activities: [], videos: [], videoTotal: 0, videoPage: 1, videoTotalPages: 1,
         videoSearch: '', videoFilter: 'all', selectedVideo: null,
         migrationRunning: false, migrationEvents: [], eventSource: null, _pollTimer: null, _pollIndex: 0, pipelineVideos: {},
+        migrationStalled: false, _stalledTimer: null, _lastEventAt: null,
+        projectSwitching: false,
         // Migration pipeline 3-column state
         migKalturaVideos: [], migKalturaTotal: 0, migKalturaPage: 1, migKalturaTotalPages: 1, migKalturaSearch: '', migKalturaLoading: false, migKalturaExpanded: false, migKalturaPageSize: 30,
         migSelectedVideos: {},
@@ -2639,20 +2991,47 @@
         // Content Analysis state
         caVideos: [], caTotal: 0, caPage: 1, caTotalPages: 1, caSearch: '', caLoading: false,
         caSelected: null, caDetail: null, caDetailLoading: false, caTranscriptSearch: '', caActiveCaptionId: null, caMetaExpanded: true,
+        caReachLicensed: null,  // null=unknown, true/false from API (Item 3)
+        // Zoom Preview modal state (Item 6)
+        showZoomPreviewModal: false, zoomPreviewVideoId: '', zoomPreviewToken: '', zoomPreviewLoading: false, zoomPreviewError: '',
         // Batch migration modal state
         showBatchMigrateModal: false,
         batchMigrateEntryIds: '',
+        // Migrate All modal state
+        migrateAllModalOpen: false,
+        migrateAllTotal: null,
+        migrateAllEstimatedMins: 0,
+        // Pause/resume state
+        migrationPaused: false,
+        // Per-stage counts (updated from SSE)
+        // Completion summary
+        completionSummaryOpen: false,
+        completionSummary: null,
+        failedVideos: [],  // accumulated during run for completion summary
         // Admin page state
         adminAuthed: false,
         adminPin: '',
+        adminPinValue: '',  // stored after verification for X-Admin-PIN header
         adminPinLoading: false,
         adminPinError: '',
         adminProjects: [],
         adminEditSlug: '',
         adminEditName: '',
         adminMessage: '',
+        adminDeleteTarget: null,
+        adminDeleteConfirmName: '',
         chatMessages: [{ role: 'assistant', content: 'Welcome! I can help you understand your migration. Try asking:\n\n- "How many videos are pending?"\n- "Show me failed videos"\n- "Estimate cost for 5000 videos"\n- "What formats are in the library?"', tier: 0 }],
         chatInput: '', chatLoading: false,
+
+        // ── Validator Feedback widget ──
+        feedbackOpen: false,
+        feedbackType: 'bug',
+        feedbackPriority: 'medium',
+        feedbackDescription: '',
+        feedbackEmail: '',
+        feedbackSubmitting: false,
+        feedbackDone: false,
+        feedbackError: '',
         statusChart: null,
 
         // Cloud Readiness state (used by Settings check)
@@ -2695,19 +3074,43 @@
         journeyData: null,
         journeyLoading: false,
 
-        async init() {
-          // Restore tab from URL hash (before auth so direct links work after login)
-          const hashTab = window.location.hash.slice(1);
-          if (hashTab && this._validTabs.includes(hashTab)) this.currentTab = hashTab;
-          else if (!hashTab) window.location.hash = '#dashboard';
+        // Parse hash → tab. Supports both legacy "#tab" and new "#project/tab" formats.
+        _hashTab() {
+          const h = window.location.hash.slice(1);
+          const parts = h.split('/');
+          return parts.length >= 2 ? parts[1] : parts[0];
+        },
+        // Parse hash → project slug (new "#project/tab" format only).
+        _hashProject() {
+          const h = window.location.hash.slice(1);
+          const parts = h.split('/');
+          return parts.length >= 2 ? parts[0] : '';
+        },
+        // Build the canonical hash string for current state.
+        _buildHash(slug, tab) {
+          return slug ? `#${slug}/${tab}` : `#${tab}`;
+        },
 
-          // Restore active project from sessionStorage
+        async init() {
+          // Restore tab + project from URL hash (supports #project/tab and legacy #tab)
+          const hashTab = this._hashTab();
+          const hashSlug = this._hashProject();
+          if (hashTab && this._validTabs.includes(hashTab)) this.currentTab = hashTab;
+          else if (!hashTab) window.location.hash = this._buildHash(this.currentProjectSlug, 'dashboard');
+
+          // Restore active project: URL hash > sessionStorage
           const savedSlug = sessionStorage.getItem('vm_project');
-          if (savedSlug) this.currentProjectSlug = savedSlug;
+          if (hashSlug) this.currentProjectSlug = hashSlug;
+          else if (savedSlug) this.currentProjectSlug = savedSlug;
 
           // Back/forward navigation
           window.addEventListener('hashchange', () => {
-            const tab = window.location.hash.slice(1);
+            const tab = this._hashTab();
+            const slug = this._hashProject();
+            if (slug && slug !== this.currentProjectSlug && this.projects.find(p => p.slug === slug)) {
+              this.currentProjectSlug = slug;
+              sessionStorage.setItem('vm_project', slug);
+            }
             if (this._validTabs.includes(tab) && tab !== this.currentTab) {
               this.currentTab = tab;
             }
@@ -2730,11 +3133,13 @@
 
           await this.loadProjects();
           await this._loadDashboard();
+          this.checkSecurityStatus();
         },
 
         switchTab(tab) {
           this.currentTab = tab;
-          if (window.location.hash !== '#' + tab) window.location.hash = '#' + tab;
+          const h = this._buildHash(this.currentProjectSlug, tab);
+          if (window.location.hash !== h) window.location.hash = h;
         },
 
         _onTabActivate(tab) {
@@ -2764,6 +3169,8 @@
               this.loginPass = '';
               await this.loadProjects();
               await this._loadDashboard();
+              await this.switchProject();   // ensure project data loads without manual dropdown interaction
+              this.checkSecurityStatus();
             } else {
               this.loginError = d.detail || 'Invalid credentials';
             }
@@ -2775,7 +3182,18 @@
           this.authenticated = false;
           this.authToken = null;
           this.authUser = '';
+          this.securityWarning = null;
           sessionStorage.removeItem('vm_token');
+        },
+
+        async checkSecurityStatus() {
+          try {
+            const r = await fetch('/api/auth/security-status', { headers: this._authHeaders() });
+            if (r.ok) {
+              const d = await r.json();
+              this.securityWarning = d.warning || null;
+            }
+          } catch(e) {}
         },
 
         _authHeaders() {
@@ -2785,17 +3203,30 @@
         },
 
         async _loadDashboard() {
-          await this.loadStatus(); await this.loadActivity(); await this.loadVideos();
-          await this.loadSettings();
-          await this.fetchProjectRecord(this.currentProjectSlug);
-          await this.loadProjectCreds();
+          // Fire all independent requests in parallel — cuts initial load from ~6s to ~1.5s
+          const [,,,,,, credRes] = await Promise.all([
+            this.loadStatus(),
+            this.loadActivity(),
+            this.loadVideos(),
+            this.loadSettings(),
+            this.fetchProjectRecord(this.currentProjectSlug),
+            this.loadProjectCreds(),
+            fetch(`/api/projects/${this.currentProjectSlug}/credential-status`, { headers: this._authHeaders() }),
+          ]);
+          if (credRes.ok) this.projectCredStatus = await credRes.json();
           this.$watch('currentTab', (tab) => {
             // Keep URL hash in sync for changes arriving from hashchange listener
-            if (window.location.hash !== '#' + tab) window.location.hash = '#' + tab;
+            const h = this._buildHash(this.currentProjectSlug, tab);
+            if (window.location.hash !== h) window.location.hash = h;
             this._onTabActivate(tab);
           });
           this.$watch('currentProjectSlug', (slug) => {
-            if (slug) sessionStorage.setItem('vm_project', slug);
+            if (slug) {
+              sessionStorage.setItem('vm_project', slug);
+              // Update hash so the URL stays bookmarkable per-project
+              const h = this._buildHash(slug, this.currentTab);
+              if (window.location.hash !== h) window.location.hash = h;
+            }
           });
           // Load data for whichever tab is active on initial load
           this._onTabActivate(this.currentTab);
@@ -2803,20 +3234,29 @@
 
         // ── Project Management ──
         async loadProjects() {
+          this.projectsLoadError = '';
           try {
             const r = await fetch('/api/projects', { headers: this._authHeaders() });
             if (r.ok) {
               const d = await r.json();
               this.projects = d.projects || [];
               if (this.projects.length > 0 && !this.currentProjectSlug) {
-                // Prefer sessionStorage-saved project if it still exists
+                // Prefer URL hash project, then sessionStorage, then first project
+                const hashSlug = this._hashProject();
                 const saved = sessionStorage.getItem('vm_project');
-                const restoredProject = saved && this.projects.find(p => p.slug === saved);
-                this.currentProjectSlug = restoredProject ? saved : this.projects[0].slug;
+                const preferred = hashSlug || saved;
+                const found = preferred && this.projects.find(p => p.slug === preferred);
+                const defaultProj = this.projects.find(p => p.name === 'Default') || this.projects[0];
+                this.currentProjectSlug = found ? preferred : defaultProj.slug;
                 if (this.currentTab === 'content-analysis') this.loadCaVideos();
               }
+            } else {
+              const d = await r.json().catch(() => ({}));
+              this.projectsLoadError = d.detail || `Failed to load projects (${r.status})`;
             }
-          } catch(e) {}
+          } catch(e) {
+            this.projectsLoadError = 'Network error — could not load projects';
+          }
         },
         async fetchProjectRecord(slug) {
           try {
@@ -2826,32 +3266,136 @@
               const proj = d.project || {};
               this.currentProjectPlatform = proj.source_platform || '';
               this.currentProjectDataRegion = (proj.config_json || {}).data_region || proj.data_region || '';
+              // Kaltura partner_id for CDN thumbnail fallback (Item 6)
+              this.currentProjectKalturaPartnerId = (proj.credentials?.kaltura?.partner_id) || '';
+            } else {
+              this.currentProjectPlatform = '';
+              this.currentProjectDataRegion = '';
+              this.currentProjectKalturaPartnerId = '';
             }
-          } catch(e) {}
+          } catch(e) {
+            this.currentProjectPlatform = '';
+            this.currentProjectDataRegion = '';
+            this.currentProjectKalturaPartnerId = '';
+          }
+        },
+        _applyProjectRecord(rec) {
+          this.currentProjectPlatform = rec.platform || '';
+          this.currentProjectDataRegion = rec.dataRegion || '';
+          this.currentProjectKalturaPartnerId = rec.kalturaPartnerId || '';
         },
         async switchProject() {
-          // Clear project-scoped state
+          this.projectSwitching = true;
+          // ── Synchronous wipe — runs BEFORE any await so the screen
+          //    never shows a previous project's data ──
+          this.currentProjectPlatform = '';
+          this.currentProjectDataRegion = '';
+          this.currentProjectKalturaPartnerId = '';
+          // Shared / top-level
+          this.status = null;
+          this.projectCreds = null;
+          // Source column
+          this.migKalturaVideos = [];
+          this.migKalturaTotal = 0;
+          this.migKalturaPage = 1;
+          this.migKalturaTotalPages = 1;
+          this.migKalturaSearch = '';
+          this.migSelectedVideos = {};
+          // In-transit / migration state
+          this.pipelineVideos = {};
+          this.migrationRunning = false;
+          this.migrationEvents = [];
+          this.batchMigrateEntryIds = '';
+          this.videoSearch = '';
+          this.videoFilter = '';
+          // Zoom column
+          this.projectCredStatus = null;
+          this.zoomCompletedVideos = [];
+          this.zoomFailedVideos = [];
+          this.zoomCompletedTotal = 0;
+          this.zoomCompletedPage = 1;
+          this.zoomCompletedTotalPages = 1;
+          this.zoomLiveClips = [];
+          this.zoomLiveClipsTotal = 0;
+          this.zoomHubs = [];
+          this.zoomVodChannels = [];
+          this.selectedHubId = null;
+          this.selectedVodChannelId = null;
+          this.hubVideoCount = 0;
+          // Field mappings
+          this.fieldMappings = [];
+          // Settings tab
+          this.clientTokens = [];
+          this.costProjection = null;
+          this.activeGates = [];
+          this.gateLoading = false;
+          // Dry Run tab
           this.dryRunManifest = null;
           this.dryRunManifestCsv = '';
           this.dryRunReport = null;
           this.dryRunEntryIds = '';
           this.dryRunCheckpoint = null;
           this.dryRunCaptionStats = null;
-          this.migKalturaVideos = [];
-          this.migKalturaPage = 1;
-          this.migSelectedVideos = {};
-          // Fetch fresh project record from DB to get authoritative platform/region
-          await this.fetchProjectRecord(this.currentProjectSlug);
-          await this.loadStatus();
-          await this.loadProjectCreds();
-          if (this.currentTab === 'settings') { this.loadClientTokens(); this.loadCostProjection(); }
+          this.dryRunBatchRunning = false;
+          // Audit & Recon tab
+          this.auditTrail = [];
+          this.auditTrailPage = 1;
+          this.auditTrailTotalPages = 1;
+          this.auditTrailTotal = 0;
+          this.reconData = null;
+          this.journeyVideos = [];
+          this.journeyData = null;
+          this.journeyVideoId = '';
+          // Dashboard tab
+          this.activities = [];
+          this.videos = [];
+          this.videoPage = 1;
+          // Content Analysis tab
+          this.caSearch = '';
+          this.caTotal = 0;
+          this.caPage = 1;
+          this.caTotalPages = 1;
+          // ── Fetch new project data — parallel, with per-project cache ──
+          const slug = this.currentProjectSlug;
+          if (this._projectCache[slug]) {
+            // Instant re-switch from cache
+            const c = this._projectCache[slug];
+            this._applyProjectRecord(c.projectRecord);
+            this.status = c.status;
+            this.projectCreds = c.projectCreds;
+            this.projectCredStatus = c.credStatus;
+          } else {
+            // First visit — fetch all 4 in parallel
+            try {
+              const [, , , credRes] = await Promise.all([
+                this.fetchProjectRecord(slug),
+                this.loadStatus(),
+                this.loadProjectCreds(),
+                fetch(`/api/projects/${slug}/credential-status`, { headers: this._authHeaders() })
+              ]);
+              if (credRes.ok) this.projectCredStatus = await credRes.json();
+              // Store in cache for instant re-switch later
+              this._projectCache[slug] = {
+                projectRecord: { platform: this.currentProjectPlatform, dataRegion: this.currentProjectDataRegion, kalturaPartnerId: this.currentProjectKalturaPartnerId },
+                status: this.status,
+                projectCreds: this.projectCreds,
+                credStatus: this.projectCredStatus,
+              };
+            } catch(e) {
+              console.warn('switchProject fetch error (non-fatal):', e);
+            }
+          }
+          if (this.currentTab === 'dashboard') { this.loadActivity(); this.loadVideos(); }
+          if (this.currentTab === 'settings') { this.loadClientTokens(); this.loadCostProjection(); if (this.projectCredStatus?.zoom?.configured) this.loadZoomHubs(); }
           if (this.currentTab === 'field-mapping') this.loadFieldMappings();
           if (this.currentTab === 'migration') { this.loadMigKaltura(); this.loadZoomCompleted(); }
           if (this.currentTab === 'dryrun') this.loadDryRunCheckpoint();
+          if (this.currentTab === 'audit') { this.loadReconciliation(); this.loadAuditTrail(); this.loadJourneyVideos(); }
           if (this.currentTab === 'content-analysis') {
             this.caVideos = []; this.caSelected = null; this.caDetail = null;
             this.loadCaVideos();
           }
+          this.projectSwitching = false;
         },
         async createProject() {
           this.newProjectError = '';
@@ -2872,12 +3416,16 @@
               // Auto-save credentials if any were entered
               const hasAnyCred = Object.values(savedCreds).some(v => v && v.trim());
               if (hasAnyCred) {
-                const credFields = savedPlatform === 'kaltura'
-                  ? { partner_id: savedCreds.partner_id, admin_secret: savedCreds.admin_secret, user_id: savedCreds.user_id }
-                  : { api_key: savedCreds.api_key, client_id: savedCreds.client_id, client_secret: savedCreds.client_secret };
+                const platformCredFields = {
+                  kaltura:    { partner_id: savedCreds.partner_id, app_token_id: savedCreds.app_token_id, app_token: savedCreds.app_token },
+                  on24:       { client_token: savedCreds.client_token, account_id: savedCreds.account_id, client_key: savedCreds.client_key },
+                  brightcove: { account_id: savedCreds.account_id, client_id: savedCreds.client_id, client_secret: savedCreds.client_secret },
+                  panopto:    { server_url: savedCreds.server_url, client_id: savedCreds.client_id, client_secret: savedCreds.client_secret },
+                };
+                const credFields = platformCredFields[savedPlatform] || {};
                 await fetch(`/api/projects/${d.project.slug}/credentials`, {
                   method: 'PUT', headers: this._authHeaders(),
-                  body: JSON.stringify({ service: savedPlatform === 'kaltura' ? 'kaltura' : savedPlatform, credentials: credFields })
+                  body: JSON.stringify({ service: savedPlatform, credentials: credFields })
                 });
               }
               await this.switchProject();
@@ -2890,19 +3438,96 @@
         // ── Project Credentials ──
         async loadProjectCreds() {
           if (!this.currentProjectSlug) return;
+          this.awsConfigExpanded = false;
           try {
             const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, { headers: this._authHeaders() });
             if (r.ok) {
               const d = await r.json();
               const c = d.credentials || {};
+              const kal = c.kaltura || {};
               this.projectCreds = {
-                kaltura: { partner_id: '', admin_secret: '', user_id: '', ...(c.kaltura || {}) },
+                kaltura: {
+                  partner_id: kal.partner_id || '',
+                  app_token_id: kal.app_token_id || kal.admin_secret || '',
+                  app_token: kal.app_token || kal.user_id || '',
+                },
                 on24: { client_id: '', client_token: '', account_id: '', ...(c.on24 || {}) },
                 brightcove: { account_id: '', client_id: '', client_secret: '', ...(c.brightcove || {}) },
                 panopto: { server_url: '', client_id: '', client_secret: '', ...(c.panopto || {}) },
+                zoom: { client_id: '', client_secret: '', account_id: '', target_api: 'clips', hub_id: '', vod_channel_id: '', ...(c.zoom || {}) },
+                aws: { s3_bucket: '', region: '', endpoint_url: '', use_localstack: !!(c.aws?.endpoint_url), ...(c.aws || {}) },
               };
+              // Restore hub/channel selection from per-project zoom creds
+              this.selectedHubId = this.projectCreds.zoom.hub_id || '';
+              this.selectedVodChannelId = this.projectCreds.zoom.vod_channel_id || '';
             }
           } catch(e) {}
+        },
+        async saveProjectZoomCreds() {
+          if (!this.currentProjectSlug) return;
+          this.projectZoomCredsSaving = true;
+          this.projectZoomCredsMessage = '';
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
+              method: 'PUT', headers: this._authHeaders(),
+              body: JSON.stringify({ service: 'zoom', credentials: this.projectCreds.zoom })
+            });
+            if (r.ok) {
+              this.projectZoomCredsMessage = 'Zoom credentials saved';
+              this.projectZoomCredsMessageType = 'success';
+              await this.loadProjectCreds();
+              const _csrZ = await fetch(`/api/projects/${this.currentProjectSlug}/credential-status`, { headers: this._authHeaders() });
+              if (_csrZ.ok) this.projectCredStatus = await _csrZ.json();
+              this._invalidateProjectPipeline();
+            } else {
+              const d = await r.json();
+              this.projectZoomCredsMessage = d.detail || 'Save failed';
+              this.projectZoomCredsMessageType = 'error';
+            }
+          } catch(e) { this.projectZoomCredsMessage = 'Connection error'; this.projectZoomCredsMessageType = 'error'; }
+          this.projectZoomCredsSaving = false;
+          setTimeout(() => { this.projectZoomCredsMessage = ''; }, 4000);
+        },
+        async saveProjectAwsCreds() {
+          if (!this.currentProjectSlug) return;
+          this.projectAwsCredsSaving = true;
+          this.projectAwsCredsMessage = '';
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
+              method: 'PUT', headers: this._authHeaders(),
+              body: JSON.stringify({ service: 'aws', credentials: this.projectCreds.aws })
+            });
+            if (r.ok) {
+              this.projectAwsCredsMessage = 'AWS credentials saved';
+              this.projectAwsCredsMessageType = 'success';
+              await this.loadProjectCreds();
+              const _csrA = await fetch(`/api/projects/${this.currentProjectSlug}/credential-status`, { headers: this._authHeaders() });
+              if (_csrA.ok) this.projectCredStatus = await _csrA.json();
+              this._invalidateProjectPipeline();
+            } else {
+              const d = await r.json();
+              this.projectAwsCredsMessage = d.detail || 'Save failed';
+              this.projectAwsCredsMessageType = 'error';
+            }
+          } catch(e) { this.projectAwsCredsMessage = 'Connection error'; this.projectAwsCredsMessageType = 'error'; }
+          this.projectAwsCredsSaving = false;
+          setTimeout(() => { this.projectAwsCredsMessage = ''; }, 4000);
+        },
+        async saveLocalStackImmediate() {
+          this.projectCreds.aws.use_localstack = true;
+          this.projectCreds.aws.endpoint_url = 'http://localhost:4566';
+          await this.saveProjectAwsCreds();
+        },
+        clearLocalStack() {
+          this.projectCreds.aws.use_localstack = false;
+          this.projectCreds.aws.endpoint_url = '';
+          this.awsConfigExpanded = true;
+        },
+        _invalidateProjectPipeline() {
+          // Clear the per-project cache so next switchProject re-fetches fresh data
+          delete this._projectCache[this.currentProjectSlug];
+          // Hint to reload migration panel with fresh credentials
+          if (this.currentTab === 'migration') this.loadMigKaltura();
         },
         async saveProjectCreds() {
           if (!this.currentProjectSlug) return;
@@ -2916,13 +3541,13 @@
             const proj = this.projects.find(p => p.slug === this.currentProjectSlug) || {};
             const projectUpdates = {};
             if (proj.source_platform !== platform) projectUpdates.source_platform = platform;
-            if ((proj.data_region || '') !== this.currentProjectDataRegion) projectUpdates.data_region = this.currentProjectDataRegion;
+            // data_region is read-only after creation — not sent in updates
             if (Object.keys(projectUpdates).length > 0) {
               await fetch(`/api/projects/${this.currentProjectSlug}`, {
                 method: 'PUT', headers: this._authHeaders(),
                 body: JSON.stringify(projectUpdates)
               });
-              if (proj) { proj.source_platform = platform; proj.data_region = this.currentProjectDataRegion; }
+              if (proj) { proj.source_platform = platform; }
             }
 
             // Only save credentials if a platform is actually selected
@@ -2934,7 +3559,10 @@
               if (r.ok) {
                 this.projectCredsMessage = 'Source credentials saved';
                 this.projectCredsMessageType = 'success';
+                delete this._projectCache[this.currentProjectSlug];
                 await this.loadProjectCreds();
+                const _csrS = await fetch(`/api/projects/${this.currentProjectSlug}/credential-status`, { headers: this._authHeaders() });
+                if (_csrS.ok) this.projectCredStatus = await _csrS.json();
                 if (this.currentTab === 'migration') this.loadMigKaltura();
               } else {
                 const d = await r.json();
@@ -3073,8 +3701,14 @@
           } catch(e) {}
         },
 
-        async loadStatus() { try { const r = await fetch('/api/status', { headers: this._authHeaders() }); if (r.ok) this.status = await r.json(); } catch(e) {} },
-        async loadActivity() { try { const r = await fetch('/api/activity', { headers: this._authHeaders() }); if (r.ok) { const d = await r.json(); this.activities = d.activities || []; } } catch(e) {} },
+        async loadStatus() {
+          if (!this.currentProjectSlug) return;
+          try { const r = await fetch(`/api/status?project_slug=${encodeURIComponent(this.currentProjectSlug)}`, { headers: this._authHeaders() }); if (r.ok) this.status = await r.json(); } catch(e) {}
+        },
+        async loadActivity() {
+          if (!this.currentProjectSlug) return;
+          try { const r = await fetch(`/api/activity?project_slug=${encodeURIComponent(this.currentProjectSlug)}`, { headers: this._authHeaders() }); if (r.ok) { const d = await r.json(); this.activities = d.activities || []; } } catch(e) {}
+        },
         async loadVideos() {
           try {
             const p = new URLSearchParams({ page: this.videoPage, page_size: 50, status: this.videoFilter, search: this.videoSearch });
@@ -3135,7 +3769,7 @@
         async loadMigKaltura() {
           if (!this.currentProjectSlug) return;
           this.migKalturaLoading = true;
-          this.migKalturaNoCredentials = false;
+          this.migKalturaVideos = [];
           try {
             const ps = Math.min(this.migKalturaPageSize, 100);
             const params = new URLSearchParams({ page: this.migKalturaPage, page_size: ps });
@@ -3148,11 +3782,7 @@
               this.migKalturaTotalPages = d.total_pages || 1;
               if (this.migKalturaPage > this.migKalturaTotalPages) this.migKalturaPage = this.migKalturaTotalPages;
             } else {
-              const d = await r.json().catch(() => ({}));
-              if (d.error === 'no_credentials') {
-                this.migKalturaNoCredentials = true;
-                this.migKalturaVideos = [];
-              }
+              this.migKalturaVideos = [];
             }
           } catch(e) {}
           this.migKalturaLoading = false;
@@ -3179,9 +3809,10 @@
           }
         },
         async loadZoomCompleted() {
+          if (!this.projectCredStatus?.zoom?.configured) return;  // panel x-show handles display
           try {
-            // Load migration history scoped to current project
             const baseParams = this.currentProjectSlug ? { project_slug: this.currentProjectSlug } : {};
+            // Load migration history (always — scoped to project)
             const params = new URLSearchParams({ ...baseParams, page: this.zoomCompletedPage, page_size: 30, status: 'completed' });
             const r = await fetch('/api/videos?' + params, { headers: this._authHeaders() });
             if (r.ok) {
@@ -3190,18 +3821,22 @@
               this.zoomCompletedTotal = d.total || 0;
               this.zoomCompletedTotalPages = d.total_pages || 1;
             }
-            // Also load failed
+            // Load failed
             const f = await fetch('/api/videos?' + new URLSearchParams({ ...baseParams, page: 1, page_size: 50, status: 'failed' }), { headers: this._authHeaders() });
             if (f.ok) {
               const fd = await f.json();
               this.zoomFailedVideos = fd.videos || [];
             }
-            // Also fetch live clips from Zoom API
-            const zr = await fetch('/api/zoom/clips?page_size=50', { headers: this._authHeaders() });
+            // Fetch live Zoom clips — let the backend decide whether creds exist
+            // (backend checks DB creds first, then env-var fallback)
+            const zr = await fetch(`/api/zoom/clips?page_size=50&project_slug=${encodeURIComponent(this.currentProjectSlug)}`, { headers: this._authHeaders() });
             if (zr.ok) {
               const zd = await zr.json();
               this.zoomLiveClips = zd.clips || [];
               this.zoomLiveClipsTotal = zd.total_records || this.zoomLiveClips.length;
+            } else {
+              this.zoomLiveClips = [];
+              this.zoomLiveClipsTotal = 0;
             }
           } catch(e) {}
         },
@@ -3210,11 +3845,68 @@
           this.batchMigrateEntryIds = '';
           this.showBatchMigrateModal = true;
         },
+        async openMigrateAllModal() {
+          this.migrateAllModalOpen = true;
+          this.migrateAllTotal = null;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/discover?page=1&page_size=1`, { headers: this._authHeaders() });
+            if (r.ok) { const d = await r.json(); this.migrateAllTotal = d.total ?? null; }
+          } catch(e) {}
+          const vpr = parseInt(this.settings?.batch_size) || 10;
+          const parallel = parseInt(this.settings?.max_concurrency) || 3;
+          if (this.migrateAllTotal) {
+            this.migrateAllEstimatedMins = Math.max(1, Math.ceil((this.migrateAllTotal / parallel) * 2 / 60));
+          }
+        },
+        async startMigrateAll() {
+          this.migrationRunning = true;
+          this.migrationPaused = false;
+          this.migrationEvents = [];
+          this.failedVideos = [];
+          this.migrateAllModalOpen = false;
+          try {
+            await fetch('/api/migration/start', {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({
+                project_slug: this.currentProjectSlug,
+                batch_size: parseInt(this.settings.batch_size) || 10,
+                resumable: true,
+              }),
+            });
+            this.connectSSE();
+          } catch(e) {
+            this.migrationRunning = false;
+          }
+        },
+        async pauseMigration() {
+          try {
+            await fetch('/api/migration/pause', {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({ project_slug: this.currentProjectSlug }),
+            });
+          } catch(e) {}
+        },
+        async resumeMigration() {
+          this.migrationPaused = false;
+          this.migrationRunning = true;
+          try {
+            await fetch('/api/migration/resume', {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({
+                project_slug: this.currentProjectSlug,
+                batch_size: parseInt(this.settings.batch_size) || 10,
+              }),
+            });
+            this.connectSSE();
+          } catch(e) { this.migrationRunning = false; }
+        },
         async startBatchMigration() {
           const rawIds = this.batchMigrateEntryIds.trim();
           const video_ids = rawIds ? rawIds.split('\n').map(s => s.trim()).filter(Boolean) : null;
           this.migrationRunning = true;
+          this.migrationPaused = false;
           this.migrationEvents = [];
+          this.failedVideos = [];
           this.showBatchMigrateModal = false;
           try {
             await fetch(`/api/projects/${this.currentProjectSlug}/migration/start`, {
@@ -3243,6 +3935,7 @@
             });
             if (r.ok) {
               this.adminAuthed = true;
+              this.adminPinValue = this.adminPin;  // store for X-Admin-PIN header
               this.adminPin = '';
               await this.loadAdminProjects();
             } else {
@@ -3250,6 +3943,9 @@
             }
           } catch(e) { this.adminPinError = 'Connection error'; }
           this.adminPinLoading = false;
+        },
+        _adminHeaders() {
+          return { ...this._authHeaders(), 'X-Admin-PIN': this.adminPinValue };
         },
         async loadAdminProjects() {
           try {
@@ -3260,13 +3956,47 @@
             }
           } catch(e) {}
         },
-        async adminDeleteProject(slug) {
-          if (!confirm(`Delete project "${slug}"? This cannot be undone.`)) return;
+        adminConfirmDelete(proj) {
+          this.adminDeleteTarget = proj;
+          this.adminDeleteConfirmName = '';
+          this.adminMessage = '';
+        },
+        async adminResetProjectData(proj) {
+          if (!confirm(`Reset "${proj.name}"?\n\nThis will permanently delete:\n• All credentials\n• All migration history\n• Source platform setting\n\nThe project itself will remain. This cannot be undone.`)) return;
+          try {
+            const r = await fetch('/api/admin/reset-project-data', {
+              method: 'POST',
+              headers: this._adminHeaders(),
+              body: JSON.stringify({ project_slug: proj.slug }),
+            });
+            const d = await r.json().catch(() => ({}));
+            if (r.ok) {
+              this.adminMessage = `Reset "${proj.name}" — all credentials and migration history wiped.`;
+              await this.loadAdminProjects();
+              await this.loadProjects();
+              // If this was the active project, reload it clean
+              if (this.currentProjectSlug === proj.slug) {
+                await this.switchProject();
+              }
+            } else {
+              this.adminMessage = 'Error: ' + (d.detail || 'Reset failed');
+            }
+          } catch(e) { this.adminMessage = 'Error: Connection error'; }
+        },
+        async adminDeleteProject() {
+          if (!this.adminDeleteTarget || this.adminDeleteConfirmName !== this.adminDeleteTarget.name) return;
+          const proj = this.adminDeleteTarget;
           this.adminMessage = '';
           try {
-            const r = await fetch(`/api/projects/${slug}`, { method: 'DELETE', headers: this._authHeaders() });
+            const r = await fetch(`/api/projects/${proj.slug}`, {
+              method: 'DELETE',
+              headers: this._adminHeaders(),
+              body: JSON.stringify({ project_name: proj.name }),
+            });
             if (r.ok) {
-              this.adminMessage = `Deleted project: ${slug}`;
+              this.adminMessage = `Deleted project: ${proj.slug}`;
+              this.adminDeleteTarget = null;
+              this.adminDeleteConfirmName = '';
               await this.loadAdminProjects();
               await this.loadProjects();
             } else {
@@ -3280,7 +4010,7 @@
           this.adminMessage = '';
           try {
             const r = await fetch(`/api/projects/${slug}`, {
-              method: 'PUT', headers: this._authHeaders(),
+              method: 'PUT', headers: this._adminHeaders(),
               body: JSON.stringify({ name: this.adminEditName.trim() }),
             });
             if (r.ok) {
@@ -3318,6 +4048,7 @@
               body: JSON.stringify({
                 video_ids: ids,
                 batch_size: parseInt(this.settings.batch_size) || 10,
+                project_slug: this.currentProjectSlug,
               }),
             });
             this.connectSSE();
@@ -3325,37 +4056,80 @@
           } catch(e) { this.migrationRunning = false; }
         },
         async stopMigration() {
-          try { await fetch('/api/migration/stop', { method: 'POST', headers: this._authHeaders() }); } catch(e) {}
+          try { await fetch('/api/migration/stop', {
+            method: 'POST', headers: this._authHeaders(),
+            body: JSON.stringify({ project_slug: this.currentProjectSlug }),
+          }); } catch(e) {}
           this.migrationRunning = false;
+          this.migrationPaused = false;
           if (this.eventSource) { this.eventSource.close(); this.eventSource = null; }
           if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
         },
         async retryFailed() {
-          try { const r = await fetch('/api/migration/retry', { method: 'POST', headers: this._authHeaders() }); const d = await r.json();
+          if (!this.currentProjectSlug) return;
+          try { const r = await fetch(`/api/migration/retry?project_slug=${encodeURIComponent(this.currentProjectSlug)}`, { method: 'POST', headers: this._authHeaders() }); const d = await r.json();
             this.migrationEvents.push({ type: 'info', message: `Retry: ${d.message || JSON.stringify(d)}`, timestamp: new Date().toISOString() });
           } catch(e) {}
         },
 
-        connectSSE() {
+        async connectSSE() {
           if (this.eventSource) this.eventSource.close();
-          this.eventSource = new EventSource(`/api/migration/stream?token=${this.authToken}`);
+          if (this._stalledTimer) { clearInterval(this._stalledTimer); this._stalledTimer = null; }
+          this.migrationStalled = false;
+          this._lastEventAt = Date.now();
+          // Fetch a short-lived SSE token (60s, single-use) — avoids putting the long-lived JWT in server logs
+          let sseToken = '';
+          try {
+            const tr = await fetch('/api/migration/stream-token', { method: 'POST', headers: this._authHeaders() });
+            if (tr.ok) { sseToken = (await tr.json()).token; }
+          } catch(e) { console.warn('SSE token fetch failed', e); }
+          if (!sseToken) { this.startPolling(); return; }
+          this.eventSource = new EventSource(`/api/migration/stream?sse_token=${encodeURIComponent(sseToken)}`);
           let connected = false;
           this.eventSource.onopen = () => { connected = true; };
+          // Stall detector: if migration running but no meaningful event in 90s, show warning
+          this._stalledTimer = setInterval(() => {
+            if (this.migrationRunning && !this.migrationPaused && (Date.now() - this._lastEventAt) > 90000) {
+              this.migrationStalled = true;
+            }
+          }, 10000);
           this.eventSource.onmessage = (event) => {
             try {
               const data = JSON.parse(event.data);
               if (data.type === 'heartbeat') return;
+              this._lastEventAt = Date.now();
+              this.migrationStalled = false;
               data.timestamp = new Date().toISOString();
               this.migrationEvents.push(data);
               this._updatePipelineFromEvent(data);
-              if (data.type === 'migration_completed' || data.type === 'migration_stopped') {
-                this.migrationRunning = false; this.eventSource.close(); this.eventSource = null;
+              if (data.type === 'migration_completed') {
+                this.migrationRunning = false;
+                this.migrationPaused = false;
+                this.completionSummary = {
+                  total: data.total || 0,
+                  completed: data.completed || 0,
+                  failed: data.failed || 0,
+                  failedVideos: this.failedVideos.slice(),
+                };
+                this.completionSummaryOpen = true;
+                this.failedVideos = [];
+                if (this.eventSource) { this.eventSource.close(); this.eventSource = null; }
                 this.loadStatus();
+              } else if (data.type === 'migration_stopped') {
+                this.migrationRunning = false;
+                this.migrationPaused = false;
+                if (this.eventSource) { this.eventSource.close(); this.eventSource = null; }
+                this.loadStatus();
+              } else if (data.type === 'migration_paused') {
+                this.migrationRunning = false;
+                this.migrationPaused = true;
+                if (this.eventSource) { this.eventSource.close(); this.eventSource = null; }
               }
               this.$nextTick(() => { const l = document.getElementById('logPanel'); if (l) l.scrollTop = l.scrollHeight; });
             } catch(e) {}
           };
           this.eventSource.onerror = () => {
+            if (this._stalledTimer) { clearInterval(this._stalledTimer); this._stalledTimer = null; }
             if (this.eventSource) { this.eventSource.close(); this.eventSource = null; }
             if (!connected) { this.startPolling(); } else { this.migrationRunning = false; }
           };
@@ -3388,7 +4162,7 @@
           this.chatMessages.push({ role: 'user', content: msg }); this.chatInput = ''; this.chatLoading = true;
           this.$nextTick(() => { const el = document.getElementById('chatMessages'); if (el) el.scrollTop = el.scrollHeight; });
           try {
-            const r = await fetch('/api/chat', { method: 'POST', headers: this._authHeaders(), body: JSON.stringify({ message: msg }) });
+            const r = await fetch('/api/chat', { method: 'POST', headers: this._authHeaders(), body: JSON.stringify({ message: msg, project_slug: this.currentProjectSlug }) });
             const d = await r.json();
             this.chatMessages.push({ role: 'assistant', content: d.response, tier: d.tier });
           } catch(e) { this.chatMessages.push({ role: 'assistant', content: 'Error connecting to server.', tier: 0 }); }
@@ -3404,13 +4178,7 @@
               for (const [key, val] of Object.entries(d)) {
                 if (key in this.settings) this.settings[key] = val || '';
               }
-              // Restore hub/channel selection from persisted settings
-              if (this.settings.zoom_hub_id) {
-                this.selectedHubId = this.settings.zoom_hub_id;
-              }
-              if (this.settings.zoom_vod_channel_id) {
-                this.selectedVodChannelId = this.settings.zoom_vod_channel_id;
-              }
+              // Hub/channel selection is now restored from per-project zoom creds in loadProjectCreds()
             }
           } catch(e) { /* settings load failed silently */ }
         },
@@ -3497,9 +4265,9 @@
         },
         async loadReconciliation() {
           this.reconLoading = true;
+          if (!this.currentProjectSlug) { this.reconLoading = false; return; }
           try {
-            const p = new URLSearchParams();
-            if (this.currentProjectSlug) p.set('project_slug', this.currentProjectSlug);
+            const p = new URLSearchParams({ project_slug: this.currentProjectSlug });
             const r = await fetch(`/api/audit/reconciliation?${p}`, { headers: this._authHeaders() });
             if (r.ok) this.reconData = await r.json();
           } catch(e) {}
@@ -3529,8 +4297,9 @@
 
         // ── Zoom Events Hub/Channel Management ──
         async loadZoomHubs() {
+          if (!this.currentProjectSlug) return;
           try {
-            const r = await fetch('/api/zoom/hubs', { headers: this._authHeaders() });
+            const r = await fetch(`/api/zoom/hubs?project_slug=${encodeURIComponent(this.currentProjectSlug)}`, { headers: this._authHeaders() });
             if (r.ok) {
               const d = await r.json();
               this.zoomHubs = d.hubs || [];
@@ -3542,9 +4311,9 @@
           } catch(e) { alert('Failed to load hubs: ' + e.message); }
         },
         async loadVodChannels() {
-          if (!this.selectedHubId) { this.zoomVodChannels = []; return; }
+          if (!this.selectedHubId || !this.currentProjectSlug) { this.zoomVodChannels = []; return; }
           try {
-            const r = await fetch(`/api/zoom/hubs/${this.selectedHubId}/vod_channels`, { headers: this._authHeaders() });
+            const r = await fetch(`/api/zoom/hubs/${this.selectedHubId}/vod_channels?project_slug=${encodeURIComponent(this.currentProjectSlug)}`, { headers: this._authHeaders() });
             if (r.ok) {
               const d = await r.json();
               this.zoomVodChannels = d.vod_channels || [];
@@ -3552,9 +4321,9 @@
           } catch(e) { console.warn('Failed to load VOD channels:', e); }
         },
         async loadHubVideos() {
-          if (!this.selectedHubId) return;
+          if (!this.selectedHubId || !this.currentProjectSlug) return;
           try {
-            const r = await fetch(`/api/zoom/hubs/${this.selectedHubId}/videos?page_size=1`, { headers: this._authHeaders() });
+            const r = await fetch(`/api/zoom/hubs/${this.selectedHubId}/videos?page_size=1&project_slug=${encodeURIComponent(this.currentProjectSlug)}`, { headers: this._authHeaders() });
             if (r.ok) {
               const d = await r.json();
               this.hubVideoCount = d.total_records || 0;
@@ -3665,7 +4434,7 @@
               if (sd.status === 'saved') await this.loadSettings();
             }
             // Now test the connection
-            const r = await fetch('/api/settings/test', { method: 'POST', headers: this._authHeaders(), body: JSON.stringify({ service: svc }) });
+            const r = await fetch('/api/settings/test', { method: 'POST', headers: this._authHeaders(), body: JSON.stringify({ service: svc, project_slug: this.currentProjectSlug }) });
             const d = await r.json(); const result = d[svc] || d;
             const name = svc === 's3' ? 'AWS' : svc.charAt(0).toUpperCase() + svc.slice(1);
             const msg = result.status === 'ok' ? name + ' connection is working!' : result.status === 'not_configured' ? name + ' is not set up yet. Enter your credentials above and try again.' : name + ' connection failed: ' + (result.message || 'Check your credentials.');
@@ -3692,10 +4461,23 @@
             const params = new URLSearchParams({ page, page_size: 30 });
             if (this.caSearch) params.set('search', this.caSearch);
             const r = await fetch(`/api/projects/${this.currentProjectSlug}/content-analysis?${params}`, { headers: this._authHeaders() });
-            if (!r.ok) { const e = await r.json(); this.caVideos = []; this.caTotal = 0; return; }
+            if (!r.ok) { this.caVideos = []; this.caTotal = 0; return; }
             const d = await r.json();
             this.caVideos = d.videos || []; this.caTotal = d.total || 0; this.caTotalPages = d.total_pages || 1;
+            // REACH badge (Item 3)
+            if (typeof d.reach_licensed === 'boolean') this.caReachLicensed = d.reach_licensed;
           } finally { this.caLoading = false; }
+        },
+        // Zoom Video SDK preview (Item 6)
+        async openZoomPreview(videoId) {
+          this.zoomPreviewVideoId = videoId; this.zoomPreviewToken = ''; this.zoomPreviewError = ''; this.zoomPreviewLoading = true; this.showZoomPreviewModal = true;
+          try {
+            const r = await fetch(`/api/zoom/sdk-token?video_id=${encodeURIComponent(videoId)}&project_slug=${encodeURIComponent(this.currentProjectSlug)}`, { headers: this._authHeaders() });
+            const d = await r.json();
+            if (!r.ok) { this.zoomPreviewError = d.detail || 'Failed to get SDK token'; return; }
+            this.zoomPreviewToken = d.token;
+          } catch(e) { this.zoomPreviewError = 'Network error fetching SDK token'; }
+          finally { this.zoomPreviewLoading = false; }
         },
         async loadCaDetail(video) {
           this.caSelected = video; this.caDetail = null; this.caDetailLoading = true; this.caTranscriptSearch = ''; this.caActiveCaptionId = null;
@@ -3868,9 +4650,10 @@
           }
           if (data.type === 'video_failed') {
             this.pipelineVideos[data.video_id] = { ...(this.pipelineVideos[data.video_id] || { id: data.video_id, title: data.title || data.video_id }), stage: 'failed', error: data.error };
+            this.failedVideos.push({ video_id: data.video_id, title: data.title, error: data.error });
           }
-          if (data.type === 'migration_completed' || data.type === 'migration_stopped') {
-            // Refresh both columns when migration finishes
+          if (data.type === 'migration_completed' || data.type === 'migration_stopped' || data.type === 'migration_paused') {
+            // Refresh both columns when migration finishes or pauses
             if (this.currentTab === 'migration') { this.loadMigKaltura(); this.loadZoomCompleted(); }
           }
           if (data.type === 'batch_migration_completed') {
@@ -3878,8 +4661,131 @@
             if (this.currentTab === 'dryrun') { this.loadMigrationReport(); }
           }
         },
+
+        // ── Validator Feedback SDK ──
+        async submitFeedback() {
+          if (!this.feedbackDescription.trim()) { this.feedbackError = 'Please describe the issue.'; return; }
+          this.feedbackSubmitting = true;
+          this.feedbackError = '';
+          const payload = {
+            description: this.feedbackDescription.trim(),
+            feedback_type: this.feedbackType,
+            priority: this.feedbackPriority,
+            user_email: this.feedbackEmail.trim() || null,
+            // Context — no full URLs, only route info
+            context: {
+              tab: this.currentTab,
+              project: this.currentProjectSlug || 'default',
+              timestamp: new Date().toISOString(),
+            },
+          };
+          try {
+            const r = await fetch('https://api.factory.8090.dev/v1/integration/validator/feedback', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-App-Key': 'sf-int-nf3A2s8SzIX1D6PuPnhZhGjlfNqFtqdY' },
+              body: JSON.stringify(payload),
+            });
+            if (r.status === 429) throw new Error('Too many submissions — try again in a moment.');
+            if (!r.ok) throw new Error('Submission failed. Please try again.');
+            this.feedbackDone = true;
+            this.feedbackDescription = '';
+            this.feedbackEmail = '';
+            this.feedbackType = 'bug';
+            this.feedbackPriority = 'medium';
+            setTimeout(() => { this.feedbackOpen = false; this.feedbackDone = false; }, 2500);
+          } catch (e) {
+            this.feedbackError = e.message || 'Network error. Please try again.';
+          }
+          this.feedbackSubmitting = false;
+        },
       };
     }
   </script>
+
+  <!-- ── Validator Feedback Widget (SF Integration) ── -->
+  <!-- Shares the main app() Alpine scope — all feedbackXxx vars live there -->
+  <div x-show="authenticated" style="position:fixed;bottom:1.25rem;right:1.25rem;z-index:9999">
+      <!-- Feedback modal -->
+      <div x-show="feedbackOpen" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 translate-y-2" x-transition:enter-end="opacity-100 translate-y-0"
+           style="position:absolute;bottom:3.5rem;right:0;width:22rem"
+           class="bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden">
+        <!-- Header -->
+        <div class="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"/></svg>
+            <span class="text-sm font-semibold text-gray-800">Send Feedback</span>
+          </div>
+          <button @click="feedbackOpen = false; feedbackError = ''" class="text-gray-400 hover:text-gray-600 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <!-- Success state -->
+        <div x-show="feedbackDone" class="p-6 text-center">
+          <div class="w-12 h-12 rounded-full bg-green-50 flex items-center justify-center mx-auto mb-3">
+            <svg class="w-6 h-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          </div>
+          <p class="text-sm font-semibold text-gray-800">Thanks for the feedback!</p>
+          <p class="text-xs text-gray-500 mt-1">It's been sent to the team.</p>
+        </div>
+
+        <!-- Form -->
+        <div x-show="!feedbackDone" class="p-4 space-y-3">
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">Type</label>
+              <select x-model="feedbackType" class="mt-1 w-full px-2.5 py-2 rounded-lg border border-gray-200 text-xs bg-white focus:border-brand-400 focus:ring-1 focus:ring-brand-100 outline-none">
+                <option value="bug">Bug Report</option>
+                <option value="feature_request">Feature Request</option>
+                <option value="performance">Performance</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">Priority</label>
+              <select x-model="feedbackPriority" class="mt-1 w-full px-2.5 py-2 rounded-lg border border-gray-200 text-xs bg-white focus:border-brand-400 focus:ring-1 focus:ring-brand-100 outline-none">
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">Description</label>
+            <textarea x-model="feedbackDescription" rows="3" placeholder="What happened? What did you expect?"
+                      class="mt-1 w-full px-2.5 py-2 rounded-lg border border-gray-200 text-xs bg-white focus:border-brand-400 focus:ring-1 focus:ring-brand-100 outline-none resize-none"></textarea>
+          </div>
+
+          <div>
+            <label class="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">Email <span class="font-normal normal-case">(optional)</span></label>
+            <input x-model="feedbackEmail" type="email" placeholder="For follow-up"
+                   class="mt-1 w-full px-2.5 py-2 rounded-lg border border-gray-200 text-xs bg-white focus:border-brand-400 focus:ring-1 focus:ring-brand-100 outline-none">
+          </div>
+
+          <div x-show="feedbackError" class="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-2.5 py-1.5" x-text="feedbackError"></div>
+
+          <div class="flex items-center justify-between pt-1">
+            <p class="text-[10px] text-gray-400">
+              <span x-text="currentTab"></span> · <span x-text="currentProjectSlug || 'default'"></span>
+            </p>
+            <button @click="submitFeedback()" :disabled="feedbackSubmitting || !feedbackDescription.trim()"
+                    class="px-4 py-1.5 btn-primary text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+              <span x-show="!feedbackSubmitting">Send</span>
+              <span x-show="feedbackSubmitting">Sending…</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Floating button -->
+      <button @click="feedbackOpen = !feedbackOpen; feedbackError = ''"
+              :class="feedbackOpen ? 'bg-gray-700 hover:bg-gray-800' : 'bg-brand-500 hover:bg-brand-600'"
+              class="w-11 h-11 rounded-full shadow-lg flex items-center justify-center transition-all duration-150 group">
+        <svg x-show="!feedbackOpen" class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"/></svg>
+        <svg x-show="feedbackOpen" class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+  </div>
+
 </body>
 </html>
