@@ -48,9 +48,11 @@ class MigrationResult:
 
 
 class MigrationPipeline:
-    def __init__(self, config: Config, on_progress=None, source_adapter=None, field_mappings=None, project_slug: str = ""):
+    def __init__(self, config: Config, on_progress=None, source_adapter=None, field_mappings=None, project_slug: str = "", mode: str = "full", hub_assignments: dict = None):
         self.config = config
         self.project_slug = project_slug
+        self.mode = mode
+        self.hub_assignments = hub_assignments
         self.skip_s3 = config.skip_s3
         self.kaltura = KalturaClient(config.kaltura)
         self.s3 = None if self.skip_s3 else S3Staging(config.aws)
@@ -187,6 +189,10 @@ class MigrationPipeline:
                 self.tracker.update_status(entry_id, MigrationStatus.STAGED, metadata=metadata)
             self._notify(entry_id, "staging", title)
 
+            # Early exit for stage_only mode
+            if self.mode == "stage_only":
+                return {"status": "staged", "entry_id": entry_id}
+
             # Step 4: Upload to Zoom (from local file)
             self.tracker.update_status(entry_id, MigrationStatus.UPLOADING)
             self._notify(entry_id, "uploading", title)
@@ -202,7 +208,7 @@ class MigrationPipeline:
 
             # Build upload kwargs — hub_id routes Events uploads to the correct hub
             upload_kwargs: dict = {}
-            hub_id = self.config.zoom.hub_id
+            hub_id = (self.hub_assignments or {}).get(entry_id) or getattr(self.config.zoom, 'hub_id', None)
             if hub_id:
                 upload_kwargs["hub_id"] = hub_id
             if zoom_tags:

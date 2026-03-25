@@ -179,6 +179,8 @@ class MigrationStartRequest(BaseModel):
     video_ids: Optional[List[str]] = Field(default=None)
     project_slug: str = Field(..., min_length=1, max_length=100)
     resumable: bool = Field(default=False)
+    mode: str = Field(default="full", pattern="^(full|stage_only|zoom_only)$")
+    hub_assignments: Optional[dict[str, str]] = Field(default=None)
 
 
 class ChatRequest(BaseModel):
@@ -251,6 +253,9 @@ _events_lock = threading.Lock()
 
 # Item 1 — Zoom client instance cache (avoids re-fetching OAuth token on every API call)
 _zoom_client_cache: dict[str, "ZoomClient"] = {}  # keyed by project_slug
+
+# Zoom inventory cache: project_slug -> {ts, data}
+_zoom_inventory_cache: dict[str, dict] = {}
 
 # Item 3 — REACH availability cache (one check per project per process lifetime)
 _reach_licensed_cache: dict[str, bool] = {}  # keyed by project_slug
@@ -2129,6 +2134,275 @@ def _resolve_zoom_client(project_slug: str):
         )
 
 
+@app.post("/api/projects/{slug}/workflow/discover")
+async def workflow_discover_start(slug: str, request: Request, user: dict = Depends(_verify_jwt)):
+    """Start background discovery of all Kaltura videos for a project."""
+    project = _db.fetch_one("SELECT * FROM projects WHERE slug=%s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    rows = _db.fetch_all(
+        "SELECT key_name, key_value FROM credentials WHERE project_id=%s AND service=%s",
+        (project["id"], project.get("source_platform", "kaltura"))
+    )
+    kaltura_creds = {}
+    if _db.is_available():
+        from migration.config import KalturaConfig
+        from migration.kaltura_client import KalturaClient
+        cred_rows = _db.get_credentials(str(project["id"]), project.get("source_platform", "kaltura"))
+        kaltura_creds = cred_rows or {}
+
+    if not kaltura_creds.get("partner_id"):
+        raise HTTPException(status_code=400, detail="No Kaltura credentials configured for this project")
+
+    manifest_id = _db.save_workflow_manifest(project["id"], "running", [], {"processed_videos": 0})
+
+    def _run_discovery():
+        try:
+            from migration.config import KalturaConfig
+            from migration.kaltura_client import KalturaClient
+            kc = KalturaClient(KalturaConfig(
+                partner_id=kaltura_creds.get("partner_id", ""),
+                admin_secret=kaltura_creds.get("admin_secret", ""),
+                user_id=kaltura_creds.get("user_id", ""),
+                service_url=kaltura_creds.get("service_url", "https://www.kaltura.com"),
+            ))
+
+            videos = kc.list_all_videos(max_results=2000)
+            total = len(videos)
+            manifest = []
+
+            for i, entry in enumerate(videos):
+                try:
+                    entry_id = entry.get("id") or entry.get("entry_id")
+                    meta = kc.extract_full_metadata(entry_id) if hasattr(kc, 'extract_full_metadata') else entry
+                    captions = []
+                    thumbnails = []
+                    try:
+                        captions = kc.list_captions(entry_id) or []
+                    except Exception:
+                        pass
+                    try:
+                        thumbnails = kc.list_thumbnails(entry_id) or []
+                    except Exception:
+                        pass
+
+                    size_bytes = int(meta.get("size", 0) or meta.get("msDuration", 0) or 0)
+                    manifest.append({
+                        "kaltura_id": entry_id,
+                        "title": meta.get("name", meta.get("title", "")),
+                        "description": meta.get("description", ""),
+                        "duration": int(meta.get("duration", 0) or 0),
+                        "size_bytes": size_bytes,
+                        "size_mb": round(size_bytes / 1024 / 1024, 1),
+                        "tags": meta.get("tags", ""),
+                        "categories": meta.get("categories", ""),
+                        "caption_count": len(captions),
+                        "thumbnail_count": len(thumbnails),
+                        "captions": captions[:5],
+                        "thumbnails": thumbnails[:3],
+                        "created_at": meta.get("createdAt", 0),
+                    })
+                except Exception as e:
+                    logger.warning("Discovery: failed to process entry %s: %s", entry.get("id", "?"), e)
+
+                if (i + 1) % 10 == 0:
+                    summary = {
+                        "total_videos": total,
+                        "processed_videos": i + 1,
+                        "total_size_gb": round(sum(v["size_bytes"] for v in manifest) / 1024**3, 2),
+                        "videos_with_captions": sum(1 for v in manifest if v["caption_count"] > 0),
+                        "videos_with_thumbnails": sum(1 for v in manifest if v["thumbnail_count"] > 0),
+                    }
+                    _db.save_workflow_manifest(project["id"], "running", manifest, summary, manifest_id)
+
+            summary = {
+                "total_videos": total,
+                "processed_videos": total,
+                "total_size_gb": round(sum(v["size_bytes"] for v in manifest) / 1024**3, 2),
+                "videos_with_captions": sum(1 for v in manifest if v["caption_count"] > 0),
+                "videos_with_thumbnails": sum(1 for v in manifest if v["thumbnail_count"] > 0),
+            }
+            _db.save_workflow_manifest(project["id"], "complete", manifest, summary, manifest_id)
+        except Exception as e:
+            logger.error("Discovery background thread error: %s", e)
+            _db.save_workflow_manifest(project["id"], "error", [], {"error": str(e)}, manifest_id)
+
+    t = threading.Thread(target=_run_discovery, daemon=True)
+    t.start()
+    return {"manifest_id": manifest_id, "status": "running"}
+
+
+@app.get("/api/projects/{slug}/workflow/discover/{manifest_id}")
+async def workflow_discover_poll(slug: str, manifest_id: int, user: dict = Depends(_verify_jwt)):
+    """Poll discovery job status."""
+    row = _db.get_workflow_manifest(manifest_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Manifest not found")
+    return {
+        "manifest_id": manifest_id,
+        "status": row["status"],
+        "summary": row["summary_json"] or {},
+        "manifest": row["manifest_json"] or [],
+    }
+
+
+@app.post("/api/projects/{slug}/workflow/suggest-hubs")
+async def workflow_suggest_hubs(slug: str, request: Request, user: dict = Depends(_verify_jwt)):
+    """Suggest Zoom hub assignments based on video metadata keyword matching."""
+    body = await request.json()
+    videos = body.get("videos", [])
+
+    # If manifest_id provided, load videos from DB
+    manifest_id = body.get("manifest_id")
+    if manifest_id and not videos:
+        row = _db.get_workflow_manifest(int(manifest_id))
+        if row and row.get("manifest_json"):
+            videos = row["manifest_json"]
+
+    zoom_client, err = _resolve_zoom_client(slug)
+    if err:
+        raise HTTPException(status_code=400, detail="No Zoom credentials configured")
+
+    try:
+        hubs = zoom_client.list_hubs() or []
+    except Exception:
+        hubs = []
+
+    def suggest_hub(video: dict) -> dict | None:
+        title = (video.get("title", "") or "").lower()
+        tags = (video.get("tags", "") or "").lower()
+        categories = (video.get("categories", "") or "").lower()
+
+        best_hub = None
+        best_score = 0
+        best_reason = ""
+
+        for hub in hubs:
+            hub_name = (hub.get("name", "") or hub.get("hub_name", "")).lower()
+            keywords = [w for w in hub_name.split() if len(w) > 2]
+            score = 0
+            matched_kw = ""
+            for kw in keywords:
+                if kw in title or kw in tags or kw in categories:
+                    score += 1
+                    matched_kw = kw
+            if score > best_score:
+                best_score = score
+                best_hub = hub
+                best_reason = f"keyword '{matched_kw}' found in metadata"
+
+        if not best_hub and hubs:
+            best_hub = hubs[0]
+            best_reason = "default (no keyword match)"
+
+        if not best_hub:
+            return None
+
+        hub_id = best_hub.get("hub_id") or best_hub.get("id", "")
+        hub_name = best_hub.get("name") or best_hub.get("hub_name", "")
+        return {"hub_id": hub_id, "hub_name": hub_name, "confidence": best_score, "reason": best_reason}
+
+    suggestions = {}
+    for video in videos:
+        kaltura_id = video.get("kaltura_id", "")
+        if kaltura_id:
+            suggestions[kaltura_id] = suggest_hub(video)
+
+    return {"suggestions": suggestions, "hubs": hubs}
+
+
+@app.get("/api/projects/{slug}/zoom/inventory")
+async def zoom_inventory(slug: str, force_refresh: bool = False, user: dict = Depends(_verify_jwt)):
+    """List all videos in Zoom for this project, cross-referenced with migration history."""
+    import time as _time
+    cached = _zoom_inventory_cache.get(slug)
+    if cached and not force_refresh and (_time.time() - cached["ts"]) < 300:
+        return cached["data"]
+
+    zoom_client, err = _resolve_zoom_client(slug)
+    if err:
+        raise HTTPException(status_code=400, detail="No Zoom credentials configured")
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug=%s", (slug,))
+    project_id = project["id"] if project else None
+
+    migrated = {}
+    if project_id:
+        rows = _db.fetch_all(
+            "SELECT kaltura_id, zoom_id FROM video_migrations WHERE project_id=%s AND status='completed'",
+            (project_id,)
+        )
+        for r in (rows or []):
+            migrated[r.get("zoom_id", "")] = r.get("kaltura_id", "")
+
+    by_hub = []
+    total = 0
+
+    try:
+        hubs = zoom_client.list_hubs() or []
+        for hub in hubs:
+            hub_id = hub.get("hub_id") or hub.get("id", "")
+            hub_name = hub.get("name") or hub.get("hub_name", "")
+            try:
+                videos = zoom_client.list_hub_videos(hub_id) or []
+            except Exception:
+                videos = []
+
+            hub_videos = []
+            for v in videos:
+                zoom_id = v.get("id") or v.get("video_id", "")
+                kaltura_id = migrated.get(zoom_id, "")
+                hub_videos.append({
+                    "zoom_id": zoom_id,
+                    "title": v.get("title") or v.get("topic", ""),
+                    "hub_id": hub_id,
+                    "hub_name": hub_name,
+                    "uploaded_at": v.get("created_at") or v.get("start_time", ""),
+                    "duration": v.get("duration", 0),
+                    "migrated_from_kaltura": bool(kaltura_id),
+                    "kaltura_id": kaltura_id,
+                })
+            total += len(hub_videos)
+            by_hub.append({"hub_id": hub_id, "hub_name": hub_name, "video_count": len(hub_videos), "videos": hub_videos})
+    except Exception as e:
+        logger.warning("zoom_inventory: hub fetch error: %s", e)
+
+    try:
+        clips = zoom_client.list_clips() or []
+        clip_videos = []
+        for v in clips:
+            zoom_id = v.get("id") or v.get("clip_id", "")
+            kaltura_id = migrated.get(zoom_id, "")
+            clip_videos.append({
+                "zoom_id": zoom_id,
+                "title": v.get("title", ""),
+                "hub_id": None, "hub_name": "Clips / Video Management",
+                "uploaded_at": v.get("created_at", ""),
+                "duration": v.get("duration", 0),
+                "migrated_from_kaltura": bool(kaltura_id),
+                "kaltura_id": kaltura_id,
+            })
+        if clip_videos:
+            total += len(clip_videos)
+            by_hub.append({"hub_id": None, "hub_name": "Clips / Video Management", "video_count": len(clip_videos), "videos": clip_videos})
+    except Exception:
+        pass
+
+    migrated_count = sum(1 for h in by_hub for v in h["videos"] if v["migrated_from_kaltura"])
+    result = {
+        "total": total,
+        "by_hub": by_hub,
+        "migration_stats": {
+            "total_in_zoom": total,
+            "migrated_by_oe": migrated_count,
+            "pre_existing": total - migrated_count,
+        }
+    }
+    _zoom_inventory_cache[slug] = {"ts": __import__("time").time(), "data": result}
+    return result
+
+
 def _resolve_kaltura_client(slug: str):
     """Resolve a live KalturaClient for a given project slug.
     Returns (client, error_response) — exactly one will be None.
@@ -3860,6 +4134,8 @@ async def start_migration(request: Request, user: dict = Depends(_verify_jwt)):
     resumable = req.resumable
     raw_project_slug = req.project_slug or ""
     project_slug = raw_project_slug or "__global__"
+    migration_mode = req.mode
+    hub_assignments = req.hub_assignments
 
     pipeline = _get_pipeline_for_project(raw_project_slug)
     if pipeline is None:
@@ -3874,6 +4150,10 @@ async def start_migration(request: Request, user: dict = Depends(_verify_jwt)):
         "video_count": len(video_ids) if video_ids else batch_size,
         "project": project_slug,
     }, project_slug=raw_project_slug or None)
+
+    # Apply per-request mode and hub_assignments to the pipeline instance
+    pipeline.mode = migration_mode
+    pipeline.hub_assignments = hub_assignments
 
     with _get_migration_lock(project_slug):
         if _migration_running.get(project_slug, False):

@@ -395,6 +395,17 @@ DO $$ BEGIN
 EXCEPTION WHEN others THEN NULL;
 END $$;
 
+CREATE TABLE IF NOT EXISTS workflow_manifests (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    status VARCHAR(20) DEFAULT 'running',
+    total_videos INTEGER DEFAULT 0,
+    processed_videos INTEGER DEFAULT 0,
+    manifest_json JSONB DEFAULT '[]'::jsonb,
+    summary_json JSONB DEFAULT '{}'::jsonb
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 CREATE INDEX IF NOT EXISTS idx_credentials_project ON credentials(project_id);
@@ -543,3 +554,27 @@ def create_default_mappings(project_id: str, source_platform: str = "kaltura"):
             (project_id, m["source_field"], m["dest_field"], m["transform"],
              m.get("template"), m["sort_order"], m.get("notes", "")),
         )
+
+
+# ---------------------------------------------------------------------------
+# Workflow manifest helpers
+# ---------------------------------------------------------------------------
+
+def save_workflow_manifest(project_id: int, status: str, manifest: list, summary: dict, manifest_id: int | None = None) -> int:
+    """Create or update a workflow manifest record. Returns the manifest id."""
+    import json
+    if manifest_id:
+        execute(
+            "UPDATE workflow_manifests SET status=%s, manifest_json=%s::jsonb, summary_json=%s::jsonb, processed_videos=%s WHERE id=%s",
+            (status, json.dumps(manifest), json.dumps(summary), summary.get("processed_videos", 0), manifest_id)
+        )
+        return manifest_id
+    row = fetch_one(
+        "INSERT INTO workflow_manifests (project_id, status, manifest_json, summary_json) VALUES (%s, %s, %s::jsonb, %s::jsonb) RETURNING id",
+        (project_id, status, json.dumps(manifest), json.dumps(summary))
+    )
+    return row["id"] if row else None
+
+
+def get_workflow_manifest(manifest_id: int) -> dict | None:
+    return fetch_one("SELECT * FROM workflow_manifests WHERE id=%s", (manifest_id,))
