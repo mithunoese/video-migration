@@ -3672,9 +3672,7 @@
         settings: {
           aws_access_key_id: '', aws_secret_access_key: '',
           aws_s3_bucket: '', aws_region: 'us-east-1', aws_state_table: 'video-migration-state', aws_endpoint_url: '',
-          zoom_client_id: '', zoom_client_secret: '', zoom_account_id: '',
-          zoom_target_api: 'clips',
-          zoom_hub_id: '', zoom_vod_channel_id: '',
+          // Zoom credentials are per-project — stored via /api/projects/{slug}/credentials, NOT here
           skip_s3: '',
           batch_size: '10', max_concurrency: '5', retry_attempts: '3',
         },
@@ -5530,10 +5528,10 @@
 
         zoomVideoUrl(zoomId) {
           if (!zoomId) return '';
-          const target = this.settings?.zoom_target_api || 'clips';
+          const target = this.projectCreds?.zoom?.target_api || 'clips';
           if (target === 'events') {
             // Zoom Events video management — link to events portal
-            const hubId = this.settings?.zoom_hub_id || this.selectedHubId;
+            const hubId = this.projectCreds?.zoom?.hub_id || this.selectedHubId;
             if (hubId) return `https://events.zoom.us/hub/${hubId}/video-management`;
             return `https://events.zoom.us`;
           }

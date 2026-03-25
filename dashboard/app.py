@@ -330,19 +330,16 @@ def _get_pause_event(project_slug: str) -> threading.Event:
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 _SETTINGS_FIELDS = {
-    # Kaltura credentials are now per-project (stored in DB via /api/projects/{slug}/credentials)
+    # GLOBAL settings only — shared AWS infra and pipeline tuning.
+    # NEVER add Kaltura or Zoom credentials here — they are per-project and
+    # must be stored in the credentials DB table via /api/projects/{slug}/credentials.
+    # Adding them here would expose IFRS env-var creds to every project via GET /api/settings.
     "aws_access_key_id":     {"env": "AWS_ACCESS_KEY_ID",     "secret": False},
     "aws_secret_access_key": {"env": "AWS_SECRET_ACCESS_KEY", "secret": True},
     "aws_s3_bucket":         {"env": "AWS_S3_BUCKET",         "secret": False},
     "aws_region":            {"env": "AWS_REGION",            "secret": False},
     "aws_state_table":       {"env": "AWS_STATE_TABLE",       "secret": False},
     "aws_endpoint_url":      {"env": "AWS_ENDPOINT_URL",      "secret": False},
-    "zoom_client_id":        {"env": "ZOOM_CLIENT_ID",        "secret": False},
-    "zoom_client_secret":    {"env": "ZOOM_CLIENT_SECRET",    "secret": True},
-    "zoom_account_id":       {"env": "ZOOM_ACCOUNT_ID",       "secret": False},
-    "zoom_target_api":       {"env": "ZOOM_TARGET_API",       "secret": False},
-    "zoom_hub_id":           {"env": "ZOOM_HUB_ID",          "secret": False},
-    "zoom_vod_channel_id":   {"env": "ZOOM_VOD_CHANNEL_ID",  "secret": False},
     "skip_s3":               {"env": "SKIP_S3",              "secret": False},
     "batch_size":            {"env": "BATCH_SIZE",            "secret": False},
     "max_concurrency":       {"env": "MAX_CONCURRENCY",       "secret": False},
@@ -1181,16 +1178,12 @@ async def get_project_credentials(slug: str, user: dict = Depends(_verify_jwt)):
 
 @app.get("/api/projects/{slug}/credential-status")
 async def get_credential_status(slug: str, user: dict = Depends(_verify_jwt)):
-    """Fast credential presence check — DB first, then env-var fallback. No external calls."""
+    """Fast credential presence check — DB only. No env-var fallback (prevents cross-project bleed)."""
     if not _db.is_available():
-        return {
-            "source": {
-                "configured": bool(os.environ.get("KALTURA_PARTNER_ID")),
-                "platform": "kaltura" if os.environ.get("KALTURA_PARTNER_ID") else None,
-            },
-            "zoom": {"configured": bool(os.environ.get("ZOOM_CLIENT_ID"))},
-            "aws": {"configured": bool(os.environ.get("AWS_S3_BUCKET"))},
-        }
+        return JSONResponse(
+            {"error": "db_unavailable", "detail": "Database unavailable, cannot check per-project credentials"},
+            status_code=503,
+        )
 
     project = _db.fetch_one(
         "SELECT id, source_platform FROM projects WHERE slug = %s", (slug,)
