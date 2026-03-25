@@ -873,7 +873,7 @@ _project_pipelines: dict[str, Any] = {}  # slug -> MigrationPipeline
 def _get_pipeline_for_project(slug: str):
     """Get or create a MigrationPipeline for a project from DB credentials."""
     if not _db.is_available():
-        return _pipeline  # fallback to legacy global pipeline
+        return None  # DB unavailable — never bleed global pipeline into a project context
 
     if slug in _project_pipelines:
         return _project_pipelines[slug]
@@ -2049,12 +2049,13 @@ def _clear_zoom_client_cache(slug: str):
 
 
 def _resolve_zoom_client(project_slug: str):
-    """Resolve a per-project ZoomClient from DB credentials, with fallback to global env vars.
+    """Resolve a per-project ZoomClient from DB credentials.
 
     Caches the ZoomClient instance per project slug so the OAuth token is reused
-    until it is within 5 minutes of expiry (Item 1 fix).
+    until it is within 5 minutes of expiry.
 
     Returns (zoom_client, error_response) — exactly one will be None.
+    Each project must have its own Zoom credentials saved via Settings → Zoom Destination.
     """
     # Return cached instance if token still valid (>5 min remaining)
     cached = _zoom_client_cache.get(project_slug)
@@ -2079,22 +2080,12 @@ def _resolve_zoom_client(project_slug: str):
             list(zm.keys()) if zm else [],
         )
 
-    # Fall back to global env vars (credentials saved via Settings → Save Settings)
+    # No env var fallback — each project must have its own Zoom credentials
     if not zm or not zm.get("client_id"):
-        env_client_id = os.environ.get("ZOOM_CLIENT_ID", "")
-        env_client_secret = os.environ.get("ZOOM_CLIENT_SECRET", "")
-        env_account_id = os.environ.get("ZOOM_ACCOUNT_ID", "")
-        logger.info(
-            "zoom_hub_lookup: project_slug=%s falling back to env vars, env_client_id_present=%s",
-            project_slug, bool(env_client_id),
+        return None, JSONResponse(
+            {"error": "no_credentials", "message": "No Zoom credentials for this project. Add them in Settings → Zoom Destination."},
+            status_code=400,
         )
-        if env_client_id:
-            zm = {"client_id": env_client_id, "client_secret": env_client_secret, "account_id": env_account_id}
-        else:
-            return None, JSONResponse(
-                {"error": "no_credentials", "message": "No Zoom credentials for this project. Add them in Settings."},
-                status_code=400,
-            )
 
     try:
         from migration.zoom_client import ZoomClient
@@ -2905,10 +2896,7 @@ async def list_videos(
         # When project_slug is given, only use THAT project's pipeline tracker — never
         # fall back to the global pipeline, which would bleed another project's data.
         try:
-            if project_slug:
-                _tracker_pipeline = _get_pipeline_for_project(project_slug)
-            else:
-                _tracker_pipeline = _pipeline
+            _tracker_pipeline = _get_pipeline_for_project(project_slug) if project_slug else None
             state = _tracker_pipeline.tracker._load_local() if _tracker_pipeline else {}
             for vid, info in state.items():
                 meta = info.get("metadata", {})
@@ -3319,9 +3307,9 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
         _migration_running[project_slug] = True
         _get_cancel_event(project_slug).clear()
 
-    # Resolve project-specific pipeline (fall back to global if no slug)
+    # Resolve project-specific pipeline — slug is required
     raw_slug = body.get("project_slug", "")
-    pipeline = _get_pipeline_for_project(raw_slug) if raw_slug else _pipeline
+    pipeline = _get_pipeline_for_project(raw_slug) if raw_slug else None
     if _demo_mode or pipeline is None:
         _migration_running[project_slug] = False
         return JSONResponse({"error": "Pipeline not initialized for this project"}, status_code=400)
@@ -3479,7 +3467,7 @@ async def get_migration_checkpoint(
 
     Returns checkpoint data if a previous migration was interrupted.
     """
-    pipeline = _get_pipeline_for_project(project_slug) if project_slug else _pipeline
+    pipeline = _get_pipeline_for_project(project_slug) if project_slug else None
     if _demo_mode or pipeline is None:
         return {"has_checkpoint": False}
 
@@ -3625,18 +3613,20 @@ async def browse_kaltura_videos(
     user: dict = Depends(_verify_jwt),
 ):
     """Browse live Kaltura library with migration status overlay."""
-    # Resolve pipeline — project-specific first, global fallback only for default/no project
+    # Resolve pipeline — project-specific only, no global fallback
     pipeline = None
-    if project_slug and _db.is_available():
-        pipeline = _get_pipeline_for_project(project_slug)
+    if project_slug:
+        pipeline = _get_pipeline_for_project(project_slug) if _db.is_available() else None
         if pipeline is None:
-            # Project exists but has no source credentials configured yet
             return JSONResponse(
                 {"error": "no_credentials", "message": "No source credentials for this project. Add them in Settings → Source Credentials."},
                 status_code=400,
             )
-    if pipeline is None:
-        pipeline = _pipeline  # fallback only when no project_slug given
+    else:
+        return JSONResponse(
+            {"error": "project_required", "message": "A project_slug is required to browse videos."},
+            status_code=400,
+        )
 
     if _demo_mode or pipeline is None:
         return JSONResponse(
@@ -4082,26 +4072,7 @@ async def export_reconciliation_pdf(user: dict = Depends(_verify_jwt)):
 
     summary = _audit_store.get_summary() if hasattr(_audit_store, "get_summary") else {}
     videos = []
-    if _pipeline and hasattr(_pipeline, "tracker"):
-        try:
-            tracker_summary = _pipeline.tracker.get_summary()
-            summary = {
-                "total": sum(tracker_summary.values()),
-                "completed": tracker_summary.get("completed", 0),
-                "failed": tracker_summary.get("failed", 0),
-                "pending": tracker_summary.get("pending", 0),
-            }
-            all_states = _pipeline.tracker.get_all_states() if hasattr(_pipeline.tracker, "get_all_states") else {}
-            for vid, state in all_states.items():
-                videos.append({
-                    "id": vid,
-                    "title": state.get("metadata", {}).get("title", vid),
-                    "status": state.get("status", "unknown"),
-                    "zoom_id": state.get("metadata", {}).get("zoom_id", ""),
-                    "error": state.get("error", ""),
-                })
-        except Exception:
-            pass
+    # PDF export without a project_slug is no longer supported — use per-project endpoints instead
 
     pdf_bytes = generate_reconciliation_pdf(
         project_name="Video Migration",
@@ -4376,7 +4347,7 @@ async def chat(request: Request, user: dict = Depends(_verify_jwt)):
         return JSONResponse({"error": "Empty message"}, status_code=400)
 
     # Tier 1: Structured handlers (no API key needed)
-    response = _handle_structured_query(message)
+    response = _handle_structured_query(message, project_slug=chat_project_slug)
     if response:
         return {"response": response, "tier": 1}
 
@@ -4401,19 +4372,22 @@ async def chat(request: Request, user: dict = Depends(_verify_jwt)):
     }
 
 
-def _handle_structured_query(message: str) -> str | None:
+def _handle_structured_query(message: str, project_slug: str = "") -> str | None:
     """Handle common queries without AI API."""
     msg = message.lower().strip()
 
     if _demo_mode:
         return "Connect your source platform and Zoom accounts in **Settings** first — I'll have real data to work with once your services are connected."
 
-    # Build real data from the pipeline state tracker
+    # Build real data from the per-project pipeline state tracker
     videos = []
     summary = {"total_videos": 0, "status_counts": {}, "total_size_gb": 0, "migrated_size_gb": 0}
+    _proj_pipeline = _get_pipeline_for_project(project_slug) if project_slug else None
+    if not _proj_pipeline:
+        return None
     try:
-        status_counts = _pipeline.tracker.get_summary()
-        state = _pipeline.tracker._load_local()
+        status_counts = _proj_pipeline.tracker.get_summary()
+        state = _proj_pipeline.tracker._load_local()
         total = sum(status_counts.values())
         total_mb = 0
         migrated_mb = 0
@@ -4549,7 +4523,7 @@ async def _handle_claude_query(message: str, api_key: str, project_slug: str = "
     zoom_context: dict = {}
 
     if not _demo_mode:
-        proj_pipeline = _get_pipeline_for_project(project_slug) if project_slug else _pipeline
+        proj_pipeline = _get_pipeline_for_project(project_slug) if project_slug else None
         if proj_pipeline:
             try:
                 summary = proj_pipeline.tracker.get_summary()
@@ -5142,11 +5116,9 @@ async def infra_setup(user: dict = Depends(_verify_jwt)):
         steps.append({"text": "CDK Python library not installed — run `pip install -r infra/requirements.txt`", "ok": False})
         ok = False
 
-    # 6. Kaltura / Zoom credentials
-    if not _demo_mode and _pipeline:
-        steps.append({"text": "Kaltura & Zoom credentials configured", "ok": True})
-    else:
-        steps.append({"text": "Kaltura & Zoom credentials not configured — add them in Settings", "ok": False})
+    # 6. Kaltura / Zoom credentials (legacy check — per-project creds now required)
+    steps.append({"text": "Use per-project credentials in Settings", "ok": not _demo_mode})
+    if _demo_mode:
         ok = False
 
     return {
