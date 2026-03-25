@@ -47,6 +47,12 @@
     .btn-primary { background: linear-gradient(135deg, #008285, #007477); color: white; border-radius: 10px; font-weight: 500; transition: all 0.2s; box-shadow: 0 1px 3px rgba(0,130,133,0.3); }
     .btn-primary:hover { background: linear-gradient(135deg, #007477, #006366); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,130,133,0.3); }
     .btn-primary:disabled { background: #e5e7eb; color: #9ca3af; box-shadow: none; transform: none; }
+    .btn-secondary { background: white; color: #374151; border: 1px solid #e5e7eb; border-radius: 10px; font-weight: 500; transition: all 0.2s; }
+    .btn-secondary:hover { background: #f9fafb; border-color: #d1d5db; }
+    .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-ghost { background: transparent; color: #6b7280; border-radius: 8px; font-weight: 500; transition: all 0.2s; }
+    .btn-ghost:hover { background: #f3f4f6; color: #374151; }
+    .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
     .btn-danger { background: linear-gradient(135deg, #dc2626, #b91c1c); color: white; border-radius: 10px; font-weight: 500; transition: all 0.2s; box-shadow: 0 1px 3px rgba(220,38,38,0.3); }
     .btn-danger:hover { background: linear-gradient(135deg, #b91c1c, #991b1b); transform: translateY(-1px); }
     .btn-danger:disabled { background: #e5e7eb; color: #9ca3af; box-shadow: none; transform: none; }
@@ -392,14 +398,14 @@
   </div>
 
   <!-- Admin Page Modal -->
-  <div x-show="currentTab === 'admin'" x-cloak class="fixed inset-0 z-[100] flex items-start justify-center bg-black/60 pt-16" @click.self="switchTab('dashboard')">
+  <div x-show="currentTab === 'admin'" x-cloak class="fixed inset-0 z-[100] flex items-start justify-center bg-black/60 pt-16" @click.self="switchTab('home')">
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden" @click.stop>
       <div class="px-6 py-5 border-b border-gray-100 flex items-center justify-between">
         <div>
           <h2 class="text-base font-bold text-gray-900">Admin Panel</h2>
           <p class="text-xs text-gray-400 mt-0.5">Project management — requires PIN</p>
         </div>
-        <button @click="switchTab('dashboard')" class="text-gray-400 hover:text-gray-600">
+        <button @click="switchTab('home')" class="text-gray-400 hover:text-gray-600">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
         </button>
       </div>
@@ -598,6 +604,11 @@
         </div>
       </div>
       <button @click="showNewProjectModal = true" class="w-full mt-1.5 text-[11px] font-medium py-1 rounded-lg transition-colors text-brand-600 hover:text-brand-700 hover:bg-brand-50" title="Create a new project">+ New Project</button>
+      <button @click="agentModalOpen = true; agentMessages = [{role:'agent', text:'Is this a new project or are you loading an existing one? I\'ll help you set up credentials step by step.'}]; agentStep='welcome';"
+              class="w-full mt-1.5 btn-secondary text-xs py-1.5 flex items-center justify-center gap-1.5">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17H3a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2h-2"/></svg>
+        Setup Agent
+      </button>
     </div>
 
     <nav class="flex-1 px-3 space-y-0.5">
@@ -759,13 +770,176 @@
       </div>
     </div>
 
-    <!-- ═══ MIGRATION CONTROL ═══ -->
-    <div x-show="currentTab === 'migration'" x-cloak class="fade-in">
+    <!-- ═══ HOME (UNIFIED: Dashboard + Workflow + Migration) ═══ -->
+    <div x-show="currentTab === 'home'" x-cloak class="fade-in">
+
+      <!-- ── Project Health Bar ── -->
+      <div class="card-static p-4 mb-4 flex items-center gap-4 flex-wrap">
+        <div class="flex items-center gap-1.5">
+          <span class="text-xs font-semibold text-gray-500">Total</span>
+          <span class="text-sm font-bold text-gray-800" x-text="(migKalturaTotal || 0).toLocaleString()"></span>
+        </div>
+        <div class="w-px h-5 bg-gray-200"></div>
+        <div class="flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-green-500"></span>
+          <span class="text-xs font-semibold text-gray-500">Migrated</span>
+          <span class="text-sm font-bold text-green-700" x-text="(zoomCompletedTotal || doneCount || 0).toLocaleString()"></span>
+        </div>
+        <div class="w-px h-5 bg-gray-200"></div>
+        <div class="flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-red-500"></span>
+          <span class="text-xs font-semibold text-gray-500">Failed</span>
+          <span class="text-sm font-bold text-red-700" x-text="failedCount"></span>
+        </div>
+        <div class="w-px h-5 bg-gray-200"></div>
+        <div class="flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse" x-show="migrationRunning"></span>
+          <span class="w-2 h-2 rounded-full bg-gray-300" x-show="!migrationRunning"></span>
+          <span class="text-xs font-semibold text-gray-500">In Progress</span>
+          <span class="text-sm font-bold text-amber-700" x-text="migrationRunning ? (pipelineTotal - doneCount - failedCount) : 0"></span>
+        </div>
+        <div class="flex-1 min-w-[120px]">
+          <div class="flex items-center gap-2">
+            <div class="flex-1 bg-gray-100 rounded-full h-2">
+              <div class="h-2 rounded-full transition-all duration-500"
+                   style="background: linear-gradient(90deg, #008285, #26c8cc);"
+                   :style="`width: ${migKalturaTotal > 0 ? Math.round((zoomCompletedTotal || doneCount || 0) / migKalturaTotal * 100) : 0}%`"></div>
+            </div>
+            <span class="text-xs font-semibold text-brand-600 w-10 text-right"
+                  x-text="migKalturaTotal > 0 ? Math.round((zoomCompletedTotal || doneCount || 0) / migKalturaTotal * 100) + '%' : '0%'"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Workflow Quick Actions ── -->
+      <div class="card-static p-4 mb-4">
+        <div class="flex items-center gap-2 mb-3">
+          <h3 class="text-xs font-bold text-gray-700 uppercase tracking-wider">Workflow</h3>
+          <button x-show="wfPhase > 0" @click="wfPhase = 0" class="ml-auto text-xs text-gray-400 hover:text-gray-600">Hide</button>
+        </div>
+        <div class="grid grid-cols-3 gap-3">
+          <!-- Step 1: Discover -->
+          <button @click="wfPhase = (wfPhase === 1 ? 0 : 1)"
+                  :class="wfPhase === 1 ? 'ring-2 ring-brand-500 bg-brand-50 border-brand-200' : 'hover:bg-gray-50 border-gray-200'"
+                  class="flex items-start gap-2.5 p-3 rounded-xl border text-left transition-all">
+            <div class="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+                 :class="wfDiscoverResult ? 'bg-green-100' : 'bg-brand-100'">
+              <template x-if="wfDiscoverResult">
+                <svg class="w-3.5 h-3.5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
+              </template>
+              <template x-if="!wfDiscoverResult">
+                <span class="text-xs font-bold text-brand-700">1</span>
+              </template>
+            </div>
+            <div class="min-w-0">
+              <p class="text-xs font-semibold text-gray-800">Discover</p>
+              <p class="text-[10px] text-gray-400 mt-0.5">Fetch source video list</p>
+            </div>
+            <svg class="w-3 h-3 text-gray-300 flex-shrink-0 mt-1 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+          </button>
+          <!-- Step 2: Stage to S3 -->
+          <button @click="wfPhase = (wfPhase === 2 ? 0 : 2)"
+                  :class="wfPhase === 2 ? 'ring-2 ring-brand-500 bg-brand-50 border-brand-200' : 'hover:bg-gray-50 border-gray-200'"
+                  class="flex items-start gap-2.5 p-3 rounded-xl border text-left transition-all">
+            <div class="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+                 :class="wfStageDone ? 'bg-green-100' : 'bg-gray-100'">
+              <template x-if="wfStageDone">
+                <svg class="w-3.5 h-3.5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
+              </template>
+              <template x-if="!wfStageDone">
+                <span class="text-xs font-bold text-gray-500">2</span>
+              </template>
+            </div>
+            <div class="min-w-0">
+              <p class="text-xs font-semibold text-gray-800">Stage to S3</p>
+              <p class="text-[10px] text-gray-400 mt-0.5">Upload to AWS staging</p>
+            </div>
+            <svg class="w-3 h-3 text-gray-300 flex-shrink-0 mt-1 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+          </button>
+          <!-- Step 3: Upload to Zoom -->
+          <button @click="wfPhase = (wfPhase === 3 ? 0 : 3)"
+                  :class="wfPhase === 3 ? 'ring-2 ring-brand-500 bg-brand-50 border-brand-200' : 'hover:bg-gray-50 border-gray-200'"
+                  class="flex items-start gap-2.5 p-3 rounded-xl border text-left transition-all">
+            <div class="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+                 :class="wfUploadDone ? 'bg-green-100' : 'bg-gray-100'">
+              <template x-if="wfUploadDone">
+                <svg class="w-3.5 h-3.5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
+              </template>
+              <template x-if="!wfUploadDone">
+                <span class="text-xs font-bold text-gray-500">3</span>
+              </template>
+            </div>
+            <div class="min-w-0">
+              <p class="text-xs font-semibold text-gray-800">Upload to Zoom</p>
+              <p class="text-[10px] text-gray-400 mt-0.5">Final destination push</p>
+            </div>
+          </button>
+        </div>
+
+        <!-- Collapsible Workflow Panel — shown when a phase is active -->
+        <div x-show="wfPhase > 0" x-transition class="mt-3 pt-3 border-t border-gray-100">
+          <!-- Phase 1: Discover -->
+          <div x-show="wfPhase === 1">
+            <div class="flex items-center justify-between mb-3">
+              <p class="text-xs font-semibold text-gray-700">Phase 1 — Discover your video library</p>
+              <button @click="wfStartDiscover()" :disabled="wfDiscoverLoading"
+                      class="btn-primary text-xs px-3 py-1.5"
+                      x-text="wfDiscoverLoading ? 'Discovering…' : (wfDiscoverResult ? 'Re-discover' : 'Start Discovery')"></button>
+            </div>
+            <div x-show="wfDiscoverError" class="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-2" x-text="wfDiscoverError"></div>
+            <div x-show="wfDiscoverResult" class="bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-800">
+              <span class="font-semibold" x-text="(wfDiscoverResult?.total_videos || 0).toLocaleString()"></span> videos discovered.
+              <button @click="wfPhase = 2" class="ml-2 text-green-700 underline font-semibold">Next: Stage to S3 →</button>
+            </div>
+            <div x-show="wfDiscoverLoading" class="flex items-center gap-2 text-xs text-gray-500">
+              <div class="w-3.5 h-3.5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin"></div>
+              Fetching video list from source platform…
+            </div>
+          </div>
+          <!-- Phase 2: Stage -->
+          <div x-show="wfPhase === 2">
+            <div class="flex items-center justify-between mb-3">
+              <p class="text-xs font-semibold text-gray-700">Phase 2 — Stage videos to AWS S3</p>
+              <button @click="wfStartStage()" :disabled="wfStageRunning"
+                      class="btn-primary text-xs px-3 py-1.5"
+                      x-text="wfStageRunning ? 'Staging…' : (wfStageDone ? 'Re-stage' : 'Start Staging')"></button>
+            </div>
+            <div x-show="wfStageError" class="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-2" x-text="wfStageError"></div>
+            <div x-show="wfStageRunning">
+              <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
+                <span x-text="`${wfStagedCount} / ${wfStageTotalCount} staged`"></span>
+                <span x-text="wfStageProgress + '%'"></span>
+              </div>
+              <div class="bg-gray-100 rounded-full h-1.5"><div class="h-1.5 bg-brand-500 rounded-full transition-all" :style="`width:${wfStageProgress}%`"></div></div>
+            </div>
+            <div x-show="wfStageDone" class="bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-800">
+              Staging complete — <span class="font-semibold" x-text="wfStagedCount"></span> videos staged.
+              <button @click="wfPhase = 3" class="ml-2 text-green-700 underline font-semibold">Next: Upload to Zoom →</button>
+            </div>
+          </div>
+          <!-- Phase 3: Upload -->
+          <div x-show="wfPhase === 3">
+            <div class="flex items-center justify-between mb-3">
+              <p class="text-xs font-semibold text-gray-700">Phase 3 — Upload to Zoom destination</p>
+              <button @click="openMigrateAllModal()" :disabled="migrationRunning"
+                      class="btn-primary text-xs px-3 py-1.5 flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                <span x-text="migrationRunning ? 'Migrating…' : 'Migrate All'"></span>
+              </button>
+            </div>
+            <div x-show="wfUploadError" class="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-2" x-text="wfUploadError"></div>
+            <div x-show="wfUploadDone" class="bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-800 font-semibold">
+              Migration complete!
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Hero -->
-      <div class="mb-6 flex items-center justify-between">
+      <div class="mb-4 flex items-center justify-between">
         <div>
-          <h2 class="text-3xl font-heading font-bold text-gray-900 tracking-tight">Migration Pipeline</h2>
-          <p class="text-sm text-gray-400 mt-2">See your video library across all three platforms — select and migrate in real time</p>
+          <h2 class="text-2xl font-heading font-bold text-gray-900 tracking-tight">Migration Pipeline</h2>
+          <p class="text-sm text-gray-400 mt-1">See your video library across all three platforms — select and migrate in real time</p>
         </div>
         <div class="flex items-center gap-2">
           <button x-show="migrationRunning && !migrationPaused && !migrationStalled" @click="pauseMigration()" class="px-4 py-2 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded-xl text-xs font-medium transition-colors border border-amber-200">Pause</button>
@@ -1358,6 +1532,157 @@
       </div>
     </div>
 
+    <!-- ═══ VIDEO LIBRARY ═══ -->
+    <div x-show="currentTab === 'library'" x-cloak class="fade-in h-full flex flex-col">
+      <!-- Header -->
+      <div class="flex items-center justify-between px-0 pt-0 pb-2">
+        <div>
+          <h2 class="text-2xl font-heading font-bold text-gray-900 tracking-tight">Video Library</h2>
+          <p class="text-xs text-gray-500 mt-0.5" x-text="libTotal > 0 ? `${libTotal.toLocaleString()} videos from source platform` : 'No videos discovered yet'"></p>
+        </div>
+        <div class="flex items-center gap-2">
+          <!-- View toggle -->
+          <div class="flex rounded border border-gray-200 overflow-hidden">
+            <button @click="libViewMode='grid'" :class="libViewMode==='grid' ? 'bg-brand-500 text-white' : 'bg-white text-gray-600'" class="px-2 py-1 text-xs transition-colors">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+            </button>
+            <button @click="libViewMode='list'" :class="libViewMode==='list' ? 'bg-brand-500 text-white' : 'bg-white text-gray-600'" class="px-2 py-1 text-xs transition-colors">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
+            </button>
+          </div>
+          <button @click="loadLibrary()" class="btn-secondary text-xs px-3 py-1.5">
+            <svg class="w-3 h-3 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <div class="flex items-center gap-3 pb-3 flex-wrap">
+        <select x-model="libFilterCaptions" @change="libPage=1; loadLibrary()" class="text-xs border border-gray-200 rounded px-2 py-1.5 bg-white text-gray-700">
+          <option value="">All videos</option>
+          <option value="yes">Has captions</option>
+          <option value="no">No captions</option>
+        </select>
+        <input type="number" x-model="libFilterMinSize" @change="libPage=1; loadLibrary()" placeholder="Min MB" class="text-xs border border-gray-200 rounded px-2 py-1.5 w-20 bg-white">
+        <input type="number" x-model="libFilterMaxSize" @change="libPage=1; loadLibrary()" placeholder="Max MB" class="text-xs border border-gray-200 rounded px-2 py-1.5 w-20 bg-white">
+        <div x-show="libSelectedIds.size > 0" class="flex items-center gap-2 ml-auto">
+          <span class="text-xs text-gray-500" x-text="`${libSelectedIds.size} selected`"></span>
+          <button @click="libMigrateSelected()" class="btn-primary text-xs px-3 py-1.5">Migrate Selected</button>
+          <button @click="libClearSelection()" class="btn-ghost text-xs px-2 py-1.5">Clear</button>
+        </div>
+      </div>
+
+      <!-- Loading -->
+      <div x-show="libLoading" class="flex-1 flex items-center justify-center py-16">
+        <div class="flex flex-col items-center gap-2">
+          <div class="w-5 h-5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin"></div>
+          <span class="text-xs text-gray-500">Loading library…</span>
+        </div>
+      </div>
+
+      <!-- Empty state -->
+      <div x-show="!libLoading && libVideos.length === 0 && !libHasManifest" class="flex-1 flex items-center justify-center">
+        <div class="text-center py-12">
+          <svg class="w-12 h-12 text-gray-300 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.069A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/></svg>
+          <p class="text-sm font-medium text-gray-700 mb-1">No videos discovered yet</p>
+          <p class="text-xs text-gray-500 mb-4">Run discovery from the Home tab first to populate the library</p>
+          <button @click="currentTab='home'; wfPhase=1;" class="btn-primary text-xs px-4 py-2">Go to Home → Discover</button>
+        </div>
+      </div>
+
+      <!-- Grid view -->
+      <div x-show="!libLoading && libVideos.length > 0 && libViewMode === 'grid'" class="flex-1 overflow-y-auto pb-4">
+        <div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          <template x-for="v in libVideos" :key="v.id">
+            <div @click="libToggleSelect(v.id)"
+                 :class="libSelectedIds.has(v.id) ? 'ring-2 ring-brand-500 bg-brand-50' : 'hover:bg-gray-50'"
+                 class="border border-gray-200 rounded-lg p-3 cursor-pointer transition-all relative">
+              <!-- Thumbnail placeholder -->
+              <div class="aspect-video bg-gray-100 rounded mb-2 flex items-center justify-center overflow-hidden">
+                <template x-if="v.thumbnail_url">
+                  <img :src="v.thumbnail_url" class="w-full h-full object-cover rounded" :alt="v.title">
+                </template>
+                <template x-if="!v.thumbnail_url">
+                  <svg class="w-8 h-8 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.069A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/></svg>
+                </template>
+              </div>
+              <!-- Check indicator -->
+              <div x-show="libSelectedIds.has(v.id)" class="absolute top-2 right-2 w-5 h-5 bg-brand-500 rounded-full flex items-center justify-center">
+                <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
+              </div>
+              <p class="text-xs font-medium text-gray-900 truncate mb-1" x-text="v.title || v.id"></p>
+              <div class="flex items-center gap-2 flex-wrap">
+                <span x-show="v.duration_seconds" class="text-xs text-gray-400" x-text="v.duration_seconds ? Math.floor(v.duration_seconds/60)+'m' : ''"></span>
+                <span x-show="v.file_size_mb" class="text-xs text-gray-400" x-text="v.file_size_mb ? (v.file_size_mb >= 1024 ? (v.file_size_mb/1024).toFixed(1)+'GB' : v.file_size_mb+'MB') : ''"></span>
+                <span x-show="v.caption_count > 0" class="inline-flex items-center gap-0.5 text-xs bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">
+                  <svg class="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z" clip-rule="evenodd"/></svg>
+                  <span x-text="v.caption_count"></span>
+                </span>
+                <span x-show="v.migration_status === 'completed'" class="text-xs bg-green-50 text-green-700 px-1.5 py-0.5 rounded">✓ Migrated</span>
+                <span x-show="v.migration_status === 'failed'" class="text-xs bg-red-50 text-red-700 px-1.5 py-0.5 rounded">✗ Failed</span>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- Pagination -->
+        <div x-show="libTotal > libPageSize" class="flex items-center justify-between mt-4">
+          <span class="text-xs text-gray-500" x-text="`Showing ${(libPage-1)*libPageSize+1}–${Math.min(libPage*libPageSize, libTotal)} of ${libTotal}`"></span>
+          <div class="flex gap-1">
+            <button @click="libPage--; loadLibrary()" :disabled="libPage <= 1" class="btn-ghost text-xs px-2 py-1 disabled:opacity-40">← Prev</button>
+            <button @click="libPage++; loadLibrary()" :disabled="libPage*libPageSize >= libTotal" class="btn-ghost text-xs px-2 py-1 disabled:opacity-40">Next →</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- List view -->
+      <div x-show="!libLoading && libVideos.length > 0 && libViewMode === 'list'" class="flex-1 overflow-y-auto pb-4">
+        <div class="border border-gray-200 rounded-lg overflow-hidden">
+          <table class="w-full text-xs">
+            <thead class="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th class="px-3 py-2 text-left font-medium text-gray-600 w-6">
+                  <input type="checkbox" @change="$event.target.checked ? libSelectAll() : libClearSelection()" class="rounded">
+                </th>
+                <th class="px-3 py-2 text-left font-medium text-gray-600">Title</th>
+                <th class="px-3 py-2 text-left font-medium text-gray-600">Duration</th>
+                <th class="px-3 py-2 text-left font-medium text-gray-600">Size</th>
+                <th class="px-3 py-2 text-left font-medium text-gray-600">Captions</th>
+                <th class="px-3 py-2 text-left font-medium text-gray-600">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="v in libVideos" :key="v.id">
+                <tr @click="libToggleSelect(v.id)" :class="libSelectedIds.has(v.id) ? 'bg-brand-50' : 'hover:bg-gray-50'" class="border-b border-gray-100 cursor-pointer transition-colors">
+                  <td class="px-3 py-2">
+                    <input type="checkbox" :checked="libSelectedIds.has(v.id)" @click.stop="libToggleSelect(v.id)" class="rounded">
+                  </td>
+                  <td class="px-3 py-2 font-medium text-gray-900 max-w-xs truncate" x-text="v.title || v.id"></td>
+                  <td class="px-3 py-2 text-gray-500" x-text="v.duration_seconds ? Math.floor(v.duration_seconds/60)+'m '+Math.floor(v.duration_seconds%60)+'s' : '—'"></td>
+                  <td class="px-3 py-2 text-gray-500" x-text="v.file_size_mb ? (v.file_size_mb >= 1024 ? (v.file_size_mb/1024).toFixed(1)+'GB' : v.file_size_mb+'MB') : '—'"></td>
+                  <td class="px-3 py-2 text-gray-500" x-text="v.caption_count > 0 ? v.caption_count+' tracks' : '—'"></td>
+                  <td class="px-3 py-2">
+                    <span x-show="v.migration_status === 'completed'" class="text-green-700">✓</span>
+                    <span x-show="v.migration_status === 'failed'" class="text-red-600">✗</span>
+                    <span x-show="!v.migration_status || v.migration_status === 'not_started'" class="text-gray-400">—</span>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <!-- List pagination -->
+        <div x-show="libTotal > libPageSize" class="flex items-center justify-between mt-4">
+          <span class="text-xs text-gray-500" x-text="`Showing ${(libPage-1)*libPageSize+1}–${Math.min(libPage*libPageSize, libTotal)} of ${libTotal}`"></span>
+          <div class="flex gap-1">
+            <button @click="libPage--; loadLibrary()" :disabled="libPage <= 1" class="btn-ghost text-xs px-2 py-1 disabled:opacity-40">← Prev</button>
+            <button @click="libPage++; loadLibrary()" :disabled="libPage*libPageSize >= libTotal" class="btn-ghost text-xs px-2 py-1 disabled:opacity-40">Next →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ═══ FIELD MAPPING ═══ -->
     <div x-show="currentTab === 'field-mapping'" x-cloak class="fade-in">
       <div class="mb-6 flex items-center justify-between">
@@ -1686,6 +2011,12 @@
               <span x-show="projectCredStatus?.aws?.configured && projectCreds.aws.endpoint_url"
                     class="text-[10px] font-normal text-amber-600 ml-1">— LocalStack (dev)</span>
             </h3>
+          </div>
+          <!-- WO-19: LocalStack detection badge -->
+          <div x-show="projectCreds.aws && (projectCreds.aws.endpoint_url || '').includes('4566')"
+               class="inline-flex items-center gap-1.5 text-xs bg-purple-50 text-purple-700 border border-purple-200 px-2 py-1 rounded-full mb-3">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"/></svg>
+            Using LocalStack (local dev)
           </div>
 
           <!-- EMPTY STATE: not configured -->
@@ -2501,6 +2832,78 @@
         </div>
         </div> <!-- /right detail -->
       </div> <!-- /flex row -->
+
+      <!-- ── WO-25: Verification Section ── -->
+      <div class="border-t border-gray-200 pt-4 mt-4">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h3 class="text-sm font-semibold text-gray-900">Migration Verification</h3>
+            <p class="text-xs text-gray-500 mt-0.5">Compare source metadata with what landed in Zoom</p>
+          </div>
+          <div class="flex gap-2">
+            <button x-show="verifyResults && verifyResults.length > 0" @click="exportVerificationCsv()" class="btn-secondary text-xs px-3 py-1.5">Export CSV</button>
+            <button @click="runVerification()" :disabled="verifyLoading" class="btn-primary text-xs px-3 py-1.5" x-text="verifyLoading ? 'Verifying…' : 'Verify Migration'"></button>
+          </div>
+        </div>
+
+        <!-- Summary bar -->
+        <div x-show="verifySummary" class="grid grid-cols-4 gap-2 mb-3">
+          <div class="bg-gray-50 rounded-lg p-2 text-center">
+            <div class="text-lg font-bold text-gray-900" x-text="verifySummary?.total || 0"></div>
+            <div class="text-xs text-gray-500">Total</div>
+          </div>
+          <div class="bg-green-50 rounded-lg p-2 text-center">
+            <div class="text-lg font-bold text-green-700" x-text="verifySummary?.verified || 0"></div>
+            <div class="text-xs text-green-600">Verified ✓</div>
+          </div>
+          <div class="bg-yellow-50 rounded-lg p-2 text-center">
+            <div class="text-lg font-bold text-yellow-700" x-text="verifySummary?.discrepancies || 0"></div>
+            <div class="text-xs text-yellow-600">Discrepancies ⚠</div>
+          </div>
+          <div class="bg-red-50 rounded-lg p-2 text-center">
+            <div class="text-lg font-bold text-red-700" x-text="verifySummary?.missing || 0"></div>
+            <div class="text-xs text-red-600">Missing ✗</div>
+          </div>
+        </div>
+
+        <!-- Results table -->
+        <div x-show="verifyResults && verifyResults.length > 0" class="border border-gray-200 rounded-lg overflow-hidden max-h-80 overflow-y-auto">
+          <table class="w-full text-xs">
+            <thead class="bg-gray-50 border-b border-gray-200 sticky top-0">
+              <tr>
+                <th class="px-3 py-2 text-left font-medium text-gray-600">Video</th>
+                <th class="px-3 py-2 text-left font-medium text-gray-600">Status</th>
+                <th class="px-3 py-2 text-left font-medium text-gray-600">Checks</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="v in verifyResults" :key="v.entry_id">
+                <tr class="border-b border-gray-100 hover:bg-gray-50">
+                  <td class="px-3 py-2">
+                    <div class="font-medium text-gray-900 truncate max-w-xs" x-text="v.source_title"></div>
+                    <div class="text-gray-400 truncate" x-text="v.zoom_id || 'No Zoom ID'"></div>
+                  </td>
+                  <td class="px-3 py-2">
+                    <span x-show="v.status === 'verified'" class="inline-flex items-center gap-1 text-xs bg-green-50 text-green-700 px-2 py-0.5 rounded-full">✓ Verified</span>
+                    <span x-show="v.status === 'discrepancy'" class="inline-flex items-center gap-1 text-xs bg-yellow-50 text-yellow-700 px-2 py-0.5 rounded-full">⚠ Discrepancy</span>
+                    <span x-show="v.status === 'missing'" class="inline-flex items-center gap-1 text-xs bg-red-50 text-red-700 px-2 py-0.5 rounded-full">✗ Missing</span>
+                  </td>
+                  <td class="px-3 py-2">
+                    <template x-for="c in v.checks" :key="c.field">
+                      <div class="flex items-center gap-1 mb-0.5">
+                        <span :class="c.status==='pass' ? 'text-green-500' : c.status==='warn' ? 'text-yellow-500' : 'text-red-500'" x-text="c.status==='pass' ? '✓' : c.status==='warn' ? '⚠' : '✗'"></span>
+                        <span class="text-gray-600" x-text="c.field"></span>
+                        <span class="text-gray-400 truncate" x-text="`${c.source} → ${c.zoom}`"></span>
+                      </div>
+                    </template>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
     </div>
 
     <!-- ══════════════════════════════════════════════════════════════════ -->
@@ -2897,10 +3300,207 @@
           </div> <!-- /detail content -->
         </div> <!-- /right panel -->
       </div> <!-- /two-column -->
+
+      <!-- ── WO-24: Market Trends Report ── -->
+      <div class="border-t border-gray-200 pt-4 mt-4">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h3 class="text-sm font-semibold text-gray-900">Market Trends Report</h3>
+            <p class="text-xs text-gray-500 mt-0.5">AI-powered topic analysis across all video transcriptions</p>
+          </div>
+          <button @click="generateMarketReport()" :disabled="reportGenerating" class="btn-primary text-xs px-3 py-1.5" x-text="reportGenerating ? 'Generating…' : '✦ Generate Report'"></button>
+        </div>
+
+        <!-- Generating state -->
+        <div x-show="reportGenerating && !reportData" class="flex items-center gap-2 text-xs text-gray-500 py-3">
+          <div class="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin"></div>
+          Analyzing transcriptions and clustering topics…
+        </div>
+
+        <!-- Report results -->
+        <div x-show="reportData" class="space-y-4">
+          <!-- Summary -->
+          <div class="text-xs text-gray-500" x-text="`Analyzed ${reportData?.total_videos_analyzed || 0} videos`"></div>
+
+          <!-- Topic clusters -->
+          <div x-show="reportData?.topic_clusters?.length > 0">
+            <h4 class="text-xs font-semibold text-gray-700 mb-2">Topic Distribution</h4>
+            <div class="space-y-2">
+              <template x-for="cluster in (reportData?.topic_clusters || [])" :key="cluster.id">
+                <div class="flex items-center gap-2">
+                  <div class="w-24 text-xs text-gray-600 truncate" x-text="cluster.label"></div>
+                  <div class="flex-1 bg-gray-100 rounded-full h-2">
+                    <div class="h-2 bg-brand-500 rounded-full transition-all" :style="`width: ${cluster.percentage}%`"></div>
+                  </div>
+                  <div class="text-xs text-gray-500 w-16 text-right" x-text="`${cluster.count} (${cluster.percentage}%)`"></div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Top keywords -->
+          <div x-show="reportData?.global_keywords?.length > 0">
+            <h4 class="text-xs font-semibold text-gray-700 mb-2">Top Keywords</h4>
+            <div class="flex flex-wrap gap-1.5">
+              <template x-for="(kw, i) in (reportData?.global_keywords || []).slice(0, 20)" :key="i">
+                <span class="inline-flex items-center text-xs bg-brand-50 text-brand-700 px-2 py-0.5 rounded-full" x-text="kw"></span>
+              </template>
+            </div>
+          </div>
+
+          <!-- Per-video summaries -->
+          <div x-show="Object.keys(reportData?.per_video || {}).length > 0">
+            <h4 class="text-xs font-semibold text-gray-700 mb-2">Video Summaries</h4>
+            <div class="space-y-2 max-h-48 overflow-y-auto">
+              <template x-for="[vid_id, meta] in Object.entries(reportData?.per_video || {})" :key="vid_id">
+                <div class="bg-gray-50 rounded-lg p-2.5">
+                  <div class="text-xs font-medium text-gray-900 mb-1" x-text="meta.title"></div>
+                  <div class="text-xs text-gray-600" x-text="meta.summary"></div>
+                  <div class="flex flex-wrap gap-1 mt-1.5">
+                    <template x-for="kw in (meta.keywords || []).slice(0, 5)" :key="kw">
+                      <span class="text-xs bg-white border border-gray-200 text-gray-500 px-1.5 py-0.5 rounded" x-text="kw"></span>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+
       </div> <!-- /kaltura-only gate -->
     </div> <!-- /content-analysis tab -->
 
   </main>
+
+  <!-- ── WO-20: Project Agent Setup Modal ── -->
+  <div x-show="agentModalOpen" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 flex flex-col" style="max-height: 85vh;">
+      <!-- Header -->
+      <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+        <div class="flex items-center gap-2">
+          <div class="w-7 h-7 rounded-full bg-brand-500 flex items-center justify-center">
+            <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17H3a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2h-2"/></svg>
+          </div>
+          <div>
+            <div class="text-sm font-semibold text-gray-900">Project Setup Agent</div>
+            <div class="text-xs text-gray-500">Configure credentials step by step</div>
+          </div>
+        </div>
+        <button @click="agentModalOpen = false" class="text-gray-400 hover:text-gray-600 transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <!-- Chat messages -->
+      <div class="flex-1 overflow-y-auto p-4 space-y-3">
+        <template x-for="(msg, i) in agentMessages" :key="i">
+          <div :class="msg.role === 'agent' ? 'flex gap-2' : 'flex gap-2 justify-end'">
+            <!-- Agent avatar -->
+            <div x-show="msg.role === 'agent'" class="w-6 h-6 rounded-full bg-brand-500 flex-shrink-0 flex items-center justify-center mt-0.5">
+              <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18"/></svg>
+            </div>
+            <div :class="msg.role === 'agent' ? 'bg-gray-100 text-gray-800' : 'bg-brand-500 text-white'"
+                 class="rounded-xl px-3 py-2 text-sm max-w-xs" x-text="msg.text"></div>
+            <!-- Status indicator -->
+            <div x-show="msg.status === 'ok'" class="flex-shrink-0 w-5 h-5 rounded-full bg-green-100 flex items-center justify-center mt-0.5">
+              <svg class="w-3 h-3 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
+            </div>
+            <div x-show="msg.status === 'error'" class="flex-shrink-0 w-5 h-5 rounded-full bg-red-100 flex items-center justify-center mt-0.5">
+              <svg class="w-3 h-3 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12"/></svg>
+            </div>
+          </div>
+        </template>
+
+        <!-- Welcome step -->
+        <div x-show="agentStep === 'welcome'" class="flex gap-2 flex-wrap">
+          <button @click="agentStep='source'; agentMessages.push({role:'user',text:'New project'}); agentMessages.push({role:'agent',text:'Great! Which source platform are you migrating from?'})" class="btn-primary text-xs px-3 py-1.5">New Project</button>
+          <button @click="agentStep='verify'; agentMessages.push({role:'user',text:'Existing project'}); agentMessages.push({role:'agent',text:'Loading your existing credentials and checking connections…'}); agentVerifyExisting();" class="btn-secondary text-xs px-3 py-1.5">Existing Project</button>
+        </div>
+
+        <!-- Source step: platform selection -->
+        <div x-show="agentStep === 'source'" class="space-y-2">
+          <div class="flex gap-2 flex-wrap">
+            <template x-for="p in [{id:'kaltura',label:'Kaltura'},{id:'on24',label:'ON24'},{id:'panopto',label:'Panopto'},{id:'brightcove',label:'Brightcove'}]" :key="p.id">
+              <button @click="agentPlatform=p.id; agentStep='source_creds'; agentMessages.push({role:'user',text:p.label}); agentMessages.push({role:'agent',text:p.label+' — enter your credentials below and I\'ll test the connection.'})"
+                      class="btn-secondary text-xs px-3 py-1.5" x-text="p.label"></button>
+            </template>
+          </div>
+        </div>
+
+        <!-- Source credentials -->
+        <div x-show="agentStep === 'source_creds'" class="bg-gray-50 rounded-lg p-3 space-y-2">
+          <template x-if="agentPlatform === 'kaltura'">
+            <div class="space-y-2">
+              <input x-model="agentDraftCreds.source.partner_id" placeholder="Partner ID" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+              <input x-model="agentDraftCreds.source.admin_secret" type="password" placeholder="Admin Secret" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+              <input x-model="agentDraftCreds.source.service_url" placeholder="Service URL (optional)" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+            </div>
+          </template>
+          <template x-if="agentPlatform !== 'kaltura'">
+            <div class="space-y-2">
+              <input x-model="agentDraftCreds.source.client_id" placeholder="Client ID" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+              <input x-model="agentDraftCreds.source.client_secret" type="password" placeholder="Client Secret" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+              <input x-model="agentDraftCreds.source.account_id" placeholder="Account ID" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+            </div>
+          </template>
+          <button @click="agentTestSource()" :disabled="agentTestingCreds" class="btn-primary text-xs px-3 py-1.5 w-full" x-text="agentTestingCreds ? 'Testing…' : 'Test Connection →'"></button>
+        </div>
+
+        <!-- Zoom step -->
+        <div x-show="agentStep === 'zoom'" class="bg-gray-50 rounded-lg p-3 space-y-2">
+          <input x-model="agentDraftCreds.zoom.client_id" placeholder="Zoom Client ID" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+          <input x-model="agentDraftCreds.zoom.client_secret" type="password" placeholder="Zoom Client Secret" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+          <input x-model="agentDraftCreds.zoom.account_id" placeholder="Zoom Account ID" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+          <select x-model="agentDraftCreds.zoom.target_api" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+            <option value="vm">Video Management</option>
+            <option value="events">Zoom Events CMS</option>
+            <option value="clips">Clips</option>
+          </select>
+          <button @click="agentTestZoom()" :disabled="agentTestingCreds" class="btn-primary text-xs px-3 py-1.5 w-full" x-text="agentTestingCreds ? 'Testing…' : 'Test Zoom Connection →'"></button>
+        </div>
+
+        <!-- AWS step -->
+        <div x-show="agentStep === 'aws'" class="bg-gray-50 rounded-lg p-3 space-y-2">
+          <div class="flex gap-2 mb-2">
+            <button @click="agentDraftCreds.aws.endpoint_url='http://localhost:4566'; agentTestLocalStack()" class="btn-secondary text-xs px-2 py-1">Use LocalStack</button>
+            <span class="text-xs text-gray-500 self-center">or enter AWS credentials below</span>
+          </div>
+          <input x-model="agentDraftCreds.aws.s3_bucket" placeholder="S3 Bucket name" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+          <input x-model="agentDraftCreds.aws.region" placeholder="Region (e.g. us-east-1)" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+          <input x-model="agentDraftCreds.aws.endpoint_url" placeholder="Endpoint URL (leave blank for real AWS)" class="w-full text-xs border border-gray-200 rounded px-2 py-1.5 bg-white">
+          <button @click="agentTestAws()" :disabled="agentTestingCreds" class="btn-primary text-xs px-3 py-1.5 w-full" x-text="agentTestingCreds ? 'Testing…' : 'Test S3 Connection →'"></button>
+        </div>
+
+        <!-- Confirm step -->
+        <div x-show="agentStep === 'confirm'" class="space-y-2">
+          <div class="bg-green-50 border border-green-200 rounded-lg p-3 text-xs text-green-800">
+            <div class="font-medium mb-1">All connections verified ✓</div>
+            <div>Ready to save credentials for <strong x-text="currentProjectSlug"></strong></div>
+          </div>
+          <div class="flex gap-2">
+            <button @click="agentSaveAll()" :disabled="agentSaving" class="btn-primary text-xs px-4 py-1.5 flex-1" x-text="agentSaving ? 'Saving…' : 'Yes, save configuration'"></button>
+            <button @click="agentModalOpen=false" class="btn-ghost text-xs px-3 py-1.5">Cancel</button>
+          </div>
+        </div>
+
+        <!-- Done step -->
+        <div x-show="agentStep === 'done'" class="text-center py-3">
+          <div class="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-2">
+            <svg class="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+          </div>
+          <p class="text-sm font-medium text-gray-900 mb-1">Project configured!</p>
+          <button @click="agentModalOpen=false; currentTab='home';" class="btn-primary text-xs px-4 py-2">Go to Home →</button>
+        </div>
+      </div>
+
+      <!-- Input bar (for free-form responses) -->
+      <div x-show="!['welcome','source','source_creds','zoom','aws','confirm','done','verify'].includes(agentStep)" class="border-t border-gray-200 p-3 flex gap-2">
+        <input x-model="agentInput" @keyup.enter="agentSendMessage()" placeholder="Type a response…" class="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-500">
+        <button @click="agentSendMessage()" class="btn-primary text-xs px-3 py-1.5">Send</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     function app() {
@@ -2914,13 +3514,11 @@
         loginError: '',
         loginLoading: false,
 
-        currentTab: 'dashboard',
-        _validTabs: ['dashboard','workflow','migration','field-mapping','settings','dryrun','audit','content-analysis','admin'],
+        currentTab: 'home',
+        _validTabs: ['home','library','field-mapping','settings','dryrun','audit','content-analysis','admin'],
         tabs: [
-          { id: 'dashboard', label: 'Dashboard', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>' },
-          { id: 'workflow', label: 'Workflow', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>' },
-          // Kaltura Library tab removed — merged into Migration 3-column view
-          { id: 'migration', label: 'Migration', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>' },
+          { id: 'home', label: 'Home', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>' },
+          { id: 'library', label: 'Library', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z"/></svg>' },
           { id: 'field-mapping', label: 'Field Mapping', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>' },
           { id: 'settings', label: 'Settings', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>' },
           { id: 'dryrun', label: 'Dry Run', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>' },
@@ -3084,6 +3682,42 @@
         settingsMessage: '',
         settingsMessageType: '',
 
+        // ── Library tab (WO-22) ──
+        libVideos: [],
+        libTotal: 0,
+        libPage: 1,
+        libPageSize: 50,
+        libLoading: false,
+        libHasManifest: false,
+        libFilterCaptions: '',
+        libFilterMinSize: '',
+        libFilterMaxSize: '',
+        libSelectedIds: new Set(),
+        libViewMode: 'grid',
+        libEstimatedMinutes: 0,
+        libExpandedId: null,
+
+        // ── Verification (WO-25) ──
+        verifyLoading: false,
+        verifyResults: null,
+        verifySummary: null,
+
+        // ── Market Report (WO-24) ──
+        reportGenerating: false,
+        reportData: null,
+        reportId: null,
+        reportPolling: false,
+
+        // ── Agent Setup Modal (WO-20) ──
+        agentModalOpen: false,
+        agentMessages: [],
+        agentStep: 'welcome',
+        agentSaving: false,
+        agentTestingCreds: false,
+        agentDraftCreds: { source: {}, zoom: {}, aws: {} },
+        agentPlatform: 'kaltura',
+        agentInput: '',
+
         // ── Audit & Reconciliation ──
         auditSubTab: 'reconciliation',
         auditTrail: [],
@@ -3123,7 +3757,7 @@
           const hashTab = this._hashTab();
           const hashSlug = this._hashProject();
           if (hashTab && this._validTabs.includes(hashTab)) this.currentTab = hashTab;
-          else if (!hashTab) window.location.hash = this._buildHash(this.currentProjectSlug, 'dashboard');
+          else if (!hashTab) window.location.hash = this._buildHash(this.currentProjectSlug, 'home');
 
           // Restore active project: URL hash > sessionStorage
           const savedSlug = sessionStorage.getItem('vm_project');
@@ -3170,8 +3804,8 @@
         },
 
         _onTabActivate(tab) {
-          if (tab === 'dashboard') this.$nextTick(() => this.renderStatusChart());
-          if (tab === 'migration') { this.loadMigKaltura(); this.loadZoomCompleted(); }
+          if (tab === 'home') { this.loadMigKaltura(); this.loadZoomCompleted(); }
+          if (tab === 'library' && this.libVideos.length === 0) this.loadLibrary();
           if (tab === 'field-mapping') this.loadFieldMappings();
           if (tab === 'settings') { this.loadSettings(); this.loadProjectCreds(); this.loadClientTokens(); this.loadCostProjection(); }
           if (tab === 'dryrun') { this.checkDryRunCheckpoint(); }
@@ -3412,10 +4046,10 @@
               console.warn('switchProject fetch error (non-fatal):', e);
             }
           }
-          if (this.currentTab === 'dashboard') { this.loadActivity(); this.loadVideos(); }
+          if (this.currentTab === 'home') { this.loadMigKaltura(); this.loadZoomCompleted(); }
           if (this.currentTab === 'settings') { this.loadClientTokens(); this.loadCostProjection(); if (this.projectCredStatus?.zoom?.configured) this.loadZoomHubs(); }
           if (this.currentTab === 'field-mapping') this.loadFieldMappings();
-          if (this.currentTab === 'migration') { this.loadMigKaltura(); this.loadZoomCompleted(); }
+          if (this.currentTab === 'library' && this.libVideos.length === 0) this.loadLibrary();
           if (this.currentTab === 'dryrun') this.loadDryRunCheckpoint();
           if (this.currentTab === 'audit') { this.loadReconciliation(); this.loadAuditTrail(); this.loadJourneyVideos(); }
           if (this.currentTab === 'content-analysis') {
@@ -3790,6 +4424,226 @@
             }
           } catch(e) {}
           this.videoAssetsLoading = false;
+        },
+
+        // ── Library Methods (WO-22) ──
+        async loadLibrary() {
+          if (!this.currentProjectSlug) return;
+          this.libLoading = true;
+          const params = new URLSearchParams({
+            page: this.libPage,
+            page_size: this.libPageSize,
+          });
+          if (this.libFilterCaptions === 'yes') params.set('filter_has_captions', 'true');
+          if (this.libFilterCaptions === 'no') params.set('filter_has_captions', 'false');
+          if (this.libFilterMinSize) params.set('filter_min_size_mb', this.libFilterMinSize);
+          if (this.libFilterMaxSize) params.set('filter_max_size_mb', this.libFilterMaxSize);
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/library?${params}`, { headers: this._authHeaders() });
+            if (r.ok) {
+              const d = await r.json();
+              this.libVideos = d.videos || [];
+              this.libTotal = d.total || 0;
+              this.libHasManifest = d.has_manifest || false;
+              this.libEstimatedMinutes = d.estimated_migration_minutes || 0;
+            }
+          } catch(e) { console.error('Library load failed', e); }
+          this.libLoading = false;
+        },
+        libToggleSelect(id) {
+          if (this.libSelectedIds.has(id)) this.libSelectedIds.delete(id);
+          else this.libSelectedIds.add(id);
+          this.libSelectedIds = new Set(this.libSelectedIds);
+        },
+        libSelectAll() { this.libSelectedIds = new Set(this.libVideos.map(v => v.id)); },
+        libClearSelection() { this.libSelectedIds = new Set(); },
+        async libMigrateSelected() {
+          if (this.libSelectedIds.size === 0) return;
+          this.currentTab = 'home';
+          this.batchMigrateEntryIds = [...this.libSelectedIds].join('\n');
+          this.showBatchMigrateModal = true;
+        },
+
+        // ── Verification Methods (WO-25) ──
+        async runVerification() {
+          if (!this.currentProjectSlug) return;
+          this.verifyLoading = true;
+          this.verifyResults = null;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/verification`, { headers: this._authHeaders() });
+            if (r.ok) {
+              const d = await r.json();
+              this.verifyResults = d.results || [];
+              this.verifySummary = d.summary || {};
+            }
+          } catch(e) { console.error('Verification failed', e); }
+          this.verifyLoading = false;
+        },
+        exportVerificationCsv() {
+          if (!this.verifyResults) return;
+          const rows = [['Entry ID','Title','Zoom ID','Status','Details']];
+          this.verifyResults.forEach(r => {
+            const checks = (r.checks || []).map(c => `${c.field}: ${c.status}`).join('; ');
+            rows.push([r.entry_id, r.source_title, r.zoom_id, r.status, checks]);
+          });
+          const csv = rows.map(r => r.map(f => '"'+String(f||'').replace(/"/g,'""')+'"').join(',')).join('\n');
+          const a = document.createElement('a');
+          a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+          a.download = 'verification-report.csv';
+          a.click();
+        },
+
+        // ── Market Report Methods (WO-24) ──
+        async generateMarketReport() {
+          if (!this.currentProjectSlug) return;
+          this.reportGenerating = true;
+          this.reportData = null;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/generate-report`, {
+              method: 'POST', headers: this._authHeaders()
+            });
+            if (r.ok) {
+              const d = await r.json();
+              this.reportId = d.report_id;
+              this._pollReport();
+            } else {
+              console.error('Report generation failed');
+              this.reportGenerating = false;
+            }
+          } catch(e) { this.reportGenerating = false; }
+        },
+        async _pollReport() {
+          if (!this.reportId) return;
+          this.reportPolling = true;
+          const poll = async () => {
+            try {
+              const r = await fetch(`/api/projects/${this.currentProjectSlug}/report/${this.reportId}`, { headers: this._authHeaders() });
+              if (r.ok) {
+                const d = await r.json();
+                if (d.status === 'complete') {
+                  this.reportData = d;
+                  this.reportGenerating = false;
+                  this.reportPolling = false;
+                  return;
+                }
+              }
+            } catch(e) {}
+            if (this.reportPolling) setTimeout(poll, 3000);
+          };
+          poll();
+        },
+
+        // ── Agent Setup Methods (WO-20) ──
+        async agentTestSource() {
+          this.agentTestingCreds = true;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/agent/test-credentials`, {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({ service: this.agentPlatform, credentials: this.agentDraftCreds.source })
+            });
+            const d = await r.json();
+            this.agentMessages.push({ role: 'agent', text: d.message, status: d.ok ? 'ok' : 'error' });
+            if (d.ok) {
+              this.agentStep = 'zoom';
+              setTimeout(() => this.agentMessages.push({ role: 'agent', text: "Now let's configure your Zoom destination." }), 500);
+            }
+          } catch(e) { this.agentMessages.push({ role: 'agent', text: 'Connection error — check your credentials', status: 'error' }); }
+          this.agentTestingCreds = false;
+        },
+        async agentTestZoom() {
+          this.agentTestingCreds = true;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/agent/test-credentials`, {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({ service: 'zoom', credentials: this.agentDraftCreds.zoom })
+            });
+            const d = await r.json();
+            this.agentMessages.push({ role: 'agent', text: d.message, status: d.ok ? 'ok' : 'error' });
+            if (d.ok) {
+              this.agentStep = 'aws';
+              setTimeout(() => this.agentMessages.push({ role: 'agent', text: 'Last step: S3 staging bucket. You can use LocalStack locally or real AWS.' }), 500);
+            }
+          } catch(e) { this.agentMessages.push({ role: 'agent', text: 'Connection error', status: 'error' }); }
+          this.agentTestingCreds = false;
+        },
+        async agentTestLocalStack() {
+          this.agentTestingCreds = true;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/agent/test-credentials`, {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({ service: 'localstack', credentials: {} })
+            });
+            const d = await r.json();
+            this.agentMessages.push({ role: 'agent', text: d.message, status: d.ok ? 'ok' : 'error' });
+            if (d.ok) {
+              this.agentDraftCreds.aws.endpoint_url = 'http://localhost:4566';
+              this.agentDraftCreds.aws.s3_bucket = this.agentDraftCreds.aws.s3_bucket || 'migration-staging';
+              this.agentDraftCreds.aws.region = 'us-east-1';
+              this.agentStep = 'confirm';
+              setTimeout(() => this.agentMessages.push({ role: 'agent', text: 'Everything looks good! Ready to save your configuration?' }), 500);
+            }
+          } catch(e) { this.agentMessages.push({ role: 'agent', text: 'LocalStack check failed', status: 'error' }); }
+          this.agentTestingCreds = false;
+        },
+        async agentTestAws() {
+          this.agentTestingCreds = true;
+          try {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/agent/test-credentials`, {
+              method: 'POST', headers: this._authHeaders(),
+              body: JSON.stringify({ service: 'aws', credentials: this.agentDraftCreds.aws })
+            });
+            const d = await r.json();
+            this.agentMessages.push({ role: 'agent', text: d.message, status: d.ok ? 'ok' : 'error' });
+            if (d.ok) {
+              this.agentStep = 'confirm';
+              setTimeout(() => this.agentMessages.push({ role: 'agent', text: 'Everything looks good! Ready to save your configuration?' }), 500);
+            }
+          } catch(e) { this.agentMessages.push({ role: 'agent', text: 'S3 connection error', status: 'error' }); }
+          this.agentTestingCreds = false;
+        },
+        async agentSaveAll() {
+          this.agentSaving = true;
+          try {
+            await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
+              method: 'PUT', headers: this._authHeaders(),
+              body: JSON.stringify({ service: this.agentPlatform, credentials: this.agentDraftCreds.source })
+            });
+            await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
+              method: 'PUT', headers: this._authHeaders(),
+              body: JSON.stringify({ service: 'zoom', credentials: this.agentDraftCreds.zoom })
+            });
+            await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
+              method: 'PUT', headers: this._authHeaders(),
+              body: JSON.stringify({ service: 'aws', credentials: this.agentDraftCreds.aws })
+            });
+            delete this._projectCache[this.currentProjectSlug];
+            await this.loadProjectCreds();
+            this.agentStep = 'done';
+            this.agentMessages.push({ role: 'agent', text: 'All credentials saved! Your project is ready to migrate.' });
+          } catch(e) { this.agentMessages.push({ role: 'agent', text: 'Save failed — please try again', status: 'error' }); }
+          this.agentSaving = false;
+        },
+        async agentVerifyExisting() {
+          try {
+            const csr = await fetch(`/api/projects/${this.currentProjectSlug}/credential-status`, { headers: this._authHeaders() });
+            if (csr.ok) {
+              const d = await csr.json();
+              const connected = Object.entries(d).filter(([k,v]) => v?.configured).map(([k]) => k);
+              const missing = Object.entries(d).filter(([k,v]) => !v?.configured).map(([k]) => k);
+              if (missing.length === 0) {
+                this.agentMessages.push({ role: 'agent', text: `All connections active: ${connected.join(', ')}. Your project is ready.` });
+                this.agentStep = 'done';
+              } else {
+                this.agentMessages.push({ role: 'agent', text: `Connected: ${connected.join(', ') || 'none'}. Missing: ${missing.join(', ')}. Let me help you fill in the gaps.` });
+                this.agentStep = missing.includes('kaltura') || missing.includes('on24') || missing.includes('brightcove') || missing.includes('panopto') ? 'source_creds' : missing.includes('zoom') ? 'zoom' : 'aws';
+              }
+            }
+          } catch(e) { this.agentMessages.push({ role: 'agent', text: 'Could not check credentials.', status: 'error' }); }
+        },
+        agentSendMessage() {
+          if (!this.agentInput.trim()) return;
+          this.agentMessages.push({ role: 'user', text: this.agentInput });
+          this.agentInput = '';
         },
 
         // ── Migration Pipeline 3-Column Methods ──

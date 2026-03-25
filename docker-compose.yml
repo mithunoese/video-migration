@@ -2,13 +2,62 @@
 #
 # Usage:
 #   cp .env.example .env   # fill in your credentials
-#   docker compose up -d   # start the dashboard
+#   docker compose up -d   # starts dashboard + postgres + localstack + bucket init
 #   docker compose logs -f # follow logs
-#
-# With LocalStack S3 for testing:
-#   docker compose --profile testing up -d
 
 services:
+  db:
+    image: postgres:15-alpine
+    container_name: video-migration-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vmigrate}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vmigrate}
+      POSTGRES_DB: ${POSTGRES_DB:-vmigrate}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vmigrate}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  localstack:
+    image: localstack/localstack:latest
+    container_name: video-migration-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3
+      - DEFAULT_REGION=us-east-1
+      - DEBUG=0
+    volumes:
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 6
+    restart: unless-stopped
+
+  init-aws:
+    image: amazon/aws-cli
+    container_name: video-migration-init-aws
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+    entrypoint: >
+      sh -c "
+        aws --endpoint-url=http://localstack:4566 s3 mb s3://migration-staging --region us-east-1 2>/dev/null || true;
+        echo 'Bucket ready: s3://migration-staging'
+      "
+    restart: "no"
+
   dashboard:
     build: .
     container_name: video-migration-dashboard
@@ -18,8 +67,17 @@ services:
     environment:
       - STATE_DIR=/app/data
       - ENVIRONMENT=${ENVIRONMENT:-production}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-vmigrate}:${POSTGRES_PASSWORD:-vmigrate}@db:5432/${POSTGRES_DB:-vmigrate}
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-test}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-test}
     volumes:
       - migration_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/status')"]
@@ -28,22 +86,10 @@ services:
       start_period: 10s
       retries: 3
 
-  # Optional: LocalStack for S3 staging (testing only)
-  localstack:
-    image: localstack/localstack:latest
-    container_name: video-migration-localstack
-    profiles: ["testing"]
-    ports:
-      - "4566:4566"
-    environment:
-      - SERVICES=s3,dynamodb
-      - DEFAULT_REGION=us-east-1
-      - DEBUG=0
-    volumes:
-      - localstack_data:/var/lib/localstack
-
 volumes:
   migration_data:
     driver: local
   localstack_data:
+    driver: local
+  pg_data:
     driver: local

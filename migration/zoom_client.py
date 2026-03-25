@@ -680,6 +680,60 @@ class ZoomClient:
             logger.warning("Could not fetch Zoom video %s: %s", video_id, e)
             return {"exists": False, "title": "", "duration": 0, "error": str(e)}
 
+    def get_video_details(self, video_id: str) -> dict | None:
+        """Fetch detailed info for a single Zoom video after migration (verification use).
+
+        Routes by config.target_api:
+          - "clips" → GET /v2/clips/{video_id}
+          - "events" or "vm" → GET /v2/videos/{video_id}
+            (Zoom Video Management unified endpoint, also works for Events-uploaded videos)
+
+        Returns a normalized dict:
+          {
+            "title": str,
+            "duration": int,        # seconds
+            "file_size": int,       # bytes (0 if not returned by API)
+            "caption_count": int,   # number of caption tracks (0 if not returned)
+            "has_thumbnail": bool,
+          }
+
+        Returns None if the video is not found (404) or on any error.
+        """
+        target = self.config.target_api
+        try:
+            if target == "clips":
+                data = self._api_call("GET", f"/clips/{video_id}")
+                return {
+                    "title": data.get("title", ""),
+                    "duration": int(data.get("duration", 0) or 0),
+                    "file_size": int(data.get("file_size", 0) or 0),
+                    "caption_count": len(data.get("captions", []) or []),
+                    "has_thumbnail": bool(data.get("thumbnail_url") or data.get("thumbnail")),
+                }
+            else:
+                # "events" and "vm" both use the Video Management API
+                data = self._api_call("GET", f"/videos/{video_id}")
+                return {
+                    "title": data.get("title", ""),
+                    "duration": int(data.get("duration", 0) or 0),
+                    "file_size": int(data.get("file_size", 0) or 0),
+                    "caption_count": len(data.get("captions", []) or []),
+                    "has_thumbnail": bool(
+                        data.get("thumbnail_url")
+                        or data.get("thumbnail")
+                        or data.get("cover_url")
+                    ),
+                }
+        except requests.exceptions.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                logger.info("get_video_details: video %s not found (404)", video_id)
+                return None
+            logger.warning("get_video_details: HTTP error for video %s: %s", video_id, exc)
+            return None
+        except Exception as exc:
+            logger.warning("get_video_details: unexpected error for video %s: %s", video_id, exc)
+            return None
+
     def list_hubs(self) -> list[dict]:
         """List all Zoom Events hubs.
 

@@ -5189,3 +5189,401 @@ async def infra_test(user: dict = Depends(_verify_jwt)):
         return JSONResponse({"error": "Pilot runner timed out after 5 minutes"}, status_code=504)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── WO-22: Video Library ──────────────────────────────────────────────────────
+
+
+@app.get("/api/projects/{slug}/library")
+async def get_video_library(
+    slug: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    filter_has_captions: Optional[bool] = Query(None),
+    filter_min_size_mb: Optional[float] = Query(None),
+    filter_max_size_mb: Optional[float] = Query(None),
+    filter_min_duration: Optional[int] = Query(None),
+    filter_max_duration: Optional[int] = Query(None),
+    user: dict = Depends(_verify_jwt),
+):
+    """Browse video library from the latest workflow manifest for a project."""
+    if not _db.is_available():
+        return JSONResponse({"error": "db_unavailable"}, status_code=503)
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Get latest manifest
+    manifest_row = _db.fetch_one(
+        "SELECT manifest, summary, created_at FROM workflow_manifests WHERE project_id = %s AND status = 'complete' ORDER BY created_at DESC LIMIT 1",
+        (str(project["id"]),)
+    )
+
+    if not manifest_row:
+        return {"videos": [], "total": 0, "page": page, "page_size": page_size, "has_manifest": False}
+
+    try:
+        manifest = json.loads(manifest_row["manifest"]) if isinstance(manifest_row["manifest"], str) else manifest_row["manifest"]
+    except Exception:
+        manifest = []
+
+    if not manifest:
+        return {"videos": [], "total": 0, "page": page, "page_size": page_size, "has_manifest": True}
+
+    # Apply filters
+    filtered = manifest
+    if filter_has_captions is not None:
+        filtered = [v for v in filtered if bool(v.get("caption_count", 0) > 0) == filter_has_captions]
+    if filter_min_size_mb is not None:
+        filtered = [v for v in filtered if v.get("file_size_mb", 0) >= filter_min_size_mb]
+    if filter_max_size_mb is not None:
+        filtered = [v for v in filtered if v.get("file_size_mb", 0) <= filter_max_size_mb]
+    if filter_min_duration is not None:
+        filtered = [v for v in filtered if v.get("duration_seconds", 0) >= filter_min_duration]
+    if filter_max_duration is not None:
+        filtered = [v for v in filtered if v.get("duration_seconds", 0) <= filter_max_duration]
+
+    total = len(filtered)
+    start = (page - 1) * page_size
+    page_videos = filtered[start:start + page_size]
+
+    # Enrich with migration status from DB
+    if page_videos:
+        ids = [v.get("id") for v in page_videos if v.get("id")]
+        db_statuses = {}
+        if ids:
+            try:
+                placeholders = ",".join(["%s"] * len(ids))
+                rows = _db.fetch_all(
+                    f"SELECT entry_id, status FROM video_migrations WHERE project_id = %s AND entry_id IN ({placeholders})",
+                    (str(project["id"]), *ids)
+                )
+                db_statuses = {r["entry_id"]: r["status"] for r in rows}
+            except Exception:
+                pass
+        for v in page_videos:
+            v["migration_status"] = db_statuses.get(v.get("id"), "not_started")
+
+    # Estimate migration time (assume ~2 min per video avg)
+    estimated_minutes = total * 2
+
+    return {
+        "videos": page_videos,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_manifest": True,
+        "estimated_migration_minutes": estimated_minutes,
+        "manifest_created_at": str(manifest_row.get("created_at", "")),
+    }
+
+
+# ── WO-25: Verification ───────────────────────────────────────────────────────
+
+
+@app.get("/api/projects/{slug}/verification")
+async def get_migration_verification(
+    slug: str,
+    limit: int = Query(100, ge=1, le=500),
+    user: dict = Depends(_verify_jwt),
+):
+    """Verify migrated videos — compare source metadata with what's in Zoom."""
+    if not _db.is_available():
+        return JSONResponse({"error": "db_unavailable"}, status_code=503)
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Get completed migrations
+    rows = _db.fetch_all(
+        "SELECT entry_id, zoom_video_id, source_title, source_metadata FROM video_migrations WHERE project_id = %s AND status = 'completed' LIMIT %s",
+        (str(project["id"]), limit)
+    )
+
+    if not rows:
+        return {"results": [], "summary": {"total": 0, "verified": 0, "discrepancies": 0, "missing": 0}}
+
+    zoom_client, zoom_err = _resolve_zoom_client(slug)
+
+    results = []
+    verified = 0
+    discrepancies = 0
+    missing = 0
+
+    for row in rows:
+        entry_id = row["entry_id"]
+        zoom_id = row.get("zoom_video_id") or ""
+        source_meta = {}
+        if row.get("source_metadata"):
+            try:
+                source_meta = json.loads(row["source_metadata"]) if isinstance(row["source_metadata"], str) else row["source_metadata"]
+            except Exception:
+                source_meta = {}
+
+        source_title = row.get("source_title") or source_meta.get("title", entry_id)
+
+        if not zoom_id or zoom_client is None:
+            missing += 1
+            results.append({
+                "entry_id": entry_id,
+                "source_title": source_title,
+                "zoom_id": zoom_id,
+                "status": "missing",
+                "checks": [],
+            })
+            continue
+
+        # Try to fetch from Zoom
+        zoom_details = None
+        try:
+            zoom_details = zoom_client.get_video_details(zoom_id)
+        except Exception as e:
+            logger.warning("Could not fetch Zoom details for %s: %s", zoom_id, e)
+
+        if not zoom_details:
+            missing += 1
+            results.append({
+                "entry_id": entry_id,
+                "source_title": source_title,
+                "zoom_id": zoom_id,
+                "status": "missing",
+                "checks": [],
+            })
+            continue
+
+        # Compare fields
+        checks = []
+        has_discrepancy = False
+
+        # Title check
+        src_title = source_meta.get("title", "")
+        zm_title = zoom_details.get("topic") or zoom_details.get("title") or zoom_details.get("file_name", "")
+        title_match = src_title.lower().strip() == zm_title.lower().strip() if src_title and zm_title else bool(zm_title)
+        checks.append({"field": "Title", "source": src_title, "zoom": zm_title, "status": "pass" if title_match else "warn"})
+        if not title_match:
+            has_discrepancy = True
+
+        # Duration check (±10 seconds tolerance)
+        src_duration = source_meta.get("duration", 0)
+        zm_duration = zoom_details.get("duration", 0)
+        if src_duration and zm_duration:
+            duration_ok = abs(src_duration - zm_duration) <= 10
+            checks.append({"field": "Duration", "source": f"{int(src_duration)}s", "zoom": f"{int(zm_duration)}s", "status": "pass" if duration_ok else "warn"})
+            if not duration_ok:
+                has_discrepancy = True
+
+        # Caption check
+        src_captions = source_meta.get("caption_count", 0)
+        zm_captions = zoom_details.get("caption_count", 0)
+        if src_captions:
+            caption_ok = zm_captions >= src_captions
+            checks.append({"field": "Captions", "source": f"{src_captions} tracks", "zoom": f"{zm_captions} tracks", "status": "pass" if caption_ok else "fail"})
+            if not caption_ok:
+                has_discrepancy = True
+
+        record_status = "discrepancy" if has_discrepancy else "verified"
+        if has_discrepancy:
+            discrepancies += 1
+        else:
+            verified += 1
+
+        results.append({
+            "entry_id": entry_id,
+            "source_title": source_title,
+            "zoom_id": zoom_id,
+            "status": record_status,
+            "checks": checks,
+        })
+
+    return {
+        "results": results,
+        "summary": {
+            "total": len(results),
+            "verified": verified,
+            "discrepancies": discrepancies,
+            "missing": missing,
+        },
+    }
+
+
+# ── WO-20: Project Agent — Test Credentials ──────────────────────────────────
+
+
+@app.post("/api/projects/{slug}/agent/test-credentials")
+async def agent_test_credentials(
+    slug: str,
+    request: Request,
+    user: dict = Depends(_verify_jwt),
+):
+    """Test credential connectivity for the Project Agent setup flow."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    service = body.get("service", "")  # "kaltura", "zoom", "aws"
+    creds = body.get("credentials", {})
+
+    if service == "kaltura":
+        try:
+            from migration.kaltura_client import KalturaClient
+            from migration.config import KalturaConfig
+            kc = KalturaClient(KalturaConfig(
+                partner_id=creds.get("partner_id", ""),
+                admin_secret=creds.get("admin_secret", ""),
+                service_url=creds.get("service_url", "https://www.kaltura.com"),
+                user_id=creds.get("user_id", ""),
+            ))
+            result = kc.list_videos(page=1, page_size=1)
+            total = result.get("totalCount", 0)
+            return {"ok": True, "message": f"Connected — {total:,} videos found", "video_count": total}
+        except Exception as e:
+            return {"ok": False, "message": str(e)}
+
+    elif service == "zoom":
+        try:
+            from migration.zoom_client import ZoomClient
+            from migration.config import ZoomConfig
+            zc = ZoomClient(ZoomConfig(
+                client_id=creds.get("client_id", ""),
+                client_secret=creds.get("client_secret", ""),
+                account_id=creds.get("account_id", ""),
+                target_api=creds.get("target_api", "clips"),
+            ))
+            zc.authenticate()
+            return {"ok": True, "message": "Zoom connected ✓"}
+        except Exception as e:
+            return {"ok": False, "message": str(e)}
+
+    elif service == "aws":
+        try:
+            import boto3
+            endpoint = creds.get("endpoint_url", "") or None
+            s3 = boto3.client(
+                "s3",
+                aws_access_key_id=creds.get("access_key_id") or "test",
+                aws_secret_access_key=creds.get("secret_access_key") or "test",
+                region_name=creds.get("region", "us-east-1"),
+                endpoint_url=endpoint,
+            )
+            s3.list_buckets()
+            return {"ok": True, "message": "S3 connected ✓"}
+        except Exception as e:
+            return {"ok": False, "message": str(e)}
+
+    elif service == "localstack":
+        try:
+            import urllib.request
+            with urllib.request.urlopen("http://localhost:4566/_localstack/health", timeout=2) as resp:
+                data = json.loads(resp.read())
+                s3_status = data.get("services", {}).get("s3", "unavailable")
+                if s3_status in ("running", "available"):
+                    return {"ok": True, "message": "LocalStack S3 is running on localhost:4566"}
+            return {"ok": False, "message": "LocalStack not healthy"}
+        except Exception:
+            return {"ok": False, "message": "LocalStack not reachable at localhost:4566 — is it running?"}
+
+    return {"ok": False, "message": f"Unknown service: {service}"}
+
+
+# ── WO-24: Report Generation ──────────────────────────────────────────────────
+
+
+@app.post("/api/projects/{slug}/generate-report")
+async def generate_market_trends_report(
+    slug: str,
+    user: dict = Depends(_verify_jwt),
+):
+    """Trigger NLP market trends report generation from transcriptions."""
+    if not _db.is_available():
+        return JSONResponse({"error": "db_unavailable"}, status_code=503)
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Gather transcriptions from video_migrations
+    rows = _db.fetch_all(
+        "SELECT entry_id, source_title, source_metadata FROM video_migrations WHERE project_id = %s AND status = 'completed'",
+        (str(project["id"]),)
+    )
+
+    if not rows:
+        return JSONResponse({"error": "no_data", "message": "No completed migrations to analyze"}, status_code=400)
+
+    transcripts_by_id = {}
+    for row in rows:
+        meta = {}
+        if row.get("source_metadata"):
+            try:
+                meta = json.loads(row["source_metadata"]) if isinstance(row["source_metadata"], str) else row["source_metadata"]
+            except Exception:
+                pass
+        transcript = meta.get("transcript", "") or meta.get("description", "")
+        if transcript:
+            transcripts_by_id[row["entry_id"]] = {
+                "title": row.get("source_title") or meta.get("title", row["entry_id"]),
+                "transcript": transcript,
+            }
+
+    if not transcripts_by_id:
+        return JSONResponse(
+            {"error": "no_transcripts", "message": "No transcripts available. Run AI transcription first."},
+            status_code=400,
+        )
+
+    # Run analysis in background
+    report_id = f"report_{slug}_{int(time.time())}"
+
+    def _run_analysis():
+        try:
+            from migration.nlp_analysis import generate_report
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            report = generate_report(transcripts_by_id, api_key=api_key)
+            report["report_id"] = report_id
+            report["status"] = "complete"
+            # Save to workflow_manifests table
+            if _db.is_available():
+                _db.save_workflow_manifest(
+                    str(project["id"]), "complete",
+                    manifest=[], summary=report,
+                    manifest_id=report_id,
+                )
+        except Exception as e:
+            logger.error("Report generation failed: %s", e)
+
+    threading.Thread(target=_run_analysis, daemon=True).start()
+    return {"report_id": report_id, "status": "generating", "video_count": len(transcripts_by_id)}
+
+
+@app.get("/api/projects/{slug}/report/{report_id}")
+async def get_market_trends_report(
+    slug: str,
+    report_id: str,
+    user: dict = Depends(_verify_jwt),
+):
+    """Retrieve a generated market trends report."""
+    if not _db.is_available():
+        return JSONResponse({"error": "db_unavailable"}, status_code=503)
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    row = _db.fetch_one(
+        "SELECT summary, status FROM workflow_manifests WHERE manifest_id = %s AND project_id = %s",
+        (report_id, str(project["id"]))
+    )
+    if not row:
+        return JSONResponse({"error": "not_found", "status": "generating"}, status_code=404)
+
+    summary = row.get("summary") or {}
+    if isinstance(summary, str):
+        try:
+            summary = json.loads(summary)
+        except Exception:
+            summary = {}
+
+    return {**summary, "status": row.get("status", "complete")}
