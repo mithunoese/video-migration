@@ -4602,23 +4602,29 @@
         async agentSaveAll() {
           this.agentSaving = true;
           try {
-            await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
-              method: 'PUT', headers: this._authHeaders(),
-              body: JSON.stringify({ service: this.agentPlatform, credentials: this.agentDraftCreds.source })
-            });
-            await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
-              method: 'PUT', headers: this._authHeaders(),
-              body: JSON.stringify({ service: 'zoom', credentials: this.agentDraftCreds.zoom })
-            });
-            await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
-              method: 'PUT', headers: this._authHeaders(),
-              body: JSON.stringify({ service: 'aws', credentials: this.agentDraftCreds.aws })
-            });
+            const saves = [
+              { service: this.agentPlatform, credentials: this.agentDraftCreds.source },
+              { service: 'zoom', credentials: this.agentDraftCreds.zoom },
+              { service: 'aws',  credentials: this.agentDraftCreds.aws },
+            ];
+            const failed = [];
+            for (const s of saves) {
+              const r = await fetch(`/api/projects/${this.currentProjectSlug}/credentials`, {
+                method: 'PUT', headers: this._authHeaders(),
+                body: JSON.stringify(s),
+              });
+              if (!r.ok) failed.push(s.service);
+            }
+            if (failed.length > 0) {
+              this.agentMessages.push({ role: 'agent', text: `Failed to save: ${failed.join(', ')}. Please try again.`, status: 'error' });
+              this.agentSaving = false;
+              return;
+            }
             delete this._projectCache[this.currentProjectSlug];
             await this.loadProjectCreds();
             this.agentStep = 'done';
             this.agentMessages.push({ role: 'agent', text: 'All credentials saved! Your project is ready to migrate.' });
-          } catch(e) { this.agentMessages.push({ role: 'agent', text: 'Save failed — please try again', status: 'error' }); }
+          } catch(e) { this.agentMessages.push({ role: 'agent', text: 'Save failed — network error. Please try again.', status: 'error' }); }
           this.agentSaving = false;
         },
         async agentVerifyExisting() {
