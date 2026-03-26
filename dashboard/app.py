@@ -5249,7 +5249,7 @@ async def get_video_library(
             try:
                 placeholders = ",".join(["%s"] * len(ids))
                 rows = _db.fetch_all(
-                    f"SELECT entry_id, status FROM video_migrations WHERE project_id = %s AND entry_id IN ({placeholders})",
+                    f"SELECT kaltura_id AS entry_id, status FROM video_migrations WHERE project_id = %s AND kaltura_id IN ({placeholders})",
                     (str(project["id"]), *ids)
                 )
                 db_statuses = {r["entry_id"]: r["status"] for r in rows}
@@ -5291,7 +5291,7 @@ async def get_migration_verification(
 
     # Get completed migrations
     rows = _db.fetch_all(
-        "SELECT entry_id, zoom_video_id, source_title, source_metadata FROM video_migrations WHERE project_id = %s AND status = 'completed' LIMIT %s",
+        "SELECT kaltura_id AS entry_id, zoom_id AS zoom_video_id, title AS source_title, assets_json AS source_metadata FROM video_migrations WHERE project_id = %s AND status = 'completed' LIMIT %s",
         (str(project["id"]), limit)
     )
 
@@ -5481,6 +5481,103 @@ async def agent_test_credentials(
     return {"ok": False, "message": f"Unknown service: {service}"}
 
 
+# ── WO-23: AI Transcription ───────────────────────────────────────────────────
+
+
+@app.post("/api/projects/{slug}/videos/{entry_id}/transcribe")
+async def transcribe_video(
+    slug: str,
+    entry_id: str,
+    user: dict = Depends(_verify_jwt),
+):
+    """
+    Trigger AI transcription for a staged video via faster-whisper.
+    Requires faster-whisper installed locally — not available on Vercel serverless.
+    The transcript is saved as a .vtt alongside the video in S3 and stored in the
+    video_migrations row for the market trends report (WO-24).
+    """
+    # faster-whisper requires running models locally — not supported in serverless context
+    if os.environ.get("VERCEL"):
+        return JSONResponse(
+            {
+                "error": "not_supported",
+                "detail": "AI transcription requires a local deployment with faster-whisper installed.",
+            },
+            status_code=501,
+        )
+
+    if not _db.is_available():
+        return JSONResponse({"error": "db_unavailable"}, status_code=503)
+
+    from migration.transcription import TranscriptionWorker, is_transcription_available
+
+    if not is_transcription_available():
+        return JSONResponse(
+            {
+                "error": "transcription_unavailable",
+                "detail": "faster-whisper not installed. Run: pip install faster-whisper",
+            },
+            status_code=503,
+        )
+
+    project = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (slug,))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project_id = str(project["id"])
+
+    row = _db.fetch_one(
+        "SELECT id, kaltura_id, zoom_id, assets_json FROM video_migrations WHERE project_id = %s AND kaltura_id = %s",
+        (project_id, entry_id),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Video migration record not found")
+
+    assets = row.get("assets_json") or {}
+    s3_key = assets.get("s3_key") if isinstance(assets, dict) else None
+    if not s3_key:
+        return JSONResponse({"error": "not_staged", "detail": "Video not yet staged to S3 (no s3_key in assets_json)"}, status_code=400)
+
+    # Build per-project AWS config
+    try:
+        config = Config.from_db(slug, _db)
+    except Exception as e:
+        return JSONResponse({"error": "config_error", "detail": str(e)}, status_code=500)
+
+    row_id = str(row["id"])
+
+    def _run_transcription():
+        try:
+            import boto3
+            s3 = boto3.client(
+                "s3",
+                aws_access_key_id=config.aws.access_key_id,
+                aws_secret_access_key=config.aws.secret_access_key,
+                region_name=config.aws.region,
+                endpoint_url=config.aws.endpoint_url or None,
+            )
+            worker = TranscriptionWorker(model_size="base")
+            vtt = worker.transcribe_from_s3(s3, config.aws.s3_bucket, s3_key)
+            vtt_key = worker.upload_transcript_to_s3(s3, config.aws.s3_bucket, s3_key, vtt)
+            # Merge transcript key into assets_json
+            import json as _json
+            current = _db.fetch_one("SELECT assets_json FROM video_migrations WHERE id = %s", (row_id,))
+            merged = dict(current["assets_json"] or {}) if current else {}
+            merged["transcript_s3_key"] = vtt_key
+            merged["transcript_vtt_preview"] = vtt[:500]  # first 500 chars for report use
+            _db.execute(
+                "UPDATE video_migrations SET assets_json = %s::jsonb WHERE id = %s",
+                (_json.dumps(merged), row_id),
+            )
+            logger.info("[transcribe] Completed for entry %s → %s", entry_id, vtt_key)
+        except Exception as exc:
+            logger.error("[transcribe] Failed for entry %s: %s", entry_id, exc)
+
+    import threading
+    t = threading.Thread(target=_run_transcription, daemon=True)
+    t.start()
+    return {"status": "started", "entry_id": entry_id, "s3_key": s3_key}
+
+
 # ── WO-24: Report Generation ──────────────────────────────────────────────────
 
 
@@ -5499,7 +5596,7 @@ async def generate_market_trends_report(
 
     # Gather transcriptions from video_migrations
     rows = _db.fetch_all(
-        "SELECT entry_id, source_title, source_metadata FROM video_migrations WHERE project_id = %s AND status = 'completed'",
+        "SELECT kaltura_id AS entry_id, title AS source_title, assets_json AS source_metadata FROM video_migrations WHERE project_id = %s AND status = 'completed'",
         (str(project["id"]),)
     )
 
@@ -5514,7 +5611,7 @@ async def generate_market_trends_report(
                 meta = json.loads(row["source_metadata"]) if isinstance(row["source_metadata"], str) else row["source_metadata"]
             except Exception:
                 pass
-        transcript = meta.get("transcript", "") or meta.get("description", "")
+        transcript = meta.get("transcript_vtt_preview", "") or meta.get("transcript", "") or meta.get("description", "")
         if transcript:
             transcripts_by_id[row["entry_id"]] = {
                 "title": row.get("source_title") or meta.get("title", row["entry_id"]),
