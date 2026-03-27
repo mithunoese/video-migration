@@ -957,7 +957,7 @@
       <div x-show="migrationStalled" x-transition class="mb-4 p-4 rounded-xl border border-amber-300 bg-amber-50 flex items-start gap-3">
         <svg class="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
         <div class="flex-1 min-w-0">
-          <p class="text-sm font-semibold text-amber-800">No progress in 90 seconds</p>
+          <p class="text-sm font-semibold text-amber-800">No progress in 3 minutes</p>
           <p class="text-xs text-amber-700 mt-0.5">The job is queued in Neon DB — make sure your <strong>Docker worker is running</strong> to process it:</p>
           <code class="mt-2 block text-xs bg-amber-100 border border-amber-200 rounded-lg px-3 py-2 font-mono text-amber-900">docker compose up -d</code>
           <p class="text-[11px] text-amber-600 mt-1">The worker polls the DB every 5 s and writes progress in real-time. Once running, this view will update automatically.</p>
@@ -5675,6 +5675,15 @@
               title: data.title || data.video_id,
               stage: { pending: 'kaltura', downloading: 'kaltura', staging: 'aws', uploading: 'zoom' }[data.step] || data.step,
               progress: data.progress || 0,
+            };
+          }
+          if (data.type === 'video_step') {
+            const stageMap = { downloading: 'kaltura', staging: 'aws', uploading: 'zoom', captions: 'zoom', thumbnails: 'zoom', transcribing: 'zoom' };
+            this.pipelineVideos[data.video_id] = {
+              ...(this.pipelineVideos[data.video_id] || {}),
+              id: data.video_id,
+              title: data.title || data.video_id,
+              stage: stageMap[data.step] || data.step,
             };
           }
           if (data.type === 'video_completed') {

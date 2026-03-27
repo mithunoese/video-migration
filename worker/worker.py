@@ -65,8 +65,13 @@ def _run_job(job: dict) -> None:
         except Exception as e:
             logger.warning("Progress write failed: %s", e)
 
+    def on_progress(video_id: str, step: str, title: str):
+        """Emit a step event so the frontend stays alive during long downloads."""
+        emit({"type": "video_step", "video_id": video_id, "step": step, "title": title})
+
     try:
         pipeline, project_id = _build_pipeline(project_slug)
+        pipeline._on_progress = on_progress
     except Exception as e:
         logger.error("Pipeline build failed: %s", e)
         emit({"type": "error", "message": str(e)})
