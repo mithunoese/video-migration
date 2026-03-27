@@ -400,6 +400,7 @@ async def lifespan(app: FastAPI):
     if _db.is_available():
         _db.create_tables()
         _maybe_create_default_project()
+        _maybe_migrate_zoom_env_creds()
     # Legacy fallback — init pipeline from env vars
     _try_init_pipeline()
     yield
@@ -462,6 +463,52 @@ def _maybe_create_default_project():
         logger.info("Created default project from environment variables")
     except Exception as e:
         logger.warning("Could not create default project: %s", e)
+
+
+def _maybe_migrate_zoom_env_creds():
+    """One-time migration: seed Zoom creds from env vars into any project missing them.
+
+    Handles the case where a project (e.g. 'ifrs') was created before the per-project
+    credential system and its Zoom creds are still only in env vars. Runs at startup
+    but is a no-op once creds are saved, so safe to call every restart.
+
+    Only migrates if ZOOM_CLIENT_ID is set in the environment.
+    """
+    zoom_client_id = os.environ.get("ZOOM_CLIENT_ID", "")
+    if not zoom_client_id:
+        return  # No Zoom env creds to migrate
+
+    try:
+        projects = _db.fetch_all("SELECT id, slug FROM projects", ())
+        for project in projects:
+            project_id = str(project["id"])
+            creds = _db.get_all_credentials(project_id)
+            if creds.get("zoom", {}).get("client_id"):
+                continue  # Already has zoom creds — skip
+
+            # Seed full Zoom credential set from env vars (matches migrate_ifrs_zoom_creds.py)
+            env_zoom = {
+                "client_id":      ("ZOOM_CLIENT_ID",      False),
+                "client_secret":  ("ZOOM_CLIENT_SECRET",  True),
+                "account_id":     ("ZOOM_ACCOUNT_ID",     False),
+                "target_api":     ("ZOOM_TARGET_API",     False),
+                "hub_id":         ("ZOOM_HUB_ID",         False),
+                "vod_channel_id": ("ZOOM_VOD_CHANNEL_ID", False),
+            }
+            seeded = False
+            for key_name, (env_var, is_secret) in env_zoom.items():
+                val = os.environ.get(env_var, "")
+                if val:
+                    _db.store_credential(project_id, "zoom", key_name, val, is_secret)
+                    seeded = True
+
+            if seeded:
+                logger.info(
+                    "zoom_cred_migration: seeded Zoom env creds into project slug=%s id=%s",
+                    project["slug"], project_id,
+                )
+    except Exception as e:
+        logger.warning("zoom_cred_migration: failed: %s", e)
 
 
 app = FastAPI(title="Video Migration Dashboard", lifespan=lifespan)
@@ -1547,6 +1594,7 @@ async def start_project_migration(slug: str, request: Request, user: dict = Depe
                                 c.get("language", "") for c in (r.caption_details or [])
                                 if c.get("language")
                             )
+                            meta = r.metadata or {}
                             _db.save_video_migration(
                                 kaltura_id=r.video_id,
                                 zoom_id=r.zoom_id or "",
@@ -1556,7 +1604,31 @@ async def start_project_migration(slug: str, request: Request, user: dict = Depe
                                 languages=langs,
                                 file_size_mb=r.file_size_mb or 0,
                                 assets_json={
-                                    "video": {"file_size_mb": r.file_size_mb or 0, "duration_s": 0},
+                                    "video": {
+                                        "file_size_mb": r.file_size_mb or 0,
+                                        "duration_s": meta.get("duration", 0),
+                                        "width": meta.get("width", 0),
+                                        "height": meta.get("height", 0),
+                                        "plays": meta.get("plays", 0),
+                                        "views": meta.get("views", 0),
+                                        "size_bytes": meta.get("size_bytes", 0),
+                                    },
+                                    "kaltura": {
+                                        "reference_id": meta.get("reference_id", ""),
+                                        "user_id": meta.get("user_id", ""),
+                                        "creator_id": meta.get("creator_id", ""),
+                                        "status": meta.get("status", 0),
+                                        "media_type": meta.get("media_type", 0),
+                                        "source_type": meta.get("source_type", ""),
+                                        "partner_data": meta.get("partner_data", ""),
+                                        "credit_url": meta.get("credit_url", ""),
+                                        "credit_title": meta.get("credit_title", ""),
+                                        "license_type": meta.get("license_type", -1),
+                                        "categories": meta.get("categories", ""),
+                                        "tags": meta.get("tags", ""),
+                                        "custom_metadata": meta.get("custom_metadata", []),
+                                    },
+                                    "flavors": r.flavors or [],
                                     "captions": r.caption_details or [],
                                     "thumbnails": r.thumbnail_details or [],
                                 },
@@ -3336,6 +3408,7 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
                                 c.get("language", "") for c in (r.caption_details or [])
                                 if c.get("language")
                             )
+                            meta = r.metadata or {}
                             _db.save_video_migration(
                                 kaltura_id=r.video_id,
                                 zoom_id=r.zoom_id or "",
@@ -3345,7 +3418,31 @@ async def batch_migration(request: Request, user: dict = Depends(_verify_jwt)):
                                 languages=langs,
                                 file_size_mb=r.file_size_mb or 0,
                                 assets_json={
-                                    "video": {"file_size_mb": r.file_size_mb or 0, "duration_s": 0},
+                                    "video": {
+                                        "file_size_mb": r.file_size_mb or 0,
+                                        "duration_s": meta.get("duration", 0),
+                                        "width": meta.get("width", 0),
+                                        "height": meta.get("height", 0),
+                                        "plays": meta.get("plays", 0),
+                                        "views": meta.get("views", 0),
+                                        "size_bytes": meta.get("size_bytes", 0),
+                                    },
+                                    "kaltura": {
+                                        "reference_id": meta.get("reference_id", ""),
+                                        "user_id": meta.get("user_id", ""),
+                                        "creator_id": meta.get("creator_id", ""),
+                                        "status": meta.get("status", 0),
+                                        "media_type": meta.get("media_type", 0),
+                                        "source_type": meta.get("source_type", ""),
+                                        "partner_data": meta.get("partner_data", ""),
+                                        "credit_url": meta.get("credit_url", ""),
+                                        "credit_title": meta.get("credit_title", ""),
+                                        "license_type": meta.get("license_type", -1),
+                                        "categories": meta.get("categories", ""),
+                                        "tags": meta.get("tags", ""),
+                                        "custom_metadata": meta.get("custom_metadata", []),
+                                    },
+                                    "flavors": r.flavors or [],
                                     "captions": r.caption_details or [],
                                     "thumbnails": r.thumbnail_details or [],
                                 },
@@ -4119,6 +4216,25 @@ async def start_migration(request: Request, user: dict = Depends(_verify_jwt)):
     pipeline.mode = migration_mode
     pipeline.hub_assignments = hub_assignments
 
+    # Worker-queue mode: queue the job to Neon DB for the Docker worker to pick up
+    if os.environ.get("QUEUE_MIGRATIONS") and _db.is_available():
+        project_row = _db.fetch_one("SELECT id FROM projects WHERE slug = %s", (raw_project_slug,))
+        project_id = str(project_row["id"]) if project_row else None
+        config = {
+            "batch_size": batch_size,
+            "video_ids": video_ids,
+            "resumable": resumable,
+            "mode": migration_mode,
+            "hub_assignments": hub_assignments,
+        }
+        job_id = _db.create_migration_job(project_id, raw_project_slug, config)
+        return {
+            "status": "queued",
+            "job_id": job_id,
+            "batch_size": batch_size,
+            "video_count": len(video_ids) if video_ids else batch_size,
+        }
+
     with _get_migration_lock(project_slug):
         if _migration_running.get(project_slug, False):
             return JSONResponse({"error": "Migration already running"}, status_code=409)
@@ -4146,11 +4262,11 @@ async def stop_migration(request: Request, user: dict = Depends(_verify_jwt)):
     project_slug = body.get("project_slug") or ""
 
     if project_slug:
-        # Stop a specific project's migration
         _get_cancel_event(project_slug).set()
         _migration_running[project_slug] = False
+        if _db.is_available():
+            _db.cancel_pending_jobs(project_slug)
     else:
-        # Stop all running migrations
         for slug in list(_migration_running.keys()):
             _get_cancel_event(slug).set()
             _migration_running[slug] = False
@@ -4222,11 +4338,47 @@ async def get_sse_token(user: dict = Depends(_verify_jwt)):
 
 
 @app.get("/api/migration/stream")
-async def migration_stream(sse_token: str = Query(..., description="Short-lived SSE token from /api/migration/stream-token")):
+async def migration_stream(
+    sse_token: str = Query(..., description="Short-lived SSE token from /api/migration/stream-token"),
+    job_id: Optional[int] = Query(None, description="Worker job ID for DB-based progress polling"),
+):
     """SSE endpoint for real-time migration progress. Requires short-lived token from stream-token endpoint."""
     entry = _sse_tokens.pop(sse_token, None)  # single-use: remove immediately
     if not entry or time.time() > entry[0]:
         raise HTTPException(status_code=401, detail="Invalid or expired SSE token — call /api/migration/stream-token first")
+
+    # Worker-queue mode: poll DB for progress instead of in-memory queue
+    if job_id is not None and _db.is_available():
+        async def db_event_generator():
+            last_index = 0
+            try:
+                while True:
+                    job = _db.get_job(job_id)
+                    if not job:
+                        yield f"data: {json.dumps({'type': 'error', 'message': 'Job not found'})}\n\n"
+                        break
+                    events = job.get("progress_json") or []
+                    if not isinstance(events, list):
+                        events = []
+                    new_events = events[last_index:]
+                    for evt in new_events:
+                        yield f"data: {json.dumps(evt)}\n\n"
+                    last_index = len(events)
+                    status = job.get("status", "")
+                    if status in ("completed", "failed", "cancelled"):
+                        terminal_type = "migration_completed" if status == "completed" else "migration_stopped"
+                        yield f"data: {json.dumps({'type': terminal_type, 'from_worker': True})}\n\n"
+                        break
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                pass
+        return StreamingResponse(
+            db_event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     queue: asyncio.Queue = asyncio.Queue()
     _sse_subscribers.append(queue)
 
@@ -4280,8 +4432,18 @@ async def retry_failed(
 # ── Migration polling (Vercel fallback) ──
 
 @app.get("/api/migration/poll")
-async def migration_poll(since: int = Query(0), user: dict = Depends(_verify_jwt)):
+async def migration_poll(since: int = Query(0), job_id: Optional[int] = Query(None), user: dict = Depends(_verify_jwt)):
     """Polling fallback for serverless environments where SSE times out."""
+    if job_id is not None and _db.is_available():
+        job = _db.get_job(job_id)
+        if not job:
+            return {"events": [], "next_index": since, "migration_running": False}
+        events = job.get("progress_json") or []
+        if not isinstance(events, list):
+            events = []
+        new_events = events[since:]
+        running = job["status"] in ("queued", "running")
+        return {"events": new_events, "next_index": since + len(new_events), "migration_running": running}
     events = _migration_events_store[since:]
     return {
         "events": events[-50:],
@@ -5401,6 +5563,92 @@ async def get_migration_verification(
     }
 
 
+# ── WO-23: Transcription Status ───────────────────────────────────────────────
+
+
+@app.get("/api/projects/{slug}/transcription-status")
+async def get_transcription_status(
+    slug: str,
+    user: dict = Depends(_verify_jwt),
+):
+    """Return per-video AI transcription status for the project.
+
+    Scans video_migrations.assets_json for entries where captions include
+    {"source": "ai_transcription"} and returns counts + per-video detail.
+    """
+    project = _db.fetch_one(
+        "SELECT id FROM projects WHERE slug = %s", (slug,)
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_id = str(project["id"])
+    rows = _db.fetch_all(
+        """SELECT kaltura_id AS entry_id, title, status, assets_json
+           FROM video_migrations
+           WHERE project_id = %s
+           ORDER BY migrated_at DESC""",
+        (project_id,),
+    )
+
+    total = len(rows)
+    transcribed = 0
+    pending = 0
+    failed = 0
+    details = []
+
+    for row in rows:
+        entry_id = row.get("entry_id", "") or row.get("kaltura_id", "")
+        title = row.get("title", "")
+        status = row.get("status", "")
+        assets_raw = row.get("assets_json") or {}
+
+        if isinstance(assets_raw, str):
+            try:
+                import json as _json
+                assets_raw = _json.loads(assets_raw)
+            except Exception:
+                assets_raw = {}
+
+        captions = assets_raw.get("captions") or []
+        ai_cap = next(
+            (c for c in captions if c.get("source") == "ai_transcription"),
+            None,
+        )
+
+        if ai_cap:
+            transcribed += 1
+            video_status = "transcribed"
+        elif status in ("failed", "error"):
+            failed += 1
+            video_status = "failed"
+        elif status == "completed":
+            pending += 1
+            video_status = "no_transcript"
+        else:
+            pending += 1
+            video_status = "pending"
+
+        details.append({
+            "entry_id": entry_id,
+            "title": title,
+            "migration_status": status,
+            "transcription_status": video_status,
+            "model": ai_cap.get("model") if ai_cap else None,
+            "language": ai_cap.get("language") if ai_cap else None,
+        })
+
+    return {
+        "summary": {
+            "total": total,
+            "transcribed": transcribed,
+            "pending": pending,
+            "failed": failed,
+        },
+        "videos": details,
+    }
+
+
 # ── WO-20: Project Agent — Test Credentials ──────────────────────────────────
 
 
@@ -5611,7 +5859,16 @@ async def generate_market_trends_report(
                 meta = json.loads(row["source_metadata"]) if isinstance(row["source_metadata"], str) else row["source_metadata"]
             except Exception:
                 pass
-        transcript = meta.get("transcript_vtt_preview", "") or meta.get("transcript", "") or meta.get("description", "")
+        # Look for AI transcription text stored in captions list (from WO-23 step 5.5)
+        transcript = ""
+        captions = meta.get("captions") or []
+        for cap in captions:
+            if cap.get("source") == "ai_transcription" and cap.get("transcript"):
+                transcript = cap["transcript"]
+                break
+        # Fallback to legacy fields or description
+        if not transcript:
+            transcript = meta.get("transcript_vtt_preview", "") or meta.get("transcript", "") or meta.get("description", "")
         if transcript:
             transcripts_by_id[row["entry_id"]] = {
                 "title": row.get("source_title") or meta.get("title", row["entry_id"]),
@@ -5624,25 +5881,43 @@ async def generate_market_trends_report(
             status_code=400,
         )
 
-    # Run analysis in background
-    report_id = f"report_{slug}_{int(time.time())}"
+    # Create a placeholder manifest row to get the integer DB id
+    manifest_row_id: int | None = None
+    if _db.is_available():
+        try:
+            manifest_row_id = _db.save_workflow_manifest(
+                str(project["id"]), "running",
+                manifest=[], summary={"generating": True},
+            )
+        except Exception as e:
+            logger.warning("Could not create manifest row: %s", e)
+
+    # Use integer DB id as report_id (or fallback string for no-DB mode)
+    report_id = str(manifest_row_id) if manifest_row_id else f"report_{slug}_{int(time.time())}"
 
     def _run_analysis():
         try:
             from migration.nlp_analysis import generate_report
             api_key = os.environ.get("ANTHROPIC_API_KEY", "")
             report = generate_report(transcripts_by_id, api_key=api_key)
-            report["report_id"] = report_id
             report["status"] = "complete"
-            # Save to workflow_manifests table
-            if _db.is_available():
+            if manifest_row_id and _db.is_available():
                 _db.save_workflow_manifest(
                     str(project["id"]), "complete",
                     manifest=[], summary=report,
-                    manifest_id=report_id,
+                    manifest_id=manifest_row_id,
                 )
         except Exception as e:
             logger.error("Report generation failed: %s", e)
+            if manifest_row_id and _db.is_available():
+                try:
+                    _db.save_workflow_manifest(
+                        str(project["id"]), "error",
+                        manifest=[], summary={"error": str(e)},
+                        manifest_id=manifest_row_id,
+                    )
+                except Exception:
+                    pass
 
     threading.Thread(target=_run_analysis, daemon=True).start()
     return {"report_id": report_id, "status": "generating", "video_count": len(transcripts_by_id)}
@@ -5662,14 +5937,19 @@ async def get_market_trends_report(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    try:
+        numeric_id = int(report_id)
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "not_found", "status": "generating"}, status_code=404)
+
     row = _db.fetch_one(
-        "SELECT summary, status FROM workflow_manifests WHERE manifest_id = %s AND project_id = %s",
-        (report_id, str(project["id"]))
+        "SELECT summary_json, status FROM workflow_manifests WHERE id = %s",
+        (numeric_id,)
     )
     if not row:
         return JSONResponse({"error": "not_found", "status": "generating"}, status_code=404)
 
-    summary = row.get("summary") or {}
+    summary = row.get("summary_json") or {}
     if isinstance(summary, str):
         try:
             summary = json.loads(summary)

@@ -3593,7 +3593,7 @@
 
         status: {}, activities: [], videos: [], videoTotal: 0, videoPage: 1, videoTotalPages: 1,
         videoSearch: '', videoFilter: 'all', selectedVideo: null,
-        migrationRunning: false, migrationEvents: [], eventSource: null, _pollTimer: null, _pollIndex: 0, pipelineVideos: {},
+        migrationRunning: false, migrationEvents: [], eventSource: null, _pollTimer: null, _pollIndex: 0, pipelineVideos: {}, activeJobId: null,
         migrationStalled: false, _stalledTimer: null, _lastEventAt: null,
         projectSwitching: false,
         // ── Workflow tab (3-phase guided migration) ──
@@ -4759,7 +4759,7 @@
           this.failedVideos = [];
           this.migrateAllModalOpen = false;
           try {
-            await fetch('/api/migration/start', {
+            const r = await fetch('/api/migration/start', {
               method: 'POST', headers: this._authHeaders(),
               body: JSON.stringify({
                 project_slug: this.currentProjectSlug,
@@ -4767,6 +4767,8 @@
                 resumable: true,
               }),
             });
+            const resp = await r.json().catch(() => ({}));
+            this.activeJobId = resp.job_id || null;
             this.connectSSE();
           } catch(e) {
             this.migrationRunning = false;
@@ -4803,13 +4805,15 @@
           this.failedVideos = [];
           this.showBatchMigrateModal = false;
           try {
-            await fetch(`/api/projects/${this.currentProjectSlug}/migration/start`, {
+            const r = await fetch(`/api/projects/${this.currentProjectSlug}/migration/start`, {
               method: 'POST', headers: this._authHeaders(),
               body: JSON.stringify({
                 video_ids,
                 batch_size: parseInt(this.settings?.batch_size) || 10,
               }),
             });
+            const resp = await r.json().catch(() => ({}));
+            this.activeJobId = resp.job_id || null;
             this.connectSSE();
           } catch(e) {
             this.migrationRunning = false;
@@ -4978,7 +4982,8 @@
             if (tr.ok) { sseToken = (await tr.json()).token; }
           } catch(e) { console.warn('SSE token fetch failed', e); }
           if (!sseToken) { this.startPolling(); return; }
-          this.eventSource = new EventSource(`/api/migration/stream?sse_token=${encodeURIComponent(sseToken)}`);
+          const jobParam = this.activeJobId ? `&job_id=${this.activeJobId}` : '';
+          this.eventSource = new EventSource(`/api/migration/stream?sse_token=${encodeURIComponent(sseToken)}${jobParam}`);
           let connected = false;
           this.eventSource.onopen = () => { connected = true; };
           // Stall detector: if migration running but no meaningful event in 90s, show warning
@@ -5033,7 +5038,8 @@
           this._pollIndex = 0;
           this._pollTimer = setInterval(async () => {
             try {
-              const r = await fetch(`/api/migration/poll?since=${this._pollIndex}`, { headers: this._authHeaders() });
+              const jobParam = this.activeJobId ? `&job_id=${this.activeJobId}` : '';
+              const r = await fetch(`/api/migration/poll?since=${this._pollIndex}${jobParam}`, { headers: this._authHeaders() });
               const d = await r.json();
               for (const evt of d.events) {
                 if (evt.type === 'heartbeat') continue;

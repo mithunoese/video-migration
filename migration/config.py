@@ -107,6 +107,10 @@ class PipelineConfig:
     retry_delay: int = 5  # seconds
     download_dir: str = "/tmp/video-migration"
     log_level: str = "INFO"
+    # AI transcription (faster-whisper) — generates VTT when no Kaltura captions exist
+    transcription_enabled: bool = False
+    transcription_model: str = "base"  # "tiny", "base", "small", "medium", "large-v3"
+    transcription_language: str = ""   # "" = auto-detect
 
     @classmethod
     def from_env(cls):
@@ -117,6 +121,9 @@ class PipelineConfig:
             retry_delay=_int_or_default("RETRY_DELAY", 5),
             download_dir=os.getenv("DOWNLOAD_DIR", "/tmp/video-migration") or "/tmp/video-migration",
             log_level=os.getenv("LOG_LEVEL", "INFO") or "INFO",
+            transcription_enabled=os.getenv("TRANSCRIPTION_ENABLED", "").lower() in ("true", "1"),
+            transcription_model=os.getenv("TRANSCRIPTION_MODEL", "base") or "base",
+            transcription_language=os.getenv("TRANSCRIPTION_LANGUAGE", "") or "",
         )
 
 
@@ -224,6 +231,9 @@ class Config:
                 retry_delay=int(cfg.get("retry_delay", 5)),
                 download_dir=cfg.get("download_dir", "/tmp/video-migration"),
                 log_level=cfg.get("log_level", "INFO"),
+                transcription_enabled=bool(cfg.get("transcription_enabled", False)),
+                transcription_model=cfg.get("transcription_model", "base") or "base",
+                transcription_language=cfg.get("transcription_language", "") or "",
             ),
         )
 

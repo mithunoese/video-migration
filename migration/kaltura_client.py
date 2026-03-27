@@ -258,29 +258,74 @@ class KalturaClient:
         """
         Extract all relevant metadata for migration.
 
-        Returns a normalized dict with all fields needed for Zoom upload.
+        Returns a normalized dict with all fields needed for Zoom upload
+        plus flavors and extended Kaltura fields for full traceability.
         """
         entry = self.get_video_metadata(entry_id)
         custom = self.get_custom_metadata(entry_id)
 
+        # Fetch flavor assets (quality variants) — non-fatal if unavailable
+        flavors: list[dict] = []
+        try:
+            raw_flavors = self.get_flavor_assets(entry_id)
+            flavors = [
+                {
+                    "id": f.get("id", ""),
+                    "bitrate": f.get("bitrate", 0),
+                    "width": f.get("width", 0),
+                    "height": f.get("height", 0),
+                    "size_bytes": f.get("size", 0),
+                    "is_original": bool(f.get("isOriginal")),
+                    "file_ext": f.get("fileExt", ""),
+                    "status": f.get("status", 0),
+                }
+                for f in raw_flavors
+            ]
+        except Exception:
+            logger.debug("Could not fetch flavor assets for %s", entry_id)
+
         return {
+            # Core identity
             "kaltura_id": entry.get("id"),
+            "reference_id": entry.get("referenceId", ""),
+            # Content
             "title": entry.get("name", ""),
             "description": entry.get("description", ""),
             "tags": entry.get("tags", ""),
             "categories": entry.get("categories", ""),
+            # Timing
             "duration": entry.get("duration", 0),
             "created_at": entry.get("createdAt", 0),
             "updated_at": entry.get("updatedAt", 0),
+            "start_date": entry.get("startDate", 0),
+            "end_date": entry.get("endDate", 0),
+            # Engagement
             "plays": entry.get("plays", 0),
             "views": entry.get("views", 0),
+            # Technical
             "width": entry.get("width", 0),
             "height": entry.get("height", 0),
             "media_type": entry.get("mediaType", 0),
-            "access_control_id": entry.get("accessControlId", ""),
             "size_bytes": entry.get("dataSize", 0),
+            "source_type": entry.get("sourceType", ""),
+            "conversion_quality": entry.get("conversionQuality", ""),
+            # Ownership
+            "user_id": entry.get("userId", ""),
+            "creator_id": entry.get("creatorId", ""),
+            "access_control_id": entry.get("accessControlId", ""),
+            # Status
+            "status": entry.get("status", 0),
+            "moderation_status": entry.get("moderationStatus", 0),
+            # Attribution
+            "partner_data": entry.get("partnerData", ""),
+            "credit_url": entry.get("creditUrl", ""),
+            "credit_title": entry.get("creditTitle", ""),
+            "license_type": entry.get("licenseType", -1),
+            # Media assets
             "thumbnail_url": entry.get("thumbnailUrl", ""),
             "download_url": entry.get("downloadUrl", ""),
+            "flavors": flavors,
+            # Custom metadata from metadata plugin
             "custom_metadata": custom,
         }
 

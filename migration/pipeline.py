@@ -26,6 +26,7 @@ from .config import Config
 from .kaltura_client import KalturaClient
 from .zoom_client import ZoomClient
 from .transform_engine import apply_mappings
+from .transcription import TranscriptionWorker, is_transcription_available
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,8 @@ class MigrationResult:
     reach_captions_migrated: bool = False
     caption_details: list = field(default_factory=list)   # [{lang, format, converted}]
     thumbnail_details: list = field(default_factory=list)  # [{id, is_default, width, height}]
+    metadata: dict = field(default_factory=dict)           # full Kaltura metadata snapshot
+    flavors: list = field(default_factory=list)            # [{bitrate, width, height, ...}]
 
 
 class MigrationPipeline:
@@ -83,19 +86,15 @@ class MigrationPipeline:
         """
         Build a Zoom description from Kaltura metadata.
 
-        Categories and provenance are appended to the description.
-        Tags are extracted separately via _extract_tags() for use as
-        proper Zoom API tag fields.
+        Categories are now sent as proper Zoom API category objects via
+        _extract_categories(), so they are NOT embedded in the description.
+        Tags are extracted separately via _extract_tags().
         """
         parts = []
 
         desc = metadata.get("description", "")
         if desc:
             parts.append(desc)
-
-        categories = metadata.get("categories", "")
-        if categories:
-            parts.append(f"\nCategories: {categories}")
 
         duration = metadata.get("duration", 0)
         if duration:
@@ -114,6 +113,58 @@ class MigrationPipeline:
             return []
         # Kaltura stores tags as comma-separated string
         return [t.strip() for t in raw.split(",") if t.strip()][:20]
+
+    @staticmethod
+    def _extract_categories(metadata: dict) -> list[dict]:
+        """
+        Parse Kaltura category string into Zoom Events category objects.
+
+        Kaltura stores categories as comma-separated hierarchical paths using '>'
+        as a level separator, e.g. "News>Sports>Football,Technology>AI".
+
+        Maps to Zoom format: [{"name": "News", "sub_categories": ["Sports", "Football"]},
+                               {"name": "Technology", "sub_categories": ["AI"]}]
+
+        Returns at most 20 categories (Zoom API limit).
+        """
+        raw = metadata.get("categories", "")
+        if not raw:
+            return []
+        result = []
+        for cat_path in raw.split(","):
+            parts = [p.strip() for p in cat_path.split(">") if p.strip()]
+            if not parts:
+                continue
+            obj: dict = {"name": parts[0]}
+            if len(parts) > 1:
+                obj["sub_categories"] = parts[1:]
+            result.append(obj)
+        return result[:20]
+
+    @staticmethod
+    def _build_custom_fields(metadata: dict) -> dict:
+        """
+        Build custom_fields payload from Kaltura metadata for traceability.
+
+        Stores original Kaltura fields under 'kaltura_origin' so they survive
+        the migration and can be audited or used for AEM embed remapping.
+        """
+        kaltura_data: dict = {}
+        for key in (
+            "kaltura_id", "reference_id",
+            "categories", "duration", "created_at", "updated_at",
+            "user_id", "creator_id", "media_type",
+            "plays", "views", "size_bytes",
+            "status", "source_type",
+            "partner_data", "credit_url", "credit_title",
+            "license_type",
+        ):
+            val = metadata.get(key)
+            if val is not None and val != "" and val != 0 and val != -1:
+                kaltura_data[key] = val
+        if not kaltura_data:
+            return {}
+        return {"kaltura_origin": kaltura_data}
 
     def migrate_single_video(self, entry_id: str) -> MigrationResult:
         """
@@ -215,6 +266,14 @@ class MigrationPipeline:
                 upload_kwargs["tags"] = zoom_tags
             # Pass source ID for Events metadata (external_media_id → AEM embed mapping)
             upload_kwargs["kaltura_id"] = entry_id
+            # Pass Kaltura categories as proper Zoom Events category objects
+            zoom_categories = self._extract_categories(metadata)
+            if zoom_categories:
+                upload_kwargs["categories"] = zoom_categories
+            # Pass original Kaltura metadata as custom_fields for traceability
+            zoom_custom = self._build_custom_fields(metadata)
+            if zoom_custom:
+                upload_kwargs["custom_fields"] = zoom_custom
 
             zoom_result = self.zoom.upload_video(
                 local_path,
@@ -358,7 +417,50 @@ class MigrationPipeline:
                 except Exception as reach_err:
                     logger.warning("[%s] REACH caption migration failed (non-fatal): %s", entry_id, reach_err)
 
-            # Step 5.5: Migrate cue point chapters → append to Zoom video description
+            # Step 5.5: AI transcription — generate VTT when no Kaltura captions exist
+            # Only runs if: transcription_enabled=True AND faster-whisper is installed
+            # AND no captions were migrated from Kaltura source
+            if (
+                not self._source_adapter
+                and zoom_id
+                and captions_migrated == 0
+                and not reach_captions_migrated
+                and self.config.pipeline.transcription_enabled
+                and os.path.exists(local_path)
+            ):
+                if is_transcription_available():
+                    try:
+                        self._notify(entry_id, "transcribing", title)
+                        worker = TranscriptionWorker(
+                            model_size=self.config.pipeline.transcription_model,
+                            language=self.config.pipeline.transcription_language or None,
+                        )
+                        vtt_content = worker.transcribe_file(local_path)
+                        # Write VTT to a temp file and upload as caption
+                        vtt_path = os.path.join(self.config.pipeline.download_dir, f"{safe_id}_ai.vtt")
+                        with open(vtt_path, "w", encoding="utf-8") as vf:
+                            vf.write(vtt_content)
+                        cap_result = self.zoom.upload_caption(zoom_id, vtt_path, language="en", label="AI Transcript")
+                        if not cap_result.get("skipped"):
+                            captions_migrated += 1
+                            caption_details.append({
+                                "source": "ai_transcription",
+                                "model": self.config.pipeline.transcription_model,
+                                "language": "en",
+                                "converted_to_vtt": True,
+                                # Store transcript text for WO-24 NLP analysis (capped at 4000 chars)
+                                "transcript": vtt_content[:4000],
+                            })
+                            logger.info("[%s] AI transcript generated and uploaded", entry_id)
+                        else:
+                            logger.info("[%s] AI transcript generated but caption upload skipped (%s)",
+                                        entry_id, cap_result.get("reason", "api_limitation"))
+                    except Exception as tx_err:
+                        logger.warning("[%s] AI transcription failed (non-fatal): %s", entry_id, tx_err)
+                else:
+                    logger.debug("[%s] Transcription enabled but faster-whisper not installed — skipping", entry_id)
+
+            # Step 5.6: Migrate cue point chapters → append to Zoom video description
             if not self._source_adapter and zoom_id:
                 try:
                     cuepoints = self.kaltura.list_cuepoints(entry_id)
@@ -494,6 +596,8 @@ class MigrationPipeline:
                 reach_captions_migrated=reach_captions_migrated,
                 caption_details=caption_details,
                 thumbnail_details=thumbnail_details,
+                metadata=metadata if isinstance(metadata, dict) else {},
+                flavors=metadata.get("flavors", []) if isinstance(metadata, dict) else [],
             )
 
         except Exception as e:

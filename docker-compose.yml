@@ -1,27 +1,15 @@
-# Production-ready docker-compose for the Video Migration Platform
+# Video Migration Platform — Docker Compose (Neon DB edition)
+#
+# Database: Neon (external) — set POSTGRES_URL in your .env
+# S3:       LocalStack (local mock, no AWS account needed)
 #
 # Usage:
-#   cp .env.example .env   # fill in your credentials
-#   docker compose up -d   # starts dashboard + postgres + localstack + bucket init
-#   docker compose logs -f # follow logs
+#   cp .env.example .env       # fill in Kaltura, Zoom, and POSTGRES_URL (Neon)
+#   docker compose up -d       # starts dashboard + localstack + bucket init
+#   docker compose logs -f     # follow logs
+#   open http://localhost:8000
 
 services:
-  db:
-    image: postgres:15-alpine
-    container_name: video-migration-db
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-vmigrate}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vmigrate}
-      POSTGRES_DB: ${POSTGRES_DB:-vmigrate}
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vmigrate}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   localstack:
     image: localstack/localstack:latest
     container_name: video-migration-localstack
@@ -67,15 +55,16 @@ services:
     environment:
       - STATE_DIR=/app/data
       - ENVIRONMENT=${ENVIRONMENT:-production}
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-vmigrate}:${POSTGRES_PASSWORD:-vmigrate}@db:5432/${POSTGRES_DB:-vmigrate}
       - AWS_ENDPOINT_URL=http://localstack:4566
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-test}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-test}
+      # Neon DB — set POSTGRES_URL in your .env
+      - POSTGRES_URL=${POSTGRES_URL:-}
+      # Queue migrations to DB so the worker container runs them
+      - QUEUE_MIGRATIONS=1
     volumes:
       - migration_data:/app/data
     depends_on:
-      db:
-        condition: service_healthy
       localstack:
         condition: service_healthy
     restart: unless-stopped
@@ -86,10 +75,27 @@ services:
       start_period: 10s
       retries: 3
 
+  worker:
+    build: .
+    container_name: video-migration-worker
+    command: ["python", "worker/worker.py"]
+    env_file: .env
+    environment:
+      - POSTGRES_URL=${POSTGRES_URL:-}
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-test}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-test}
+      - DOWNLOAD_DIR=/tmp/video-migration
+      - WORKER_POLL_INTERVAL=5
+    volumes:
+      - migration_data:/app/data
+    depends_on:
+      localstack:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   migration_data:
     driver: local
   localstack_data:
-    driver: local
-  pg_data:
     driver: local

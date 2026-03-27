@@ -18,9 +18,11 @@ Key limits (from Zoom docs):
      Medium APIs:   Free 2/s · Pro 20/s · Business+ 60/s
      Heavy APIs:    Free 1/s · Pro 10/s · Business+ 40/s
      Resource-intensive: Free 10/min · Pro 10/min · Business+ 20/min
-   File uploads are likely Heavy or Resource-intensive. The old "50 uploads/user/24h"
-   limit does NOT appear in the official Zoom rate-limit docs (https://developers.zoom.us/docs/api/rate-limits/).
-   The client already handles 429 with Retry-After backoff — no artificial cap needed.
+   File uploads are likely Heavy or Resource-intensive.
+   IMPORTANT: Clips API has an additional hard cap of 50 uploads/user/24h
+   (documented in the Clips API reference, separate from the general rate-limit page).
+   This limit returns 429 and may include a Retry-After header; the client handles it.
+   If a batch hits this cap, subsequent uploads will fail until the 24h window resets.
 
 Required scopes:
  - Clips:  clip:write / clip:write:admin
@@ -195,31 +197,36 @@ class ZoomClient:
         path = Path(file_path)
         file_size = path.stat().st_size
 
-        # API hard cap: max 100 parts. Default to 200 MB chunks; scale up for very large files.
+        # API hard cap: max 100 parts. Parts must be ≥5 MB each (except last), ≤100 MB each.
+        # Default to 100 MB chunks (the per-part maximum); scale up for very large files.
         MAX_PARTS = 100
-        DEFAULT_PART_SIZE = 200 * 1024 * 1024  # 200 MB
+        DEFAULT_PART_SIZE = 100 * 1024 * 1024  # 100 MB (Clips API per-part maximum)
         part_size = max(DEFAULT_PART_SIZE, -(-file_size // MAX_PARTS))  # ceiling division
         total_parts = -(-file_size // part_size)
 
         # Initiate multipart upload
+        # Body format confirmed by Zoom Clips API docs: method + params object
         init_url = f"{ZOOM_FILE_API}/clips/files/multipart/upload_events"
         init_resp = requests.post(
             init_url,
             headers={**self._headers(), "Content-Type": "application/json"},
             json={
-                "event": "create",
-                "file_size": file_size,
-                "file_name": path.name,
+                "method": "CreateMultipartUpload",
+                "params": {
+                    "file_name": path.name,
+                },
             },
             timeout=60,
         )
         init_resp.raise_for_status()
         init_data = init_resp.json()
 
-        upload_id = init_data.get("upload_id")
-        logger.info("Initiated Clips multipart upload: %s (%d parts, %.0f MB chunks)", upload_id, total_parts, part_size / (1024 * 1024))
+        # Response field is "upload_context" (not "upload_id")
+        upload_context = init_data.get("upload_context") or init_data.get("upload_id", "")
+        logger.info("Initiated Clips multipart upload: %s (%d parts, %.0f MB chunks)", upload_context, total_parts, part_size / (1024 * 1024))
 
         # Upload parts with per-part retry (exponential backoff)
+        # Each part is sent as multipart/form-data with file + upload_context + part_number
         parts = []
         part_num = 1
         with open(path, "rb") as f:
@@ -232,11 +239,15 @@ class ZoomClient:
                 last_exc: Exception | None = None
                 for attempt in range(3):
                     try:
+                        encoder = MultipartEncoder(fields={
+                            "file": (f"part{part_num}", chunk, "application/octet-stream"),
+                            "upload_context": upload_context,
+                            "part_number": str(part_num),
+                        })
                         part_resp = requests.post(
                             part_url,
-                            headers={**self._headers(), "Content-Type": "application/octet-stream"},
-                            params={"upload_id": upload_id, "part_number": part_num},
-                            data=chunk,
+                            headers={**self._headers(), "Content-Type": encoder.content_type},
+                            data=encoder,
                             timeout=600,
                         )
                         part_resp.raise_for_status()
@@ -263,14 +274,17 @@ class ZoomClient:
                 part_num += 1
 
         # Complete multipart upload
+        # Body format confirmed by Zoom Clips API docs: method + params object
         complete_url = f"{ZOOM_FILE_API}/clips/files/multipart/upload_events"
         complete_resp = requests.post(
             complete_url,
             headers={**self._headers(), "Content-Type": "application/json"},
             json={
-                "event": "complete",
-                "upload_id": upload_id,
-                "parts": parts,
+                "method": "CompleteMultipartUpload",
+                "params": {
+                    "upload_context": upload_context,
+                    "part_number_etags": parts,
+                },
             },
             timeout=60,
         )
@@ -304,7 +318,9 @@ class ZoomClient:
 
     def upload_video_events(self, file_path: str, title: str, description: str = "",
                             hub_id: str = "", tags: list[str] | None = None,
-                            kaltura_id: str = "") -> dict:
+                            kaltura_id: str = "", categories: list[dict] | None = None,
+                            speakers: list[dict] | None = None,
+                            custom_fields: dict | None = None) -> dict:
         """
         Upload a video via the Zoom Events API.
 
@@ -338,7 +354,10 @@ class ZoomClient:
         if file_size > 2 * 1024 * 1024 * 1024:  # 2 GB
             return self._upload_multipart_events(file_path, title, description,
                                                   hub_id=hub_id, tags=tags,
-                                                  kaltura_id=kaltura_id)
+                                                  kaltura_id=kaltura_id,
+                                                  categories=categories,
+                                                  speakers=speakers,
+                                                  custom_fields=custom_fields)
 
         url = f"{ZOOM_FILE_API}/zoom_events/files"
 
@@ -378,16 +397,19 @@ class ZoomClient:
         video_id = result.get("video_id", "")
         logger.info("Uploaded to Zoom Events: file_id=%s, video_id=%s", file_id, video_id)
 
-        # Set metadata via Events API (title, description, tags, external IDs)
-        if video_id and (title or description or tags or kaltura_id):
+        # Set metadata via Events API (title, description, tags, external IDs, categories, custom)
+        if video_id and (title or description or tags or kaltura_id or categories or custom_fields):
             try:
                 self.set_events_metadata(
                     video_id, title=title, description=description, tags=tags,
                     external_media_id=kaltura_id,
                     external_source_name="Kaltura" if kaltura_id else "",
+                    categories=categories,
+                    speakers=speakers,
+                    custom_fields=custom_fields,
                 )
-                logger.info("Set Events metadata on video %s: %s (kaltura_id=%s)",
-                            video_id, title, kaltura_id or "none")
+                logger.info("Set Events metadata on video %s: %s (kaltura_id=%s, categories=%d)",
+                            video_id, title, kaltura_id or "none", len(categories or []))
             except Exception as e:
                 logger.warning("Failed to set Events metadata on %s (non-fatal): %s", video_id, e)
 
@@ -395,7 +417,9 @@ class ZoomClient:
 
     def _upload_multipart_events(self, file_path: str, title: str, description: str = "",
                                   hub_id: str = "", tags: list[str] | None = None,
-                                  kaltura_id: str = "") -> dict:
+                                  kaltura_id: str = "", categories: list[dict] | None = None,
+                                  speakers: list[dict] | None = None,
+                                  custom_fields: dict | None = None) -> dict:
         """
         Chunked multipart upload for files > 2 GB via Events API.
 
@@ -531,15 +555,18 @@ class ZoomClient:
         logger.info("Completed Events multipart upload: file_id=%s, video_id=%s", file_id, video_id)
 
         # Set metadata (including external source IDs for AEM mapping)
-        if video_id and (title or description or tags or kaltura_id):
+        if video_id and (title or description or tags or kaltura_id or categories or custom_fields):
             try:
                 self.set_events_metadata(
                     video_id, title=title, description=description, tags=tags,
                     external_media_id=kaltura_id,
                     external_source_name="Kaltura" if kaltura_id else "",
+                    categories=categories,
+                    speakers=speakers,
+                    custom_fields=custom_fields,
                 )
-                logger.info("Set Events metadata on multipart video %s: %s (kaltura_id=%s)",
-                            video_id, title, kaltura_id or "none")
+                logger.info("Set Events metadata on multipart video %s: %s (kaltura_id=%s, categories=%d)",
+                            video_id, title, kaltura_id or "none", len(categories or []))
             except Exception as e:
                 logger.warning("Failed to set Events metadata on %s (non-fatal): %s", video_id, e)
 
@@ -576,10 +603,22 @@ class ZoomClient:
                 hub_id=kwargs.get("hub_id", ""),
                 tags=kwargs.get("tags"),
                 kaltura_id=kwargs.get("kaltura_id", ""),
+                categories=kwargs.get("categories"),
+                speakers=kwargs.get("speakers"),
+                custom_fields=kwargs.get("custom_fields"),
             )
+        elif target == "vm":
+            # Zoom Video Management does not have a public video-upload REST endpoint.
+            # The /video_management/files endpoint is for .vtt transcript uploads only.
+            # For now, route vm through Clips API as the closest available path.
+            # TODO: update to proper VM endpoint once Zoom publishes it.
+            logger.warning(
+                "target_api=vm: Zoom Video Management has no documented video-upload endpoint. "
+                "Routing through Clips API as a temporary workaround. "
+                "Videos will appear in Zoom Clips, NOT in Video Management."
+            )
+            return self.upload_video_clips(file_path, title, description)
         else:
-            if target not in ("clips", ""):
-                logger.info("target_api=%s — defaulting to Clips API", target)
             return self.upload_video_clips(file_path, title, description)
 
     # ═══════════════════════════════════════════════════════════════════
@@ -615,7 +654,10 @@ class ZoomClient:
     def set_events_metadata(self, video_id: str, title: str = "",
                             description: str = "", tags: list[str] | None = None,
                             external_media_id: str = "",
-                            external_source_name: str = "") -> dict:
+                            external_source_name: str = "",
+                            categories: list[dict] | None = None,
+                            speakers: list[dict] | None = None,
+                            custom_fields: dict | None = None) -> dict:
         """Update metadata on a Zoom Events video.
 
         PATCH /zoom_events/videos/{videoId}/metadata
@@ -623,10 +665,18 @@ class ZoomClient:
         Parameters
         ----------
         external_media_id : str
-            Source platform ID (e.g. Kaltura entry ID). Stored on the Zoom video
-            for AEM embed replacement mapping. Max 256 chars.
+            Source platform ID (e.g. Kaltura entry ID). Max 256 chars.
         external_source_name : str
             Human-readable source platform name (e.g. "Kaltura"). Max 256 chars.
+        categories : list[dict], optional
+            Hierarchical categories. Each item: {"name": str, "sub_categories": [str]}.
+            Max 20 items. Maps from Kaltura category paths.
+        speakers : list[dict], optional
+            Speaker objects. Each may have: name (required), email, job_title,
+            biography, company_name, company_website. Max 10 items.
+        custom_fields : dict, optional
+            Arbitrary nested JSON for additional metadata (max 5 levels deep).
+            Used to store original Kaltura metadata for audit/traceability.
         """
         payload: dict[str, Any] = {}
         if title:
@@ -639,6 +689,12 @@ class ZoomClient:
             payload["external_media_id"] = external_media_id[:256]
         if external_source_name:
             payload["external_source_name"] = external_source_name[:256]
+        if categories:
+            payload["categories"] = categories[:20]  # API max 20 categories
+        if speakers:
+            payload["speakers"] = speakers[:10]  # API max 10 speakers
+        if custom_fields:
+            payload["custom_fields"] = custom_fields
 
         if not payload:
             return {}

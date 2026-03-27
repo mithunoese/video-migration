@@ -1,383 +1,195 @@
-"""Fargate Worker — SQS consumer that executes video transfers.
+"""
+Migration Worker — polls Neon DB for queued jobs and runs the migration pipeline.
 
-Lifecycle:
-1. Long-poll SQS queue (20s wait)
-2. Receive message: {video_id, task_token, manifest_key}
-3. Download from Kaltura → Stream to S3 (range-based)
-4. Upload from S3 → Zoom
-5. Call Step Functions SendTaskSuccess with result
-6. On failure: SendTaskFailure with error details
-7. Heartbeat every 5 minutes to prevent timeout
+Run inside Docker alongside LocalStack. Shared Neon DB with Vercel dashboard.
 
-The worker runs as a long-lived process in a Fargate container.
-It processes one message at a time and scales via ECS auto-scaling.
+Usage:
+    python worker/worker.py
 """
 
-import hashlib
-import json
+from __future__ import annotations
+
 import logging
 import os
-import signal
 import sys
-import threading
 import time
-import tempfile
-from pathlib import Path
 
-import boto3
-import requests
-
-logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO"),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-logger = logging.getLogger("worker")
-
-# Add parent paths for imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# ── Configuration ───────────────────────────────────────────────────
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-QUEUE_URL = os.environ.get("QUEUE_URL", "")
-STATE_TABLE = os.environ.get("STATE_TABLE_NAME", "")
-MAPPING_TABLE = os.environ.get("MAPPING_TABLE_NAME", "")
-STAGING_BUCKET = os.environ.get("STAGING_BUCKET", "")
-REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-PROJECT = os.environ.get("PROJECT_NAME", "default")
+from dashboard import db
 
-HEARTBEAT_INTERVAL = 300  # 5 minutes
-POLL_WAIT_TIME = 20       # SQS long-poll seconds
-DOWNLOAD_CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [worker] %(levelname)s %(message)s")
+logger = logging.getLogger("worker")
 
-# ── AWS Clients ─────────────────────────────────────────────────────
-
-sqs = boto3.client("sqs", region_name=REGION)
-sfn = boto3.client("stepfunctions", region_name=REGION)
-s3 = boto3.client("s3", region_name=REGION)
-dynamodb = boto3.resource("dynamodb", region_name=REGION)
-secrets = boto3.client("secretsmanager", region_name=REGION)
-
-# ── Graceful Shutdown ───────────────────────────────────────────────
-
-shutdown_event = threading.Event()
+POLL_INTERVAL = int(os.environ.get("WORKER_POLL_INTERVAL", "5"))
 
 
-def _signal_handler(signum, frame):
-    logger.info(f"Received signal {signum}, shutting down gracefully...")
-    shutdown_event.set()
+def _build_pipeline(project_slug: str):
+    from migration.pipeline import MigrationPipeline
+    from migration.config import Config
+
+    project = db.fetch_one("SELECT id, config_json FROM projects WHERE slug = %s", (project_slug,))
+    if not project:
+        raise RuntimeError(f"Project not found: {project_slug}")
+    project_id = str(project["id"])
+    credentials = db.get_all_credentials(project_id)
+    config = Config.from_db(credentials, project.get("config_json") or {})
+    missing = config.validate()
+    if missing:
+        raise RuntimeError(f"Missing credentials for {project_slug}: {missing}")
+    return MigrationPipeline(config), project_id
 
 
-signal.signal(signal.SIGTERM, _signal_handler)
-signal.signal(signal.SIGINT, _signal_handler)
+def _run_job(job: dict) -> None:
+    job_id = job["id"]
+    project_slug = job["project_slug"]
+    cfg = job.get("config_json") or {}
+    batch_size = int(cfg.get("batch_size", 10))
+    video_ids = cfg.get("video_ids") or None
+    resumable = bool(cfg.get("resumable", False))
 
+    logger.info("Job %s: project=%s batch=%s ids=%s", job_id, project_slug, batch_size, video_ids)
 
-# ── Credential Loading ──────────────────────────────────────────────
+    events: list[dict] = []
 
-_cred_cache = {}
-
-
-def get_credentials(secret_arn: str) -> dict:
-    """Load credentials from Secrets Manager with caching."""
-    if secret_arn not in _cred_cache:
-        resp = secrets.get_secret_value(SecretId=secret_arn)
-        _cred_cache[secret_arn] = json.loads(resp["SecretString"])
-    return _cred_cache[secret_arn]
-
-
-# ── Heartbeat Thread ────────────────────────────────────────────────
-
-def heartbeat_loop(task_token: str, stop_event: threading.Event):
-    """Send heartbeats to Step Functions until stop_event is set."""
-    while not stop_event.is_set():
+    def emit(event: dict):
+        events.append(event)
         try:
-            sfn.send_task_heartbeat(taskToken=task_token)
-            logger.debug("Heartbeat sent")
+            db.update_job_progress(job_id, events)
         except Exception as e:
-            logger.warning(f"Heartbeat failed: {e}")
-            break
-        stop_event.wait(HEARTBEAT_INTERVAL)
-
-
-# ── Core Transfer Logic ────────────────────────────────────────────
-
-def process_video(video_id: str, task_token: str, manifest_key: str) -> dict:
-    """Execute the full transfer pipeline for one video.
-
-    Download from Kaltura → Stage to S3 → Upload to Zoom.
-    """
-    state_table = dynamodb.Table(STATE_TABLE)
-    mapping_table = dynamodb.Table(MAPPING_TABLE)
-    timestamp = str(int(time.time()))
-
-    # Update state: DOWNLOADING
-    state_table.update_item(
-        Key={"video_id": video_id},
-        UpdateExpression="SET #s = :s, updated_at = :t",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":s": "DOWNLOADING", ":t": timestamp},
-    )
-
-    # ── Step 1: Get Kaltura download URL ────────────────────────
-    kaltura_arn = os.environ.get("KALTURA_SECRET_ARN", "")
-    kaltura_creds = get_credentials(kaltura_arn)
-
-    from migration.kaltura_client import KalturaClient
-    from migration.config import KalturaConfig
-
-    kaltura_config = KalturaConfig(
-        partner_id=kaltura_creds["partner_id"],
-        admin_secret=kaltura_creds["admin_secret"],
-        user_id=kaltura_creds["user_id"],
-    )
-    kaltura = KalturaClient(kaltura_config)
-    kaltura.authenticate()
-
-    download_url = kaltura.get_download_url(video_id)
-    metadata = kaltura.extract_full_metadata(video_id)
-
-    # ── Step 2: Stream download to S3 (range-based) ─────────────
-    s3_key = f"staging/{video_id}/{video_id}.mp4"
-
-    # Get file size
-    head_resp = requests.head(download_url, timeout=30)
-    head_resp.raise_for_status()
-    total_size = int(head_resp.headers.get("Content-Length", 0))
-
-    # Multipart upload to S3
-    mp = s3.create_multipart_upload(Bucket=STAGING_BUCKET, Key=s3_key)
-    upload_id = mp["UploadId"]
-    md5_hash = hashlib.md5()
-    parts = []
-    part_number = 1
-    offset = 0
+            logger.warning("Progress write failed: %s", e)
 
     try:
-        while offset < total_size:
-            end = min(offset + DOWNLOAD_CHUNK_SIZE - 1, total_size - 1)
-            resp = requests.get(
-                download_url,
-                headers={"Range": f"bytes={offset}-{end}"},
-                timeout=120,
-                stream=True,
+        pipeline, project_id = _build_pipeline(project_slug)
+    except Exception as e:
+        logger.error("Pipeline build failed: %s", e)
+        emit({"type": "error", "message": str(e)})
+        db.complete_job(job_id, "failed")
+        return
+
+    emit({"type": "migration_started", "project_slug": project_slug, "batch_size": batch_size})
+
+    def _persist(r):
+        try:
+            meta = r.metadata or {}
+            langs = ",".join(
+                c.get("language", "") for c in (r.caption_details or [])
+                if c.get("language")
             )
-            resp.raise_for_status()
-            chunk = resp.content
-            md5_hash.update(chunk)
-
-            part_resp = s3.upload_part(
-                Bucket=STAGING_BUCKET,
-                Key=s3_key,
-                UploadId=upload_id,
-                PartNumber=part_number,
-                Body=chunk,
+            db.save_video_migration(
+                kaltura_id=r.video_id,
+                zoom_id=r.zoom_id or "",
+                title=r.title,
+                project_id=project_id,
+                caption_count=r.captions_migrated,
+                thumbnail_count=r.thumbnails_migrated,
+                languages=langs,
+                file_size_mb=r.file_size_mb,
+                status="completed",
+                assets_json={
+                    "video": {
+                        "file_size_mb": r.file_size_mb or 0,
+                        "duration_s": meta.get("duration", 0),
+                        "width": meta.get("width", 0),
+                        "height": meta.get("height", 0),
+                        "plays": meta.get("plays", 0),
+                        "views": meta.get("views", 0),
+                        "size_bytes": meta.get("size_bytes", 0),
+                    },
+                    "kaltura": {
+                        "reference_id": meta.get("reference_id", ""),
+                        "user_id": meta.get("user_id", ""),
+                        "creator_id": meta.get("creator_id", ""),
+                        "status": meta.get("status", 0),
+                        "media_type": meta.get("media_type", 0),
+                        "source_type": meta.get("source_type", ""),
+                        "partner_data": meta.get("partner_data", ""),
+                        "credit_url": meta.get("credit_url", ""),
+                        "credit_title": meta.get("credit_title", ""),
+                        "license_type": meta.get("license_type", -1),
+                        "categories": meta.get("categories", ""),
+                        "tags": meta.get("tags", ""),
+                        "custom_metadata": meta.get("custom_metadata", []),
+                    },
+                    "flavors": r.flavors or [],
+                    "captions": r.caption_details or [],
+                    "thumbnails": r.thumbnail_details or [],
+                },
             )
-            parts.append({"PartNumber": part_number, "ETag": part_resp["ETag"]})
-
-            offset = end + 1
-            part_number += 1
-
-        s3.complete_multipart_upload(
-            Bucket=STAGING_BUCKET,
-            Key=s3_key,
-            UploadId=upload_id,
-            MultipartUpload={"Parts": parts},
-        )
-    except Exception:
-        # Abort multipart on failure
-        s3.abort_multipart_upload(
-            Bucket=STAGING_BUCKET, Key=s3_key, UploadId=upload_id
-        )
-        raise
-
-    source_checksum = f"md5:{md5_hash.hexdigest()}"
-
-    # Update state: STAGED
-    state_table.update_item(
-        Key={"video_id": video_id},
-        UpdateExpression=(
-            "SET #s = :s, updated_at = :t, source_checksum = :cs, "
-            "source_size = :sz, s3_key = :k"
-        ),
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={
-            ":s": "STAGED",
-            ":t": str(int(time.time())),
-            ":cs": source_checksum,
-            ":sz": total_size,
-            ":k": s3_key,
-        },
-    )
-
-    # ── Step 3: Download from S3 to temp file for Zoom upload ───
-    # (Zoom API requires a local file path)
-    state_table.update_item(
-        Key={"video_id": video_id},
-        UpdateExpression="SET #s = :s, updated_at = :t",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":s": "UPLOADING", ":t": str(int(time.time()))},
-    )
-
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-        tmp_path = tmp.name
-        s3.download_file(STAGING_BUCKET, s3_key, tmp_path)
+        except Exception as pe:
+            logger.warning("Persist failed: %s", pe)
 
     try:
-        # ── Step 4: Upload to Zoom ──────────────────────────────
-        zoom_arn = os.environ.get("ZOOM_SECRET_ARN", "")
-        zoom_creds = get_credentials(zoom_arn)
+        if resumable and not video_ids:
+            if pipeline._source_adapter:
+                all_ids = [a.id for a in pipeline._source_adapter.list_all_assets()]
+            else:
+                all_ids = [v["id"] for v in pipeline.kaltura.list_all_videos()]
+            emit({"type": "migration_discovered", "total": len(all_ids), "project_slug": project_slug})
 
-        from migration.zoom_client import ZoomClient
-        from migration.config import ZoomConfig
+            checkpoint = pipeline._load_checkpoint()
+            done_ids = set(checkpoint.get("completed_ids", [])) if checkpoint else set()
+            remaining = [v for v in all_ids if v not in done_ids]
+            results = []
 
-        zoom_config = ZoomConfig(
-            client_id=zoom_creds["client_id"],
-            client_secret=zoom_creds["client_secret"],
-            account_id=zoom_creds["account_id"],
-        )
-        zoom = ZoomClient(zoom_config)
-        zoom.authenticate()
+            for vid in remaining:
+                current = db.get_job(job_id)
+                if current and current.get("status") == "cancelled":
+                    emit({"type": "migration_stopped", "message": "Cancelled by user"})
+                    return
+                r = pipeline._migrate_with_retry(vid)
+                results.append(r)
+                if r.status == "completed":
+                    done_ids.add(vid)
+                    emit({"type": "video_completed", "video_id": r.video_id, "title": r.title,
+                          "zoom_id": r.zoom_id, "size_mb": r.file_size_mb,
+                          "captions": r.captions_migrated, "thumbnails": r.thumbnails_migrated})
+                    _persist(r)
+                else:
+                    emit({"type": "video_failed", "video_id": r.video_id, "title": r.title, "error": r.error})
+        else:
+            results = pipeline.run_migration(batch_size=batch_size, video_ids=video_ids)
+            for r in results:
+                if r.status == "completed":
+                    emit({"type": "video_completed", "video_id": r.video_id, "title": r.title,
+                          "zoom_id": r.zoom_id, "size_mb": r.file_size_mb,
+                          "captions": r.captions_migrated, "thumbnails": r.thumbnails_migrated})
+                    _persist(r)
+                else:
+                    emit({"type": "video_failed", "video_id": r.video_id, "title": r.title, "error": r.error})
 
-        title = metadata.get("name", video_id)
-        description = metadata.get("description", "")
-        result = zoom.upload_video(
-            file_path=tmp_path,
-            title=title,
-            description=description,
-        )
-        zoom_id = result.get("id", "")
-    finally:
-        # Clean up temp file
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        completed = sum(1 for r in results if r.status == "completed")
+        emit({"type": "migration_completed", "total": len(results), "completed": completed, "failed": len(results) - completed})
+        db.complete_job(job_id, "completed")
+        logger.info("Job %s done: %s/%s", job_id, completed, len(results))
 
-    # ── Step 5: Update state and mapping ────────────────────────
-    completed_at = str(int(time.time()))
+    except Exception as e:
+        logger.exception("Job %s exception", job_id)
+        emit({"type": "error", "message": str(e)})
+        db.complete_job(job_id, "failed")
 
-    state_table.update_item(
-        Key={"video_id": video_id},
-        UpdateExpression=(
-            "SET #s = :s, updated_at = :t, completed_at = :c, "
-            "zoom_id = :z, metadata = :m"
-        ),
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={
-            ":s": "COMPLETED",
-            ":t": completed_at,
-            ":c": completed_at,
-            ":z": zoom_id,
-            ":m": metadata,
-        },
-    )
-
-    mapping_table.put_item(
-        Item={
-            "source_id": video_id,
-            "zoom_id": zoom_id,
-            "migrated_at": completed_at,
-            "checksum": source_checksum,
-        }
-    )
-
-    return {
-        "video_id": video_id,
-        "zoom_id": zoom_id,
-        "source_checksum": source_checksum,
-        "source_size": total_size,
-        "s3_key": s3_key,
-    }
-
-
-# ── Main Loop ───────────────────────────────────────────────────────
 
 def main():
-    """Main SQS consumer loop."""
-    logger.info(f"Worker starting — project={PROJECT}, queue={QUEUE_URL}")
-
-    while not shutdown_event.is_set():
+    logger.info("Worker starting — connecting to DB…")
+    if not db.init():
+        logger.error("No database connection. Set POSTGRES_URL.")
+        sys.exit(1)
+    db.create_tables()
+    logger.info("Worker ready — polling every %ss", POLL_INTERVAL)
+    while True:
         try:
-            # Long-poll SQS
-            response = sqs.receive_message(
-                QueueUrl=QUEUE_URL,
-                MaxNumberOfMessages=1,
-                WaitTimeSeconds=POLL_WAIT_TIME,
-                MessageAttributeNames=["All"],
-            )
-
-            messages = response.get("Messages", [])
-            if not messages:
-                continue
-
-            message = messages[0]
-            receipt_handle = message["ReceiptHandle"]
-            body = json.loads(message["Body"])
-
-            video_id = body["video_id"]
-            task_token = body["task_token"]
-            manifest_key = body.get("manifest_key", "")
-
-            logger.info(f"Processing video: {video_id}")
-
-            # Start heartbeat thread
-            stop_heartbeat = threading.Event()
-            heartbeat_thread = threading.Thread(
-                target=heartbeat_loop,
-                args=(task_token, stop_heartbeat),
-                daemon=True,
-            )
-            heartbeat_thread.start()
-
-            try:
-                result = process_video(video_id, task_token, manifest_key)
-
-                # Report success to Step Functions
-                sfn.send_task_success(
-                    taskToken=task_token,
-                    output=json.dumps(result),
-                )
-                logger.info(f"Video {video_id} completed successfully")
-
-            except Exception as e:
-                logger.error(f"Video {video_id} failed: {e}", exc_info=True)
-
-                # Report failure to Step Functions
-                sfn.send_task_failure(
-                    taskToken=task_token,
-                    error=type(e).__name__,
-                    cause=str(e)[:256],
-                )
-
-                # Update DynamoDB state
-                try:
-                    state_table = dynamodb.Table(STATE_TABLE)
-                    state_table.update_item(
-                        Key={"video_id": video_id},
-                        UpdateExpression="SET #s = :s, #e = :e, updated_at = :t",
-                        ExpressionAttributeNames={"#s": "status", "#e": "error"},
-                        ExpressionAttributeValues={
-                            ":s": "FAILED",
-                            ":e": str(e)[:500],
-                            ":t": str(int(time.time())),
-                        },
-                    )
-                except Exception:
-                    logger.error("Failed to update error state", exc_info=True)
-
-            finally:
-                stop_heartbeat.set()
-                heartbeat_thread.join(timeout=5)
-
-                # Delete message from queue
-                sqs.delete_message(
-                    QueueUrl=QUEUE_URL,
-                    ReceiptHandle=receipt_handle,
-                )
-
+            for job in db.get_pending_jobs(limit=1):
+                if db.claim_job(job["id"]):
+                    _run_job(job)
         except Exception as e:
-            logger.error(f"Queue polling error: {e}", exc_info=True)
-            time.sleep(5)
-
-    logger.info("Worker shutting down")
+            logger.error("Worker loop error: %s", e)
+        time.sleep(POLL_INTERVAL)
 
 
 if __name__ == "__main__":

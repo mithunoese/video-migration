@@ -406,6 +406,18 @@ CREATE TABLE IF NOT EXISTS workflow_manifests (
     summary_json JSONB DEFAULT '{}'::jsonb
 );
 
+CREATE TABLE IF NOT EXISTS migration_jobs (
+    id SERIAL PRIMARY KEY,
+    project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
+    project_slug TEXT NOT NULL,
+    status TEXT DEFAULT 'queued',
+    config_json JSONB DEFAULT '{}',
+    progress_json JSONB DEFAULT '[]',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 CREATE INDEX IF NOT EXISTS idx_credentials_project ON credentials(project_id);
@@ -418,6 +430,8 @@ CREATE INDEX IF NOT EXISTS idx_infra_deployments_project ON infra_deployments(pr
 CREATE INDEX IF NOT EXISTS idx_client_tokens_hash ON client_access_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS idx_video_migrations_kaltura ON video_migrations(kaltura_id);
 CREATE INDEX IF NOT EXISTS idx_video_migrations_project ON video_migrations(project_id);
+CREATE INDEX IF NOT EXISTS idx_migration_jobs_status ON migration_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_migration_jobs_project_slug ON migration_jobs(project_slug);
 """
 
 
@@ -578,3 +592,67 @@ def save_workflow_manifest(project_id: int, status: str, manifest: list, summary
 
 def get_workflow_manifest(manifest_id: int) -> dict | None:
     return fetch_one("SELECT * FROM workflow_manifests WHERE id=%s", (manifest_id,))
+
+
+# ---------------------------------------------------------------------------
+# Migration job queue (worker pattern)
+# ---------------------------------------------------------------------------
+
+def create_migration_job(project_id: str | None, project_slug: str, config: dict) -> int | None:
+    """Insert a new queued migration job. Returns the job id."""
+    import json as _json
+    row = execute_returning(
+        """INSERT INTO migration_jobs (project_id, project_slug, config_json)
+           VALUES (%s, %s, %s::jsonb) RETURNING id""",
+        (project_id, project_slug, _json.dumps(config)),
+    )
+    return row["id"] if row else None
+
+
+def get_pending_jobs(limit: int = 5) -> list[dict]:
+    return fetch_all(
+        "SELECT * FROM migration_jobs WHERE status='queued' ORDER BY created_at LIMIT %s",
+        (limit,),
+    )
+
+
+def claim_job(job_id: int) -> bool:
+    """Atomically claim a queued job for a worker. Returns True if claimed."""
+    rowcount = execute(
+        "UPDATE migration_jobs SET status='running', started_at=NOW() WHERE id=%s AND status='queued'",
+        (job_id,),
+    )
+    return rowcount > 0
+
+
+def update_job_progress(job_id: int, events: list) -> None:
+    import json as _json
+    execute(
+        "UPDATE migration_jobs SET progress_json=%s::jsonb WHERE id=%s",
+        (_json.dumps(events[-200:]), job_id),
+    )
+
+
+def complete_job(job_id: int, status: str = "completed") -> None:
+    execute(
+        "UPDATE migration_jobs SET status=%s, completed_at=NOW() WHERE id=%s",
+        (status, job_id),
+    )
+
+
+def get_job(job_id: int) -> dict | None:
+    return fetch_one("SELECT * FROM migration_jobs WHERE id=%s", (job_id,))
+
+
+def get_latest_job_for_project(project_slug: str) -> dict | None:
+    return fetch_one(
+        "SELECT * FROM migration_jobs WHERE project_slug=%s ORDER BY created_at DESC LIMIT 1",
+        (project_slug,),
+    )
+
+
+def cancel_pending_jobs(project_slug: str) -> None:
+    execute(
+        "UPDATE migration_jobs SET status='cancelled', completed_at=NOW() WHERE project_slug=%s AND status IN ('queued', 'running')",
+        (project_slug,),
+    )
