@@ -1,7 +1,7 @@
 """
 Migration Worker — polls Neon DB for queued jobs and runs the migration pipeline.
 
-Run inside Docker alongside LocalStack. Shared Neon DB with Vercel dashboard.
+Run inside Docker alongside MinIO. Shared Neon DB with Vercel dashboard.
 
 Usage:
     python worker/worker.py
@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -28,6 +29,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [worker] %(levelname
 logger = logging.getLogger("worker")
 
 POLL_INTERVAL = int(os.environ.get("WORKER_POLL_INTERVAL", "5"))
+# How often (seconds) to check DB for cancellation during a long step
+CANCEL_CHECK_INTERVAL = 20
+
+
+class JobCancelledError(Exception):
+    pass
 
 
 def _build_pipeline(project_slug: str):
@@ -46,6 +53,15 @@ def _build_pipeline(project_slug: str):
     return MigrationPipeline(config), project_id
 
 
+def _is_cancelled(job_id: int) -> bool:
+    """Check DB whether the job has been cancelled."""
+    try:
+        job = db.get_job(job_id)
+        return job is not None and job.get("status") == "cancelled"
+    except Exception:
+        return False
+
+
 def _run_job(job: dict) -> None:
     job_id = job["id"]
     project_slug = job["project_slug"]
@@ -57,6 +73,8 @@ def _run_job(job: dict) -> None:
     logger.info("Job %s: project=%s batch=%s ids=%s", job_id, project_slug, batch_size, video_ids)
 
     events: list[dict] = []
+    # Track last cancel-check time to avoid hammering DB on every on_progress call
+    _last_cancel_check = [0.0]
 
     def emit(event: dict):
         events.append(event)
@@ -66,8 +84,18 @@ def _run_job(job: dict) -> None:
             logger.warning("Progress write failed: %s", e)
 
     def on_progress(video_id: str, step: str, title: str):
-        """Emit a step event so the frontend stays alive during long downloads."""
+        """
+        Emit a step event AND check for cancellation.
+        Called by the pipeline on each major step (downloading, staging, uploading…).
+        Raises JobCancelledError to abort the pipeline mid-step.
+        """
         emit({"type": "video_step", "video_id": video_id, "step": step, "title": title})
+        now = time.time()
+        if now - _last_cancel_check[0] >= CANCEL_CHECK_INTERVAL:
+            _last_cancel_check[0] = now
+            if _is_cancelled(job_id):
+                logger.info("Job %s cancelled (detected during step=%s)", job_id, step)
+                raise JobCancelledError("Cancelled by user")
 
     try:
         pipeline, project_id = _build_pipeline(project_slug)
@@ -130,6 +158,55 @@ def _run_job(job: dict) -> None:
         except Exception as pe:
             logger.warning("Persist failed: %s", pe)
 
+    # ── Background cancel-watcher thread ──────────────────────────────
+    # Downloads can take many minutes with no on_progress calls.
+    # This thread polls DB every CANCEL_CHECK_INTERVAL seconds and sets
+    # a threading.Event so the download can be aborted.
+    _cancel_event = threading.Event()
+
+    def _cancel_watcher():
+        while not _cancel_event.is_set():
+            _cancel_event.wait(CANCEL_CHECK_INTERVAL)
+            if _cancel_event.is_set():
+                break
+            if _is_cancelled(job_id):
+                logger.info("Job %s: cancel detected by watcher thread", job_id)
+                _cancel_event.set()
+                break
+
+    watcher = threading.Thread(target=_cancel_watcher, daemon=True)
+    watcher.start()
+
+    # Patch the pipeline's download method to respect the cancel event
+    original_download = None
+    if hasattr(pipeline, 'kaltura') and hasattr(pipeline.kaltura, 'download_video'):
+        _orig_kaltura_dl = pipeline.kaltura.download_video
+
+        def _cancellable_download(url, path, **kwargs):
+            if _cancel_event.is_set():
+                raise JobCancelledError("Cancelled before download started")
+            # Start download in thread, check cancel every 5s
+            result_holder = [None]
+            exc_holder = [None]
+
+            def _dl():
+                try:
+                    result_holder[0] = _orig_kaltura_dl(url, path, **kwargs)
+                except Exception as ex:
+                    exc_holder[0] = ex
+
+            t = threading.Thread(target=_dl, daemon=True)
+            t.start()
+            while t.is_alive():
+                t.join(timeout=5)
+                if _cancel_event.is_set():
+                    raise JobCancelledError("Cancelled during download")
+            if exc_holder[0]:
+                raise exc_holder[0]
+            return result_holder[0]
+
+        pipeline.kaltura.download_video = _cancellable_download
+
     try:
         if resumable and not video_ids:
             if pipeline._source_adapter:
@@ -138,15 +215,16 @@ def _run_job(job: dict) -> None:
                 all_ids = [v["id"] for v in pipeline.kaltura.list_all_videos()]
             emit({"type": "migration_discovered", "total": len(all_ids), "project_slug": project_slug})
 
+            from dashboard.db import get_job as _get_job
             checkpoint = pipeline._load_checkpoint()
             done_ids = set(checkpoint.get("completed_ids", [])) if checkpoint else set()
             remaining = [v for v in all_ids if v not in done_ids]
             results = []
 
             for vid in remaining:
-                current = db.get_job(job_id)
-                if current and current.get("status") == "cancelled":
+                if _cancel_event.is_set() or _is_cancelled(job_id):
                     emit({"type": "migration_stopped", "message": "Cancelled by user"})
+                    db.complete_job(job_id, "cancelled")
                     return
                 r = pipeline._migrate_with_retry(vid)
                 results.append(r)
@@ -174,10 +252,18 @@ def _run_job(job: dict) -> None:
         db.complete_job(job_id, "completed")
         logger.info("Job %s done: %s/%s", job_id, completed, len(results))
 
+    except JobCancelledError:
+        logger.info("Job %s: cancelled cleanly", job_id)
+        emit({"type": "migration_stopped", "message": "Cancelled by user"})
+        db.complete_job(job_id, "cancelled")
+
     except Exception as e:
         logger.exception("Job %s exception", job_id)
         emit({"type": "error", "message": str(e)})
         db.complete_job(job_id, "failed")
+
+    finally:
+        _cancel_event.set()  # stop watcher thread
 
 
 def main():
