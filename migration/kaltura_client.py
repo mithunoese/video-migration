@@ -424,7 +424,7 @@ class KalturaClient:
 
         1=SRT, 2=DFXP, 3=WEBVTT
         """
-        return {1: "srt", 2: "dfxp", 3: "vtt"}.get(format_code, f"unknown({format_code})")
+        return {1: "srt", 2: "dfxp", 3: "vtt", 4: "cap", 5: "scc"}.get(format_code, f"cc{format_code}")
 
     # ═══════════════════════════════════════════════════════════════════
     #  THUMBNAIL ASSETS

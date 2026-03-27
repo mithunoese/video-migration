@@ -4252,6 +4252,22 @@ async def start_migration(request: Request, user: dict = Depends(_verify_jwt)):
     }
 
 
+@app.get("/api/migration/active")
+async def get_active_migration(user: dict = Depends(_verify_jwt)):
+    """Return the current active (queued/running) migration job for the user's project, if any."""
+    project_slug = user.get("project_slug") or user.get("sub")
+    # Try each project the user has access to — find any running job
+    if _db.is_available():
+        job = _db.fetch_one(
+            "SELECT id, project_slug, status, created_at, started_at FROM migration_jobs "
+            "WHERE status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1"
+        )
+        if job:
+            return {"active": True, "job_id": job["id"], "project_slug": job["project_slug"],
+                    "status": job["status"]}
+    return {"active": False}
+
+
 @app.post("/api/migration/stop")
 async def stop_migration(request: Request, user: dict = Depends(_verify_jwt)):
     body = {}

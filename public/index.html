@@ -953,6 +953,16 @@
         </div>
       </div>
 
+      <!-- Active job banner — shown when a worker job is running in Neon DB -->
+      <div x-show="activeJobBanner && !migrationRunning" x-transition class="mb-4 p-4 rounded-xl border border-brand-200 bg-brand-50 flex items-center gap-3">
+        <span class="w-2.5 h-2.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0"></span>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-semibold text-brand-800">Migration in progress (worker running)</p>
+          <p class="text-xs text-brand-700 mt-0.5">Job <span class="font-mono" x-text="'#' + (activeJobBanner?.job_id || '')"></span> is <span x-text="activeJobBanner?.status || 'running'"></span> in the background. The Docker worker is processing it.</p>
+        </div>
+        <button @click="stopMigration()" class="px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors flex-shrink-0">Cancel Job</button>
+      </div>
+
       <!-- Stalled migration warning -->
       <div x-show="migrationStalled" x-transition class="mb-4 p-4 rounded-xl border border-amber-300 bg-amber-50 flex items-start gap-3">
         <svg class="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
@@ -3595,6 +3605,7 @@
         videoSearch: '', videoFilter: 'all', selectedVideo: null,
         migrationRunning: false, migrationEvents: [], eventSource: null, _pollTimer: null, _pollIndex: 0, pipelineVideos: {}, activeJobId: null,
         migrationStalled: false, _stalledTimer: null, _lastEventAt: null,
+        activeJobBanner: null,
         projectSwitching: false,
         // ── Workflow tab (3-phase guided migration) ──
         wfPhase: 1,          // 1=Discover, 2=Stage, 3=Upload
@@ -4063,6 +4074,7 @@
             this.caVideos = []; this.caSelected = null; this.caDetail = null;
             this.loadCaVideos();
           }
+          this.checkActiveJob();
           this.projectSwitching = false;
         },
         async createProject() {
@@ -4960,8 +4972,28 @@
           }); } catch(e) {}
           this.migrationRunning = false;
           this.migrationPaused = false;
+          this.activeJobBanner = null;
           if (this.eventSource) { this.eventSource.close(); this.eventSource = null; }
           if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
+        },
+
+        async checkActiveJob() {
+          // Check if Neon DB has a queued/running job (catches worker jobs started before page load)
+          try {
+            const r = await fetch('/api/migration/active', { headers: this._authHeaders() });
+            if (!r.ok) return;
+            const d = await r.json();
+            if (d.active) {
+              this.activeJobBanner = d;
+              if (!this.migrationRunning) {
+                // Reconnect SSE to stream existing job progress
+                this.migrationRunning = true;
+                this.connectSSE(d.job_id);
+              }
+            } else {
+              this.activeJobBanner = null;
+            }
+          } catch(e) {}
         },
         async retryFailed() {
           if (!this.currentProjectSlug) return;
