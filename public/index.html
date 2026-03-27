@@ -957,12 +957,12 @@
       <div x-show="migrationStalled" x-transition class="mb-4 p-4 rounded-xl border border-amber-300 bg-amber-50 flex items-start gap-3">
         <svg class="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
         <div class="flex-1 min-w-0">
-          <p class="text-sm font-semibold text-amber-800">Migration appears stalled</p>
-          <p class="text-xs text-amber-700 mt-0.5">No progress in 90 seconds — large files (&gt;2 GB) exceed Vercel's timeout. Run locally for reliable large-file migrations:</p>
-          <code class="mt-2 block text-xs bg-amber-100 border border-amber-200 rounded-lg px-3 py-2 font-mono text-amber-900">python3 run_dashboard.py</code>
-          <p class="text-[11px] text-amber-600 mt-1">Also start LocalStack for S3: <span class="font-mono">docker compose --profile testing up -d localstack</span></p>
+          <p class="text-sm font-semibold text-amber-800">No progress in 90 seconds</p>
+          <p class="text-xs text-amber-700 mt-0.5">The job is queued in Neon DB — make sure your <strong>Docker worker is running</strong> to process it:</p>
+          <code class="mt-2 block text-xs bg-amber-100 border border-amber-200 rounded-lg px-3 py-2 font-mono text-amber-900">docker compose up -d</code>
+          <p class="text-[11px] text-amber-600 mt-1">The worker polls the DB every 5 s and writes progress in real-time. Once running, this view will update automatically.</p>
         </div>
-        <button @click="stopMigration(); migrationStalled = false" class="text-xs text-amber-700 hover:text-amber-900 underline flex-shrink-0">Reset</button>
+        <button @click="stopMigration(); migrationStalled = false" class="text-xs text-amber-700 hover:text-amber-900 underline flex-shrink-0">Cancel</button>
       </div>
 
       <!-- Pipeline Stage Tracker -->
@@ -4986,12 +4986,12 @@
           this.eventSource = new EventSource(`/api/migration/stream?sse_token=${encodeURIComponent(sseToken)}${jobParam}`);
           let connected = false;
           this.eventSource.onopen = () => { connected = true; };
-          // Stall detector: if migration running but no meaningful event in 90s, show warning
+          // Stall detector: warn if no meaningful event in 3 minutes (worker may not be running)
           this._stalledTimer = setInterval(() => {
-            if (this.migrationRunning && !this.migrationPaused && (Date.now() - this._lastEventAt) > 90000) {
+            if (this.migrationRunning && !this.migrationPaused && (Date.now() - this._lastEventAt) > 180000) {
               this.migrationStalled = true;
             }
-          }, 10000);
+          }, 15000);
           this.eventSource.onmessage = (event) => {
             try {
               const data = JSON.parse(event.data);
