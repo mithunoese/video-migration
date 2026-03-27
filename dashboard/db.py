@@ -441,24 +441,26 @@ def create_tables():
         logger.info("Skipping table creation — no database connection")
         return
 
-    try:
-        with get_conn() as conn:
-            cur = conn.cursor()
+    import pg8000.dbapi
+    stmts = [s.strip() for s in _SCHEMA_SQL.split(";") if s.strip()]
+    ok = 0
+    for stmt in stmts:
+        try:
+            conn = pg8000.dbapi.connect(**_conn_params)
             try:
-                # Execute each statement individually (pooler-safe)
-                for stmt in _SCHEMA_SQL.split(";"):
-                    stmt = stmt.strip()
-                    if stmt:
-                        try:
-                            cur.execute(stmt)
-                        except Exception as stmt_err:
-                            logger.debug("Table creation statement skipped: %s", stmt_err)
-            finally:
+                cur = conn.cursor()
+                cur.execute(stmt)
                 cur.close()
-        logger.info("Database tables verified/created")
-    except Exception as e:
-        logger.warning("Failed to create tables (tables may already exist): %s", e)
-        # Don't raise — tables likely already exist from migration
+                conn.commit()
+                ok += 1
+            except Exception as stmt_err:
+                conn.rollback()
+                logger.debug("Table creation statement skipped: %s", stmt_err)
+            finally:
+                conn.close()
+        except Exception as conn_err:
+            logger.debug("Connection failed during table creation: %s", conn_err)
+    logger.info("Database tables verified/created (%d/%d statements ok)", ok, len(stmts))
 
 
 # ---------------------------------------------------------------------------
