@@ -1281,7 +1281,16 @@
               <div class="px-3 py-2 bg-red-50/50 border-b border-red-100">
                 <p class="text-[10px] font-semibold text-red-600 uppercase tracking-wider mb-1">Error Summary</p>
                 <template x-for="[reason, count] in errorGroups" :key="reason">
-                  <p class="text-[10px] text-red-500"><span class="font-bold" x-text="count"></span> <span x-text="count === 1 ? 'video' : 'videos'"></span>: <span x-text="reason"></span></p>
+                  <div class="mb-1">
+                    <p class="text-[10px] text-red-500"><span class="font-bold" x-text="count"></span> <span x-text="count === 1 ? 'video' : 'videos'"></span>: <span x-text="reason"></span></p>
+                    <!-- Raw error details for debugging — collapsed by default -->
+                    <template x-for="v in Object.values(pipelineVideos).filter(v => v.stage === 'failed' && friendlyError(v.error) === reason)" :key="v.id">
+                      <details class="ml-2">
+                        <summary class="text-[9px] text-red-400 cursor-pointer hover:text-red-600">▶ <span x-text="v.title || v.id"></span></summary>
+                        <p class="text-[9px] text-red-400 font-mono break-all pl-2 mt-0.5" x-text="v.error || 'no details'"></p>
+                      </details>
+                    </template>
+                  </div>
                 </template>
               </div>
             </template>
@@ -5563,10 +5572,17 @@
             [/S3 upload.*access denied/i, 'The cloud storage connection is not working. Check the AWS credentials in Settings.'],
             [/413.*Too Large/i, 'The upload was rejected by Zoom (file too large for the target API). The system will automatically retry with a different upload method.'],
             [/DNS resolution failed/i, 'Could not reach the Kaltura server. Check your internet connection.'],
-            [/401.*Unauthorized/i, 'The connection has expired. Go to Settings and re-enter your credentials.'],
+            [/401.*Unauthorized|invalid_token|token.*expired/i, 'The connection has expired. Go to Settings and re-enter your credentials.'],
+            [/403.*Forbidden|insufficient.*scope|missing.*scope/i, 'Missing permissions. Check that your Zoom OAuth app has the required scopes.'],
             [/Disk full|insufficient space/i, 'The server ran out of temporary storage. Contact your IT administrator.'],
-            [/ConnectionError/i, 'Could not connect to the server. Check your internet connection and try again.'],
-            [/timeout/i, 'The operation took too long. This usually resolves by retrying.'],
+            [/ConnectionError|connection.*refused|ECONNREFUSED/i, 'Could not connect to the server. Check your internet connection and try again.'],
+            [/timeout|ETIMEDOUT|timed out/i, 'The operation took too long. This usually resolves by retrying.'],
+            [/No such file|FileNotFoundError/i, 'A video file could not be found. It may have been deleted from Kaltura.'],
+            [/InvalidKS|KalturaAPIException/i, 'Kaltura session expired. Go to Settings and re-enter your Kaltura credentials.'],
+            [/Invalid.*request.*body|400.*Bad Request/i, 'Zoom rejected the upload request. The video format or metadata may not be compatible.'],
+            [/500.*Internal Server Error|502.*Bad Gateway|503.*Service Unavailable/i, 'Zoom is temporarily unavailable. Try retrying in a few minutes.'],
+            [/No.*flavors|no.*downloadable|flavor.*not.*found/i, 'This video has no downloadable version in Kaltura. It may be a live stream or empty entry.'],
+            [/Function timeout|execution timeout|Lambda timeout/i, 'The migration timed out (serverless limit). Run locally with Docker for large videos.'],
           ];
           for (const [pattern, friendly] of map) { if (pattern.test(err)) return friendly; }
           return 'An unexpected error occurred. Try retrying, or contact support if it persists.';
