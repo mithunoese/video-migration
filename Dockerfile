@@ -20,6 +20,7 @@ COPY dashboard/ dashboard/
 COPY migration/ migration/
 COPY public/ public/
 COPY api/ api/
+COPY worker/ worker/
 COPY run.py run_dashboard.py ./
 
 # Create non-root user

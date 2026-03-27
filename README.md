@@ -18,11 +18,11 @@ An autonomous video migration pipeline that moves enterprise video content from 
  Neon DB (shared state)
       │  worker polls for queued jobs
       │
- Docker (Worker + LocalStack)
+ Docker (Worker + MinIO S3)
       │
       ├─ Worker pulls job from DB
-      ├─ Downloads video from Kaltura
-      ├─ Stages to LocalStack S3
+      ├─ Downloads video from Kaltura CDN
+      ├─ Stages to MinIO S3 (local, no AWS account needed)
       └─ Uploads to Zoom + sets full metadata
 ```
 
@@ -113,31 +113,38 @@ cp .env.example .env
 #          ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET, ZOOM_ACCOUNT_ID
 ```
 
-### 2. Start Docker
+### 2. Start Docker (Worker + MinIO S3)
 
 ```bash
 docker compose up -d
-# Dashboard: http://localhost:8000
-# Worker: polls DB every 5s for migration jobs
-# LocalStack S3: http://localhost:4566
+# MinIO S3:  http://localhost:9000  (API endpoint)
+# MinIO UI:  http://localhost:9001  (console — minioadmin / minioadmin)
+# Worker:    polls Neon DB every 5s for migration jobs
 ```
 
-### 3. Run via Dashboard
+The worker automatically uses MinIO for S3 staging — no AWS account needed.
 
-1. Open http://localhost:8000 → login with `admin` / `admin`
-2. Select or create a project (IFRS, Indeed, etc.)
-3. Configure credentials in **Settings** tab (Kaltura, Zoom, AWS)
-4. Go to **Videos** tab → click **Migrate All** or select specific videos
-5. Watch real-time progress via SSE stream
-
-### 4. Deploy to Vercel (optional)
+### 3. Deploy Dashboard to Vercel
 
 ```bash
 vercel --prod
-# Set POSTGRES_URL, JWT_SECRET_KEY, QUEUE_MIGRATIONS=1 in Vercel env
+# Set in Vercel dashboard → Settings → Environment Variables:
+#   POSTGRES_URL      — your Neon DB connection string
+#   JWT_SECRET_KEY    — random secret for auth
+#   QUEUE_MIGRATIONS=1
 ```
 
-When deployed on Vercel, migration jobs are **queued to DB** (`QUEUE_MIGRATIONS=1`). Docker worker picks them up and executes the pipeline — Vercel never times out.
+### 4. Run Migrations
+
+1. Open the Vercel dashboard URL → login with `admin` / `admin`
+2. Select or create a project (IFRS, Indeed, etc.)
+3. Configure credentials in **Settings** tab (Kaltura source, Zoom destination, AWS staging)
+4. For AWS Staging, set endpoint URL to `http://localhost:9000` (or your Docker host IP)
+5. Go to **Videos** tab → click **Migrate All** or select specific videos
+6. Vercel queues the job → Docker worker picks it up → downloads from Kaltura → uploads to Zoom
+7. Watch real-time progress stream in the dashboard
+
+When `QUEUE_MIGRATIONS=1`, Vercel never executes migrations directly — it only queues jobs to Neon DB and streams progress back. The Docker worker does all the heavy lifting and is never constrained by Vercel's 30s timeout.
 
 ---
 

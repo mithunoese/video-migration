@@ -1,101 +1,77 @@
-# Video Migration Platform — Docker Compose (Neon DB edition)
+# Video Migration Platform — Docker Compose
 #
-# Database: Neon (external) — set POSTGRES_URL in your .env
-# S3:       LocalStack (local mock, no AWS account needed)
+# Architecture:
+#   Vercel (Dashboard UI + API) — queues migration jobs to Neon DB
+#   Docker (Worker + MinIO S3)  — worker polls DB, downloads from Kaltura, stages to MinIO, uploads to Zoom
 #
 # Usage:
-#   cp .env.example .env       # fill in Kaltura, Zoom, and POSTGRES_URL (Neon)
-#   docker compose up -d       # starts dashboard + localstack + bucket init
-#   docker compose logs -f     # follow logs
-#   open http://localhost:8000
+#   docker compose up -d          # start MinIO + worker
+#   open http://localhost:9001     # MinIO console (minioadmin / minioadmin)
+#   S3 endpoint: http://localhost:9000
+#
+# Prerequisites:
+#   cp .env.example .env
+#   # Fill in POSTGRES_URL, KALTURA_*, ZOOM_*
+#   # Leave AWS_* blank — worker uses MinIO credentials below
 
 services:
-  localstack:
-    image: localstack/localstack:latest
-    container_name: video-migration-localstack
+  minio:
+    image: minio/minio:latest
+    container_name: video-migration-minio
     ports:
-      - "4566:4566"
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
     environment:
-      - SERVICES=s3
-      - DEFAULT_REGION=us-east-1
-      - DEBUG=0
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
     volumes:
-      - localstack_data:/var/lib/localstack
+      - minio_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
-      start_period: 15s
+      start_period: 10s
       retries: 6
     restart: unless-stopped
 
-  init-aws:
-    image: amazon/aws-cli
-    container_name: video-migration-init-aws
+  init-bucket:
+    image: minio/mc:latest
+    container_name: video-migration-init-bucket
     depends_on:
-      localstack:
+      minio:
         condition: service_healthy
-    environment:
-      - AWS_ACCESS_KEY_ID=test
-      - AWS_SECRET_ACCESS_KEY=test
-      - AWS_DEFAULT_REGION=us-east-1
     entrypoint: >
       sh -c "
-        aws --endpoint-url=http://localstack:4566 s3 mb s3://migration-staging --region us-east-1 2>/dev/null || true;
+        mc alias set local http://minio:9000 minioadmin minioadmin;
+        mc mb local/migration-staging --ignore-existing;
         echo 'Bucket ready: s3://migration-staging'
       "
     restart: "no"
-
-  dashboard:
-    build: .
-    container_name: video-migration-dashboard
-    ports:
-      - "${DASHBOARD_PORT:-8000}:8000"
-    env_file: .env
-    environment:
-      - STATE_DIR=/app/data
-      - ENVIRONMENT=${ENVIRONMENT:-production}
-      - AWS_ENDPOINT_URL=http://localstack:4566
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-test}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-test}
-      # Neon DB — set POSTGRES_URL in your .env
-      - POSTGRES_URL=${POSTGRES_URL:-}
-      # Queue migrations to DB so the worker container runs them
-      - QUEUE_MIGRATIONS=1
-    volumes:
-      - migration_data:/app/data
-    depends_on:
-      localstack:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/status')"]
-      interval: 30s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
 
   worker:
     build: .
     container_name: video-migration-worker
     command: ["python", "worker/worker.py"]
-    env_file: .env
+    env_file:
+      - .env
     environment:
-      - POSTGRES_URL=${POSTGRES_URL:-}
-      - AWS_ENDPOINT_URL=http://localstack:4566
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-test}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-test}
-      - DOWNLOAD_DIR=/tmp/video-migration
+      # MinIO S3 — overrides any .env AWS settings
+      - AWS_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET:-migration-staging}
+      # Worker config
       - WORKER_POLL_INTERVAL=5
-    volumes:
-      - migration_data:/app/data
+      - DOWNLOAD_DIR=/tmp/video-migration
     depends_on:
-      localstack:
+      minio:
         condition: service_healthy
+      init-bucket:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:
-  migration_data:
-    driver: local
-  localstack_data:
+  minio_data:
     driver: local
